@@ -105,3 +105,43 @@ func TestReadinessRestoresPersistedCooldownWithoutUpstreamProbe(t *testing.T) {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
 }
+
+func TestWebQuotaCatchupSettingsRespectPandaLimits(t *testing.T) {
+	t.Setenv("GROK2API_WEB_QUOTA_STARTUP_LIMIT", "0")
+	t.Setenv("GROK2API_WEB_QUOTA_CATCHUP_LIMIT", "1")
+	t.Setenv("GROK2API_WEB_QUOTA_CATCHUP_INITIAL_DELAY", "10m")
+	t.Setenv("GROK2API_WEB_QUOTA_CATCHUP_EVERY", "45m")
+
+	if got := webQuotaStartupLimit(); got != 0 {
+		t.Fatalf("startup limit = %d", got)
+	}
+	if got := webQuotaCatchupLimit(); got != 1 {
+		t.Fatalf("catchup limit = %d", got)
+	}
+	if got := webQuotaCatchupInitialDelay(); got != 10*time.Minute {
+		t.Fatalf("initial delay = %s", got)
+	}
+	if got := webQuotaCatchupInterval(); got != 45*time.Minute {
+		t.Fatalf("interval = %s", got)
+	}
+}
+
+func TestWebQuotaCatchupSettingsRejectUnsafeValues(t *testing.T) {
+	t.Setenv("GROK2API_WEB_QUOTA_STARTUP_LIMIT", "10000")
+	t.Setenv("GROK2API_WEB_QUOTA_CATCHUP_LIMIT", "invalid")
+	t.Setenv("GROK2API_WEB_QUOTA_CATCHUP_INITIAL_DELAY", "1s")
+	t.Setenv("GROK2API_WEB_QUOTA_CATCHUP_EVERY", "1m")
+
+	if got := webQuotaStartupLimit(); got != defaultWebQuotaStartupLimit {
+		t.Fatalf("unsafe startup limit = %d", got)
+	}
+	if got := webQuotaCatchupLimit(); got != defaultWebQuotaCatchupLimit {
+		t.Fatalf("invalid catchup limit = %d", got)
+	}
+	if got := webQuotaCatchupInitialDelay(); got != defaultWebQuotaCatchupInitialDelay {
+		t.Fatalf("unsafe initial delay = %s", got)
+	}
+	if got := webQuotaCatchupInterval(); got != defaultWebQuotaCatchupInterval {
+		t.Fatalf("unsafe interval = %s", got)
+	}
+}

@@ -10,6 +10,10 @@ services:
       TZ: Asia/Shanghai
       GROK2API_BROWSER_BRIDGE_URL: http://browser-bridge:8192
       GROK2API_BROWSER_BRIDGE_KEY_FILE: /run/secrets/browser-bridge-key
+      GROK2API_WEB_QUOTA_STARTUP_LIMIT: "0"
+      GROK2API_WEB_QUOTA_CATCHUP_LIMIT: "1"
+      GROK2API_WEB_QUOTA_CATCHUP_INITIAL_DELAY: "10m"
+      GROK2API_WEB_QUOTA_CATCHUP_EVERY: "30m"
     volumes:
       - /opt/grok2api/config.yaml:/run/grok2api/config.yaml:ro
       - /opt/grok2api/data:/app/data

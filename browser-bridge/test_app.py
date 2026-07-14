@@ -24,6 +24,9 @@ class _Driver:
     def __init__(self):
         self.closed = False
 
+    def execute_cdp_cmd(self, _name, _payload):
+        return None
+
     def quit(self):
         self.closed = True
 
@@ -97,6 +100,36 @@ class HealthCleanupTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 0.5)
         self.assertEqual('{"status":"ok","sessions":0}', payload)
         self.assertTrue(driver.closed)
+
+    def test_health_does_not_wait_for_browser_bootstrap(self):
+        app = _load_app()
+        driver = _Driver()
+        bootstrap_started = threading.Event()
+        release_bootstrap = threading.Event()
+
+        def get_webdriver(_proxy):
+            bootstrap_started.set()
+            release_bootstrap.wait(2)
+            return driver
+
+        app.utils.get_webdriver = get_webdriver
+        result = []
+        worker = threading.Thread(
+            target=lambda: result.append(app.acquire_session("account-1", "direct://", [], "", "https://grok.com/rest/app-chat/conversations/new")),
+            daemon=True,
+        )
+        worker.start()
+        self.assertTrue(bootstrap_started.wait(0.5))
+        threading.Timer(0.25, release_bootstrap.set).start()
+
+        started = time.monotonic()
+        payload = app.health()
+        elapsed = time.monotonic() - started
+        worker.join(1)
+
+        self.assertLess(elapsed, 0.1)
+        self.assertEqual('{"status":"ok","sessions":0}', payload)
+        self.assertEqual(1, len(result))
 
 
 if __name__ == "__main__":

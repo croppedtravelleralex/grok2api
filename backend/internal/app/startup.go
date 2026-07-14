@@ -3,6 +3,9 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,10 +22,54 @@ const (
 	startupCriticalLimit     = 100
 	statsigWarmupInterval    = 15 * time.Minute
 	webQuotaStaleAfter       = 30 * time.Minute
-	webQuotaCatchupEvery     = 30 * time.Minute
 	modelCatalogStaleAfter   = 24 * time.Hour
 	modelCatalogCatchupEvery = 6 * time.Hour
+
+	defaultWebQuotaStartupLimit        = 100
+	defaultWebQuotaCatchupLimit        = 100
+	defaultWebQuotaCatchupInitialDelay = 5 * time.Second
+	defaultWebQuotaCatchupInterval     = 30 * time.Minute
 )
+
+func boundedEnvInt(name string, fallback, minimum, maximum int) int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return fallback
+	}
+	return parsed
+}
+
+func boundedEnvDuration(name string, fallback, minimum, maximum time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return fallback
+	}
+	return parsed
+}
+
+func webQuotaStartupLimit() int {
+	return boundedEnvInt("GROK2API_WEB_QUOTA_STARTUP_LIMIT", defaultWebQuotaStartupLimit, 0, 1000)
+}
+
+func webQuotaCatchupLimit() int {
+	return boundedEnvInt("GROK2API_WEB_QUOTA_CATCHUP_LIMIT", defaultWebQuotaCatchupLimit, 0, 100)
+}
+
+func webQuotaCatchupInitialDelay() time.Duration {
+	return boundedEnvDuration("GROK2API_WEB_QUOTA_CATCHUP_INITIAL_DELAY", defaultWebQuotaCatchupInitialDelay, 5*time.Second, 24*time.Hour)
+}
+
+func webQuotaCatchupInterval() time.Duration {
+	return boundedEnvDuration("GROK2API_WEB_QUOTA_CATCHUP_EVERY", defaultWebQuotaCatchupInterval, 5*time.Minute, 24*time.Hour)
+}
 
 type startupReport struct {
 	StartedAt                time.Time
@@ -345,7 +392,11 @@ func (a *Application) runStatsigWarmup(ctx context.Context) {
 }
 
 func (a *Application) queueDueWebQuotaRefresh(ctx context.Context) {
-	windows, err := a.accounts.ListDueWebQuotaWindows(ctx, time.Now().UTC(), 1000)
+	limit := webQuotaStartupLimit()
+	if limit == 0 {
+		return
+	}
+	windows, err := a.accounts.ListDueWebQuotaWindows(ctx, time.Now().UTC(), limit)
 	if err != nil {
 		a.logger.Warn("web_quota_startup_catchup_failed", "error", err)
 		a.startup.recordError(err)
@@ -361,7 +412,7 @@ func (a *Application) queueDueWebQuotaRefresh(ctx context.Context) {
 }
 
 func (a *Application) runWebQuotaCatchup(ctx context.Context) {
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(webQuotaCatchupInitialDelay())
 	defer timer.Stop()
 	for {
 		select {
@@ -369,7 +420,12 @@ func (a *Application) runWebQuotaCatchup(ctx context.Context) {
 			return
 		case <-timer.C:
 		}
-		ids, err := a.accountRepo.ListStaleWebQuotaAccountIDs(ctx, time.Now().UTC().Add(-webQuotaStaleAfter), 100)
+		limit := webQuotaCatchupLimit()
+		var err error
+		var ids []uint64
+		if limit > 0 {
+			ids, err = a.accountRepo.ListStaleWebQuotaAccountIDs(ctx, time.Now().UTC().Add(-webQuotaStaleAfter), limit)
+		}
 		if err == nil && len(ids) > 0 {
 			runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 			var succeeded int
@@ -383,7 +439,7 @@ func (a *Application) runWebQuotaCatchup(ctx context.Context) {
 		if err != nil && ctx.Err() == nil {
 			a.logger.Warn("web_quota_stale_catchup_failed", "error", err)
 		}
-		resetTimer(timer, webQuotaCatchupEvery)
+		resetTimer(timer, webQuotaCatchupInterval())
 	}
 }
 

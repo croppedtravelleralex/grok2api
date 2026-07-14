@@ -30,6 +30,7 @@ KEY_FILE = os.environ.get("BRIDGE_KEY_FILE", "/run/secrets/browser-bridge-key")
 ALLOWED_HOSTS = {"grok.com", "www.grok.com"}
 SESSIONS = OrderedDict()
 SESSIONS_LOCK = threading.Lock()
+SESSION_CREATE_LOCK = threading.Lock()
 
 
 class BrowserSession:
@@ -171,23 +172,33 @@ def close_expired_locked(now):
 def acquire_session(session_key, proxy_url, cookies, referer, target_url):
     if not session_key or len(session_key) > 128:
         raise HTTPError(400, "invalid session key")
-    now = time.monotonic()
-    with SESSIONS_LOCK:
-        close_expired_locked(now)
-        current = SESSIONS.get(session_key)
-        target = validate_target(target_url, {"https", "wss"})
-        origin = "https://" + target.hostname + "/"
-        bootstrap_url = origin + ("index" if target.hostname in {"grok.com", "www.grok.com"} else "")
-        if current is not None and (current.proxy_url != proxy_url or current.origin != origin):
-            SESSIONS.pop(session_key).close()
-            current = None
+    target = validate_target(target_url, {"https", "wss"})
+    origin = "https://" + target.hostname + "/"
+    bootstrap_url = origin + ("index" if target.hostname in {"grok.com", "www.grok.com"} else "")
+    with SESSION_CREATE_LOCK:
+        now = time.monotonic()
+        with SESSIONS_LOCK:
+            close_expired_locked(now)
+            current = SESSIONS.get(session_key)
+            if current is not None and (current.proxy_url != proxy_url or current.origin != origin):
+                SESSIONS.pop(session_key).close()
+                current = None
+            if current is not None:
+                SESSIONS.move_to_end(session_key)
+                current.last_used = now
         if current is None:
-            while len(SESSIONS) >= SESSION_LIMIT:
-                _, oldest = SESSIONS.popitem(last=False)
-                oldest.close()
-            driver = utils.get_webdriver(parse_proxy(proxy_url))
-            if target.hostname in {"grok.com", "www.grok.com"}:
-                driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": r"""
+            stale = []
+            with SESSIONS_LOCK:
+                while len(SESSIONS) >= SESSION_LIMIT:
+                    _, oldest = SESSIONS.popitem(last=False)
+                    stale.append(oldest)
+            for session in stale:
+                session.close()
+            driver = None
+            try:
+                driver = utils.get_webdriver(parse_proxy(proxy_url))
+                if target.hostname in {"grok.com", "www.grok.com"}:
+                    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": r"""
 (() => {
   const queue = [];
   const nativePush = Array.prototype.push;
@@ -204,13 +215,16 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url):
   globalThis.TURBOPACK = queue;
 })();
 """})
-            bootstrap = V1RequestBase({"url": bootstrap_url, "cookies": cookies, "returnOnlyCookies": True})
-            _evil_logic(bootstrap, driver, "GET")
-            current = BrowserSession(driver, proxy_url, origin)
-            SESSIONS[session_key] = current
-        else:
-            SESSIONS.move_to_end(session_key)
-        current.last_used = now
+                bootstrap = V1RequestBase({"url": bootstrap_url, "cookies": cookies, "returnOnlyCookies": True})
+                _evil_logic(bootstrap, driver, "GET")
+                current = BrowserSession(driver, proxy_url, origin)
+            except Exception:
+                if driver is not None:
+                    BrowserSession(driver, proxy_url, origin).close()
+                raise
+            with SESSIONS_LOCK:
+                SESSIONS[session_key] = current
+                current.last_used = time.monotonic()
     if referer:
         parsed = validate_target(referer, {"https"})
         if urllib.parse.urlsplit(current.driver.current_url).path != parsed.path:
