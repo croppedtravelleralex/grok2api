@@ -25,6 +25,8 @@ APP = Bottle()
 SESSION_LIMIT = max(1, int(os.environ.get("BRIDGE_SESSION_LIMIT", "1")))
 SESSION_TTL = max(60, int(os.environ.get("BRIDGE_SESSION_TTL_SECONDS", "1800")))
 CLOSE_TIMEOUT = min(5.0, max(0.5, float(os.environ.get("BRIDGE_CLOSE_TIMEOUT_SECONDS", "2"))))
+MAX_OPERATION_MS = min(900000, max(1000, int(float(os.environ.get("BRIDGE_MAX_OPERATION_SECONDS", "900")) * 1000)))
+OPERATION_GRACE_SECONDS = min(15.0, max(0.1, float(os.environ.get("BRIDGE_OPERATION_GRACE_SECONDS", "2"))))
 SIGNER_MODULE_ID = int(os.environ.get("BRIDGE_SIGNER_MODULE_ID", "4629918"))
 KEY_FILE = os.environ.get("BRIDGE_KEY_FILE", "/run/secrets/browser-bridge-key")
 ALLOWED_HOSTS = {"grok.com", "www.grok.com"}
@@ -40,9 +42,15 @@ class BrowserSession:
         self.proxy_url = proxy_url
         self.origin = origin
         self.lock = threading.Lock()
+        self.close_lock = threading.Lock()
+        self.closed = False
         self.last_used = time.monotonic()
 
     def close(self):
+        with self.close_lock:
+            if self.closed:
+                return
+            self.closed = True
         completed = threading.Event()
 
         def graceful_close():
@@ -58,6 +66,10 @@ class BrowserSession:
             _terminate_driver_processes(self.driver)
             completed.wait(0.5)
         _terminate_orphaned_browser_processes()
+
+
+class BrowserOperationTimeout(TimeoutError):
+    pass
 
 
 def _process_children():
@@ -159,6 +171,14 @@ def env_flag(name, fallback):
     return fallback
 
 
+def bounded_timeout_ms(raw_value, fallback):
+    try:
+        value = int(raw_value or fallback)
+    except (TypeError, ValueError):
+        value = fallback
+    return min(max(value, 1000), MAX_OPERATION_MS)
+
+
 def authorized():
     expected = load_key()
     if not expected:
@@ -206,6 +226,41 @@ def close_expired_locked(now):
     for key in expired:
         SESSIONS.pop(key).close()
     return len(expired)
+
+
+def discard_session(browser):
+    with SESSIONS_LOCK:
+        stale_keys = [key for key, value in SESSIONS.items() if value is browser]
+        for key in stale_keys:
+            SESSIONS.pop(key, None)
+    browser.close()
+
+
+def execute_browser_operation(browser, timeout_ms, operation):
+    completed = threading.Event()
+    state = {}
+
+    def run():
+        try:
+            with browser.lock:
+                if browser.closed:
+                    raise RuntimeError("browser session is closed")
+                state["result"] = operation()
+                browser.last_used = time.monotonic()
+        except Exception as error:
+            state["error"] = error
+        finally:
+            completed.set()
+
+    threading.Thread(target=run, name="browser-operation", daemon=True).start()
+    if not completed.wait((timeout_ms / 1000) + OPERATION_GRACE_SECONDS):
+        discard_session(browser)
+        raise BrowserOperationTimeout("browser operation exceeded its deadline")
+    error = state.get("error")
+    if error is not None:
+        discard_session(browser)
+        raise error
+    return state.get("result")
 
 
 def acquire_session(session_key, proxy_url, cookies, referer, target_url):
@@ -307,7 +362,7 @@ def fetch():
     method = str(payload.get("method") or "GET").upper()
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise HTTPError(400, "invalid method")
-    timeout_ms = min(max(int(payload.get("timeoutMs") or 120000), 1000), 900000)
+    timeout_ms = bounded_timeout_ms(payload.get("timeoutMs"), 120000)
     cookies = parse_cookies(payload.get("cookie"))
     browser = acquire_session(str(payload.get("sessionKey") or ""), str(payload.get("proxyUrl") or ""), cookies, str(payload.get("referer") or ""), str(payload.get("url") or ""))
     script = r"""
@@ -366,13 +421,17 @@ const timer = setTimeout(() => finish({error: 'browser fetch timeout'}), cfg.tim
         "signerModuleId": SIGNER_MODULE_ID,
     }
     try:
-        with browser.lock:
+        def operation():
             browser.driver.set_script_timeout((timeout_ms / 1000) + 15)
-            result = browser.driver.execute_async_script(script, cfg)
-            browser.last_used = time.monotonic()
+            return browser.driver.execute_async_script(script, cfg)
+
+        result = execute_browser_operation(browser, timeout_ms, operation)
         return encode_response(result if isinstance(result, dict) else {"error": "invalid browser result"})
     except Exception as error:
         return encode_response({"error": type(error).__name__ + ": " + str(error)[:300]}, 502)
+    finally:
+        if not env_flag("BRIDGE_REUSE_SESSIONS", True):
+            discard_session(browser)
 
 
 @APP.post("/v1/websocket")
@@ -381,7 +440,7 @@ def websocket():
         raise HTTPError(401, "unauthorized")
     payload = json_body()
     validate_target(payload.get("url"), {"wss"})
-    timeout_ms = min(max(int(payload.get("timeoutMs") or 180000), 1000), 900000)
+    timeout_ms = bounded_timeout_ms(payload.get("timeoutMs"), 180000)
     idle_ms = min(max(int(payload.get("idleMs") or 5000), 500), 30000)
     expected = min(max(int(payload.get("expected") or 1), 1), 10)
     cookies = parse_cookies(payload.get("cookie"))
@@ -422,14 +481,18 @@ socket.onmessage = event => {
         "idleMs": idle_ms, "expected": expected,
     }
     try:
-        with browser.lock:
+        def operation():
             browser.driver.set_script_timeout((timeout_ms / 1000) + 15)
-            result = browser.driver.execute_async_script(script, cfg)
-            browser.last_used = time.monotonic()
+            return browser.driver.execute_async_script(script, cfg)
+
+        result = execute_browser_operation(browser, timeout_ms, operation)
         frames = [base64.b64encode(str(value).encode()).decode() for value in (result or {}).get("frames", [])]
         return encode_response({"frames": frames, "error": (result or {}).get("error", "")})
     except Exception as error:
         return encode_response({"error": type(error).__name__ + ": " + str(error)[:300]}, 502)
+    finally:
+        if not env_flag("BRIDGE_REUSE_SESSIONS", True):
+            discard_session(browser)
 
 
 if __name__ == "__main__":

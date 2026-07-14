@@ -27,6 +27,12 @@ class _Driver:
     def execute_cdp_cmd(self, _name, _payload):
         return None
 
+    def set_script_timeout(self, _timeout):
+        return None
+
+    def execute_async_script(self, _script, _cfg):
+        return {"status": 200, "headers": {}, "body": ""}
+
     def quit(self):
         self.closed = True
 
@@ -39,6 +45,25 @@ class _BlockingDriver:
     def quit(self):
         self.release.wait(5)
         self.closed = True
+
+
+class _BlockingScriptDriver:
+    def __init__(self):
+        self.closed = False
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def set_script_timeout(self, _timeout):
+        return None
+
+    def execute_async_script(self, _script, _cfg):
+        self.started.set()
+        self.release.wait(5)
+        return {"status": 200}
+
+    def quit(self):
+        self.closed = True
+        self.release.set()
 
 
 def _load_app():
@@ -144,6 +169,59 @@ class HealthCleanupTest(unittest.TestCase):
             self.assertFalse(app.env_flag("BRIDGE_WARM_USER_AGENT", True))
         finally:
             app.os.environ.pop("BRIDGE_WARM_USER_AGENT", None)
+
+    def test_stuck_browser_operation_is_evicted_and_force_closed(self):
+        app = _load_app()
+        driver = _BlockingScriptDriver()
+        session = app.BrowserSession(driver, "direct://", "https://grok.com/")
+        app.SESSIONS["account-1"] = session
+        app.OPERATION_GRACE_SECONDS = 0.01
+        app.CLOSE_TIMEOUT = 0.01
+        app._terminate_orphaned_browser_processes = lambda: None
+
+        started = time.monotonic()
+        with self.assertRaises(app.BrowserOperationTimeout):
+            app.execute_browser_operation(
+                session,
+                10,
+                lambda: driver.execute_async_script("return", {}),
+            )
+
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertTrue(driver.started.is_set())
+        self.assertTrue(driver.closed)
+        self.assertEqual(0, len(app.SESSIONS))
+
+    def test_operation_timeout_is_capped_for_low_resource_hosts(self):
+        app = _load_app()
+        app.MAX_OPERATION_MS = 90000
+
+        self.assertEqual(90000, app.bounded_timeout_ms(180000, 120000))
+        self.assertEqual(1000, app.bounded_timeout_ms(1, 120000))
+
+    def test_non_reusable_mode_closes_browser_after_successful_fetch(self):
+        app = _load_app()
+        driver = _Driver()
+        session = app.BrowserSession(driver, "direct://", "https://grok.com/")
+        app.SESSIONS["account-1"] = session
+        app.authorized = lambda: True
+        app.json_body = lambda: {
+            "sessionKey": "account-1",
+            "url": "https://grok.com/rest/rate-limits",
+            "method": "POST",
+            "timeoutMs": 1000,
+        }
+        app.acquire_session = lambda *_args: session
+        app._terminate_orphaned_browser_processes = lambda: None
+        app.os.environ["BRIDGE_REUSE_SESSIONS"] = "false"
+        try:
+            payload = app.fetch()
+        finally:
+            app.os.environ.pop("BRIDGE_REUSE_SESSIONS", None)
+
+        self.assertEqual('{"status":200,"headers":{},"body":""}', payload)
+        self.assertTrue(driver.closed)
+        self.assertEqual(0, len(app.SESSIONS))
 
 
 if __name__ == "__main__":
