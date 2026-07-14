@@ -166,7 +166,10 @@ def encode_response(value, status=200):
 
 @APP.get("/healthz")
 def health():
-    return encode_response({"status": "ok", "sessions": len(SESSIONS)})
+    with SESSIONS_LOCK:
+        close_expired_locked(time.monotonic())
+        session_count = len(SESSIONS)
+    return encode_response({"status": "ok", "sessions": session_count})
 
 
 @APP.post("/v1/fetch")
