@@ -179,6 +179,10 @@ def bounded_timeout_ms(raw_value, fallback):
     return min(max(value, 1000), MAX_OPERATION_MS)
 
 
+def remaining_timeout_ms(deadline):
+    return max(1, min(MAX_OPERATION_MS, int((deadline - time.monotonic()) * 1000)))
+
+
 def authorized():
     expected = load_key()
     if not expected:
@@ -263,9 +267,11 @@ def execute_browser_operation(browser, timeout_ms, operation):
     return state.get("result")
 
 
-def acquire_session(session_key, proxy_url, cookies, referer, target_url):
+def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeout_ms=None):
     if not session_key or len(session_key) > 128:
         raise HTTPError(400, "invalid session key")
+    timeout_ms = bounded_timeout_ms(None, 120000) if timeout_ms is None else max(1, min(MAX_OPERATION_MS, int(timeout_ms)))
+    deadline = time.monotonic() + (timeout_ms / 1000)
     target = validate_target(target_url, {"https", "wss"})
     origin = "https://" + target.hostname + "/"
     bootstrap_url = origin + ("index" if target.hostname in {"grok.com", "www.grok.com"} else "")
@@ -288,12 +294,23 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url):
                     stale.append(oldest)
             for session in stale:
                 session.close()
-            driver = None
             SESSION_CREATING.set()
-            try:
-                driver = utils.get_webdriver(parse_proxy(proxy_url))
-                if target.hostname in {"grok.com", "www.grok.com"}:
-                    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": r"""
+            completed = threading.Event()
+            cancelled = threading.Event()
+            state = {}
+
+            def bootstrap():
+                driver = None
+                browser = None
+                try:
+                    driver = utils.get_webdriver(parse_proxy(proxy_url))
+                    browser = BrowserSession(driver, proxy_url, origin)
+                    state["browser"] = browser
+                    if cancelled.is_set():
+                        browser.close()
+                        return
+                    if target.hostname in {"grok.com", "www.grok.com"}:
+                        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": r"""
 (() => {
   const queue = [];
   const nativePush = Array.prototype.push;
@@ -310,22 +327,47 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url):
   globalThis.TURBOPACK = queue;
 })();
 """})
-                bootstrap = V1RequestBase({"url": bootstrap_url, "cookies": cookies, "returnOnlyCookies": True})
-                _evil_logic(bootstrap, driver, "GET")
-                current = BrowserSession(driver, proxy_url, origin)
-                with SESSIONS_LOCK:
-                    SESSIONS[session_key] = current
-                    current.last_used = time.monotonic()
-            except Exception:
-                if driver is not None:
-                    BrowserSession(driver, proxy_url, origin).close()
-                raise
-            finally:
-                SESSION_CREATING.clear()
+                    request_value = V1RequestBase({"url": bootstrap_url, "cookies": cookies, "returnOnlyCookies": True})
+                    _evil_logic(request_value, driver, "GET")
+                    if cancelled.is_set():
+                        browser.close()
+                        return
+                    state["session"] = browser
+                except Exception as error:
+                    state["error"] = error
+                    if browser is not None:
+                        browser.close()
+                finally:
+                    SESSION_CREATING.clear()
+                    completed.set()
+
+            threading.Thread(target=bootstrap, name="browser-session-bootstrap", daemon=True).start()
+            if not completed.wait(remaining_timeout_ms(deadline) / 1000):
+                cancelled.set()
+                browser = state.get("browser")
+                if browser is not None:
+                    browser.close()
+                else:
+                    _terminate_orphaned_browser_processes()
+                completed.wait(0.5)
+                raise BrowserOperationTimeout("browser session bootstrap exceeded its deadline")
+            error = state.get("error")
+            if error is not None:
+                raise error
+            current = state.get("session")
+            if current is None:
+                raise RuntimeError("browser session bootstrap returned no session")
+            with SESSIONS_LOCK:
+                SESSIONS[session_key] = current
+                current.last_used = time.monotonic()
     if referer:
         parsed = validate_target(referer, {"https"})
-        if urllib.parse.urlsplit(current.driver.current_url).path != parsed.path:
-            current.driver.execute_script("history.replaceState(null, '', arguments[0])", referer)
+
+        def update_referer():
+            if urllib.parse.urlsplit(current.driver.current_url).path != parsed.path:
+                current.driver.execute_script("history.replaceState(null, '', arguments[0])", referer)
+
+        execute_browser_operation(current, remaining_timeout_ms(deadline), update_referer)
     return current
 
 
@@ -363,8 +405,10 @@ def fetch():
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise HTTPError(400, "invalid method")
     timeout_ms = bounded_timeout_ms(payload.get("timeoutMs"), 120000)
+    deadline = time.monotonic() + (timeout_ms / 1000)
     cookies = parse_cookies(payload.get("cookie"))
-    browser = acquire_session(str(payload.get("sessionKey") or ""), str(payload.get("proxyUrl") or ""), cookies, str(payload.get("referer") or ""), str(payload.get("url") or ""))
+    browser = acquire_session(str(payload.get("sessionKey") or ""), str(payload.get("proxyUrl") or ""), cookies, str(payload.get("referer") or ""), str(payload.get("url") or ""), remaining_timeout_ms(deadline))
+    timeout_ms = remaining_timeout_ms(deadline)
     script = r"""
 const cfg = arguments[0], done = arguments[arguments.length - 1];
 let finished = false;
@@ -441,10 +485,12 @@ def websocket():
     payload = json_body()
     validate_target(payload.get("url"), {"wss"})
     timeout_ms = bounded_timeout_ms(payload.get("timeoutMs"), 180000)
+    deadline = time.monotonic() + (timeout_ms / 1000)
     idle_ms = min(max(int(payload.get("idleMs") or 5000), 500), 30000)
     expected = min(max(int(payload.get("expected") or 1), 1), 10)
     cookies = parse_cookies(payload.get("cookie"))
-    browser = acquire_session(str(payload.get("sessionKey") or ""), str(payload.get("proxyUrl") or ""), cookies, str(payload.get("referer") or "https://grok.com/imagine"), str(payload.get("url") or ""))
+    browser = acquire_session(str(payload.get("sessionKey") or ""), str(payload.get("proxyUrl") or ""), cookies, str(payload.get("referer") or "https://grok.com/imagine"), str(payload.get("url") or ""), remaining_timeout_ms(deadline))
+    timeout_ms = remaining_timeout_ms(deadline)
     script = r"""
 const cfg = arguments[0], done = arguments[arguments.length - 1];
 let frames = [], completed = new Set(), finished = false, idleTimer = null;

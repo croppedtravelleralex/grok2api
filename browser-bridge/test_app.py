@@ -56,6 +56,9 @@ class _BlockingScriptDriver:
     def set_script_timeout(self, _timeout):
         return None
 
+    def execute_cdp_cmd(self, _name, _payload):
+        return None
+
     def execute_async_script(self, _script, _cfg):
         self.started.set()
         self.release.wait(5)
@@ -220,6 +223,35 @@ class HealthCleanupTest(unittest.TestCase):
             app.os.environ.pop("BRIDGE_REUSE_SESSIONS", None)
 
         self.assertEqual('{"status":200,"headers":{},"body":""}', payload)
+        self.assertTrue(driver.closed)
+        self.assertEqual(0, len(app.SESSIONS))
+
+    def test_stuck_browser_bootstrap_is_bounded_and_closed(self):
+        app = _load_app()
+        driver = _BlockingScriptDriver()
+        app.utils.get_webdriver = lambda _proxy: driver
+
+        def blocking_bootstrap(*_args):
+            driver.started.set()
+            driver.release.wait(5)
+
+        app._evil_logic = blocking_bootstrap
+        app.CLOSE_TIMEOUT = 0.01
+        app._terminate_orphaned_browser_processes = lambda: None
+
+        started = time.monotonic()
+        with self.assertRaises(app.BrowserOperationTimeout):
+            app.acquire_session(
+                "account-1",
+                "direct://",
+                [],
+                "",
+                "https://grok.com/rest/app-chat/conversations/new",
+                timeout_ms=10,
+            )
+
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertTrue(driver.started.is_set())
         self.assertTrue(driver.closed)
         self.assertEqual(0, len(app.SESSIONS))
 
