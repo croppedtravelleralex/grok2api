@@ -167,6 +167,69 @@ func TestForwardResponseDecodesExplicitGzipResponse(t *testing.T) {
 	}
 }
 
+func TestNormalizeGzipResponseAcceptsAlreadyUncompressedBody(t *testing.T) {
+	response := &http.Response{
+		Header:        http.Header{"Content-Encoding": []string{"gzip"}, "Content-Length": []string{"999"}},
+		Body:          io.NopCloser(strings.NewReader(`{"id":"already_uncompressed"}`)),
+		ContentLength: 999,
+		Uncompressed:  true,
+	}
+	if err := normalizeGzipResponse(response); err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != `{"id":"already_uncompressed"}` || response.Header.Get("Content-Encoding") != "" || response.Header.Get("Content-Length") != "" || response.ContentLength != -1 {
+		t.Fatalf("body=%q headers=%#v contentLength=%d", body, response.Header, response.ContentLength)
+	}
+}
+
+func TestRefreshCredentialCarriesStableBuildEgressAffinity(t *testing.T) {
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedRefresh, err := cipher.Encrypt("refresh-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{}, cipher)
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if affinity := buildEgressAffinity(request); affinity != "account:42" {
+			t.Fatalf("build egress affinity = %q", affinity)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"access_token":"next-access","refresh_token":"next-refresh","expires_in":3600}`)),
+			Request:    request,
+		}, nil
+	})
+
+	refreshed, err := adapter.RefreshCredential(context.Background(), account.Credential{ID: 42, EncryptedRefreshToken: encryptedRefresh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.EncryptedAccessToken == "" || refreshed.EncryptedRefreshToken == "" {
+		t.Fatalf("refreshed credential = %#v", refreshed)
+	}
+}
+
+func TestBuildEgressAffinityFallsBackToStableAgentHeader(t *testing.T) {
+	request, err := http.NewRequest(http.MethodGet, "https://example.com", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("x-grok-agent-id", "stable-agent")
+	if affinity := buildEgressAffinity(request); affinity != "agent:stable-agent" {
+		t.Fatalf("build egress affinity = %q", affinity)
+	}
+}
+
 func TestForwardResponseRejectsHostedToolSearchBeforeUpstream(t *testing.T) {
 	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	if err != nil {

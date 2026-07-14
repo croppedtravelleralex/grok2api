@@ -42,7 +42,7 @@ const (
 	credentialRefreshTimeout    time.Duration = 30 * time.Second
 	credentialRefreshStateTTL   time.Duration = 5 * time.Second
 	credentialRefreshBatchSize                = 100
-	managedTaskWorkerCeiling                  = 50
+	webQuotaRefreshWorkerCount                = 2
 	webQuotaRefreshQueueSize                  = 4096
 	webQuotaRefreshTimeout                    = 30 * time.Second
 	maxCredentialExportAccounts               = 10000
@@ -198,6 +198,9 @@ func (s *Service) Summary(ctx context.Context) (Summary, error) {
 	}
 	result.Recovering = result.Recovery.Cooldown + result.Recovery.WaitingReset + result.Recovery.Probing
 	result.Attention = result.Issues.Disabled + result.Issues.ReauthRequired
+	if err := s.CaptureAnalytics(ctx); err != nil {
+		s.logger.Warn("account_analytics_capture_failed", "error", err)
+	}
 	return result, nil
 }
 
@@ -221,6 +224,7 @@ type Service struct {
 	quotaRefreshQueue     chan webQuotaRefreshRequest
 	conversionPool        *batch.Pool
 	syncPool              *batch.Pool
+	webQuotaPool          *batch.Pool
 	refreshPool           *batch.Pool
 	credentialRefreshWake chan struct{}
 	logger                *slog.Logger
@@ -238,7 +242,7 @@ func NewService(accounts repository.AccountRepository, audits repository.AuditRe
 		lastRefreshAt: make(map[uint64]time.Time), quotaRefreshes: make(map[string]*webQuotaRefreshState),
 		quotaRefreshQueue:     make(chan webQuotaRefreshRequest, webQuotaRefreshQueueSize),
 		credentialRefreshWake: make(chan struct{}, 1),
-		conversionPool:        batch.NewPool(25), syncPool: batch.NewPool(25), refreshPool: batch.NewPool(25), logger: slog.Default(),
+		conversionPool:        batch.NewPool(25), syncPool: batch.NewPool(25), webQuotaPool: batch.NewPool(1), refreshPool: batch.NewPool(25), logger: slog.Default(),
 		now: func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -259,6 +263,13 @@ func (s *Service) SetTaskPools(conversion, syncPool, refresh *batch.Pool) {
 	}
 	if refresh != nil {
 		s.refreshPool = refresh
+	}
+}
+
+// SetWebQuotaPool 将浏览器额度同步固定到独立小并发池，避免占满通用同步池和远端内存。
+func (s *Service) SetWebQuotaPool(pool *batch.Pool) {
+	if pool != nil {
+		s.webQuotaPool = pool
 	}
 }
 
@@ -1652,8 +1663,8 @@ func (s *Service) QueueWebQuotaRefresh(id uint64, mode string) {
 // RunWebQuotaRefresh 使用固定 Worker 数处理成功请求后的额度同步，避免按账号无界创建 goroutine。
 func (s *Service) RunWebQuotaRefresh(ctx context.Context) {
 	var workers sync.WaitGroup
-	workers.Add(managedTaskWorkerCeiling)
-	for range managedTaskWorkerCeiling {
+	workers.Add(webQuotaRefreshWorkerCount)
+	for range webQuotaRefreshWorkerCount {
 		go func() {
 			defer workers.Done()
 			for {
@@ -1698,7 +1709,7 @@ func (s *Service) runWebQuotaRefresh(parent context.Context, request webQuotaRef
 		}
 		if refreshMode != "" {
 			var refreshErr error
-			if err := s.syncPool.Do(ctx, func(workCtx context.Context) error {
+			if err := s.webQuotaPool.Do(ctx, func(workCtx context.Context) error {
 				_, refreshErr = s.RefreshWebQuotaMode(workCtx, request.accountID, refreshMode)
 				return refreshErr
 			}); err != nil {
@@ -1803,7 +1814,7 @@ func (s *Service) syncAllQuotasWithProgress(ctx context.Context, providerValue a
 	if err != nil {
 		return 0, 0, err
 	}
-	return s.runAccountBatch(ctx, operation, ids, s.syncPool, progress, func(workCtx context.Context, id uint64) error {
+	return s.runAccountBatch(ctx, operation, ids, s.webQuotaPool, progress, func(workCtx context.Context, id uint64) error {
 		_, err := s.RefreshQuota(workCtx, id)
 		return err
 	})
@@ -1811,7 +1822,7 @@ func (s *Service) syncAllQuotasWithProgress(ctx context.Context, providerValue a
 
 // SyncWebQuotaAccounts 同步指定 Web 账号集合，供启动追赶任务复用共享并发池。
 func (s *Service) SyncWebQuotaAccounts(ctx context.Context, ids []uint64) (int, int, error) {
-	return s.runAccountBatch(ctx, "web_quota_startup_catchup", ids, s.syncPool, nil, func(workCtx context.Context, id uint64) error {
+	return s.runAccountBatch(ctx, "web_quota_startup_catchup", ids, s.webQuotaPool, nil, func(workCtx context.Context, id uint64) error {
 		_, err := s.RefreshWebQuota(workCtx, id)
 		return err
 	})

@@ -135,7 +135,7 @@ func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credenti
 		request.Header = buildHeaders(token, lease, "application/json")
 		applyAppHeaders(request.Header, cfg.BaseURL, cfg.BaseURL+"/")
 		a.applySignedStatsig(requestCtx, request, token, lease)
-		response, err = lease.Do(request)
+		response, err = a.doModelRequest(requestCtx, lease, request, time.Duration(cfg.QuotaTimeoutSeconds)*time.Second)
 		if err != nil {
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
 			return account.QuotaWindow{}, err
@@ -207,7 +207,7 @@ func (a *Adapter) syncWeeklyCredits(ctx context.Context, credential account.Cred
 	request.Header.Set("x-grpc-web", "1")
 	request.Header.Set("x-user-agent", "connect-es/2.1.1")
 
-	response, err := lease.Do(request)
+	response, err := a.doModelRequest(requestCtx, lease, request, time.Duration(cfg.QuotaTimeoutSeconds)*time.Second)
 	if err != nil {
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
 		return account.QuotaWindow{}, err

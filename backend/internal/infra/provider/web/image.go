@@ -504,6 +504,29 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 	if err != nil {
 		return nil, err
 	}
+	if a.bridge != nil {
+		frames, bridgeErr := a.bridge.WebSocket(ctx, lease, browserBridgeWebSocketRequest{
+			URL: wsURL, Cookie: egress.BuildSSOCookie(token, lease.CFCookies), Referer: cfg.BaseURL + "/imagine",
+			Messages: []map[string]any{
+				imagineResetMessage(),
+				imagineRequestMessage(newWebID("img"), request.Prompt, ratio, cfg.AllowNSFW, modelConfig.Pro, modelConfig.NativeBatchSize),
+			},
+			TimeoutMS: (time.Duration(cfg.ImageTimeoutSeconds) * time.Second).Milliseconds(),
+			IdleMS:    5000, Expected: modelConfig.NativeBatchSize,
+		})
+		if bridgeErr != nil {
+			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, bridgeErr)
+			return nil, fmt.Errorf("浏览器桥接 Imagine WebSocket: %w", bridgeErr)
+		}
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, http.StatusOK, nil)
+		if request.Streaming {
+			reader, writer := io.Pipe()
+			streamID := newWebID("imggen")
+			go a.streamBufferedImagineImages(ctx, writer, frames, request.Credential, streamID, count, format, ratio, resolution, modelConfig)
+			return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: reader, QuotaUnits: count}, nil
+		}
+		return a.bufferedImagineResponse(ctx, frames, request.Credential, count, format, modelConfig)
+	}
 	headers := fhttp.Header{}
 	headers.Set("Origin", cfg.BaseURL)
 	headers.Set("User-Agent", lease.UserAgent)
@@ -590,6 +613,108 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 		result.QuotaUnits = count
 	}
 	return result, err
+}
+
+func (a *Adapter) bufferedImagineResponse(ctx context.Context, frames [][]byte, credential account.Credential, count int, format string, modelConfig imagineModelConfig) (*provider.Response, error) {
+	collector := newImagineCollector()
+	for _, data := range frames {
+		var message map[string]any
+		if json.Unmarshal(data, &message) != nil {
+			continue
+		}
+		if message["type"] == "error" {
+			return nil, fmt.Errorf("Imagine WebSocket 返回错误")
+		}
+		collector.Accept(message)
+	}
+	images := collector.Images()
+	if len(images) == 0 {
+		return nil, fmt.Errorf("Imagine WebSocket 完成但没有可用图片")
+	}
+	if !collector.Done(modelConfig.NativeBatchSize) || len(images) < count {
+		return jsonProviderResponse(http.StatusBadGateway, map[string]any{"error": map[string]any{
+			"message": fmt.Sprintf("上游仅返回 %d/%d 张可用图片", len(images), count),
+			"type":    "server_error", "code": "image_generation_incomplete",
+		}}), nil
+	}
+	urls := make([]string, 0, len(images))
+	blobs := make([]string, 0, len(images))
+	for _, image := range images {
+		urls = append(urls, image.URL)
+		blobs = append(blobs, image.Blob)
+	}
+	result, err := a.imageResponse(ctx, credential, urls, blobs, count, format)
+	if result != nil {
+		result.QuotaUnits = count
+	}
+	return result, err
+}
+
+func (a *Adapter) streamBufferedImagineImages(ctx context.Context, writer *io.PipeWriter, frames [][]byte, credential account.Credential, streamID string, count int, format, ratio, resolution string, modelConfig imagineModelConfig) {
+	createdAt := time.Now().Unix()
+	if err := writeSSE(writer, "image_generation.started", map[string]any{
+		"type": "image_generation.started", "id": streamID, "object": "image_generation",
+		"created": createdAt, "model": "grok-imagine-image-quality", "status": "in_progress",
+		"n": count, "aspect_ratio": ratio, "resolution": strings.ToLower(strings.TrimSpace(resolution)),
+	}); err != nil {
+		_ = writer.CloseWithError(err)
+		return
+	}
+	collector := newImagineCollector()
+	emitted := 0
+	for _, data := range frames {
+		if ctx.Err() != nil {
+			_ = writer.CloseWithError(ctx.Err())
+			return
+		}
+		var message map[string]any
+		if json.Unmarshal(data, &message) != nil {
+			continue
+		}
+		if message["type"] == "error" {
+			err := fmt.Errorf("Imagine WebSocket 返回错误")
+			writeImagineStreamFailure(writer, streamID, "upstream_error", "上游图片生成失败")
+			_ = writer.CloseWithError(err)
+			return
+		}
+		collector.Accept(message)
+		for _, image := range collector.ReadyImages() {
+			if emitted >= count {
+				break
+			}
+			item, err := a.imageDataItem(ctx, credential, image, format)
+			if err != nil {
+				writeImagineStreamFailure(writer, streamID, "image_output_error", "图片结果处理失败")
+				_ = writer.CloseWithError(err)
+				return
+			}
+			if err := writeSSE(writer, "image_generation.image.completed", map[string]any{
+				"type": "image_generation.image.completed", "id": streamID, "index": emitted, "image": item,
+			}); err != nil {
+				_ = writer.CloseWithError(err)
+				return
+			}
+			emitted++
+		}
+	}
+	if !collector.Done(modelConfig.NativeBatchSize) || emitted < count {
+		err := fmt.Errorf("上游仅返回 %d/%d 张可用图片", emitted, count)
+		writeImagineStreamFailure(writer, streamID, "image_generation_incomplete", err.Error())
+		_ = writer.CloseWithError(err)
+		return
+	}
+	if err := writeSSE(writer, "image_generation.completed", map[string]any{
+		"type": "image_generation.completed", "id": streamID, "object": "image_generation",
+		"created": createdAt, "model": "grok-imagine-image-quality", "status": "completed", "n": emitted,
+	}); err != nil {
+		_ = writer.CloseWithError(err)
+		return
+	}
+	if _, err := io.WriteString(writer, "data: [DONE]\n\n"); err != nil {
+		_ = writer.CloseWithError(err)
+		return
+	}
+	_ = writer.Close()
 }
 
 func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditRequest) (*provider.Response, error) {
@@ -918,7 +1043,7 @@ func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *eg
 		request.Header = buildHeaders(token, lease, "application/json")
 		applyAppHeaders(request.Header, cfg.BaseURL, referer)
 		a.applySignedStatsig(requestCtx, request, token, lease)
-		response, err := lease.Do(request)
+		response, err := a.doModelRequest(requestCtx, lease, request, timeout)
 		if err != nil {
 			cancel()
 			return nil, err

@@ -3,15 +3,24 @@ package account
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"mime/multipart"
+	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	accountsyncapp "github.com/chenyme/grok2api/backend/internal/application/accountsync"
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	cliprovider "github.com/chenyme/grok2api/backend/internal/infra/provider/cli"
+	webprovider "github.com/chenyme/grok2api/backend/internal/infra/provider/web"
+	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/gin-gonic/gin"
 )
 
@@ -135,6 +144,162 @@ func TestReadAccountImportDocumentsAcceptsMultipleFiles(t *testing.T) {
 	documents, ok := readAccountImportDocuments(ctx, "账号凭据 JSON")
 	if !ok || len(documents) != 2 {
 		t.Fatalf("documents = %q, status = %d", documents, recorder.Code)
+	}
+}
+
+func TestReadAccountImportJSONAcceptsBuildPayload(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	payload := `{"provider":"grok_build","accounts":[{"refresh_token":"refresh-token"}]}`
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/v1/accounts/import-json", strings.NewReader(payload))
+
+	data, provider, ok := readAccountImportJSON(ctx)
+	if !ok {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if string(data) != payload || provider != accountdomain.ProviderBuild {
+		t.Fatalf("provider = %q, data = %s", provider, data)
+	}
+}
+
+func TestReadAccountImportJSONRejectsMissingProvider(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/v1/accounts/import-json", strings.NewReader(`{"accounts":[]}`))
+
+	if _, _, ok := readAccountImportJSON(ctx); ok {
+		t.Fatal("expected missing provider to be rejected")
+	}
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"code":"invalidAccountProvider"`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestImportJSONRouteRejectsUnsupportedProvider(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	NewHandler(nil, nil).Register(router.Group("/api/admin/v1"))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/v1/accounts/import-json", strings.NewReader(`{"provider":"other","accounts":[]}`))
+	request.Header.Set("Content-Type", "application/json")
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"code":"invalidAccountProvider"`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestImportJSONRoutePersistsAndQueuesBuildAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "account-import.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewAccountRepository(database)
+	adapter := cliprovider.NewAdapter(cliprovider.Config{}, cipher)
+	service := accountapp.NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), cipher, nil)
+	syncer := &accountSynchronizerStub{}
+	router := gin.New()
+	NewHandler(service, syncer).Register(router.Group("/api/admin/v1"))
+	recorder := httptest.NewRecorder()
+	payload := `{"provider":"grok_build","accounts":[{"name":"api-import","refresh_token":"refresh-token","user_id":"user-1"}]}`
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/v1/accounts/import-json", strings.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"provider":"grok_build"`) || !strings.Contains(recorder.Body.String(), `"created":1`) || !strings.Contains(recorder.Body.String(), `"synced":1`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if len(syncer.accountIDs) != 1 {
+		t.Fatalf("queued account IDs = %#v", syncer.accountIDs)
+	}
+}
+
+func TestReauthenticateRouteReplacesWebSSOWithoutCreatingDuplicate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "account-reauth.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewAccountRepository(database)
+	service := accountapp.NewService(repository, relational.NewAuditRepository(database), nil, nil, provider.NewRegistry(webprovider.NewAdapter(webprovider.Config{}, nil, cipher, nil, nil)), cipher, nil)
+	imported, err := service.ImportWebCredentials(ctx, []byte("old-sso-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountID := imported.AccountIDs[0]
+	if err := service.MarkReauthRequired(ctx, accountID, "expired"); err != nil {
+		t.Fatal(err)
+	}
+	syncer := &accountSynchronizerStub{}
+	router := gin.New()
+	NewHandler(service, syncer).Register(router.Group("/api/admin/v1"))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/admin/v1/accounts/%d/reauth", accountID), strings.NewReader(`{"ssoToken":"fresh-sso-token","webTier":"super"}`))
+	request.Header.Set("Content-Type", "application/json")
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"authStatus":"active"`) || !strings.Contains(recorder.Body.String(), `"syncFailed":0`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	values, total, err := service.List(ctx, 1, 20, "", accountapp.ListFilter{Provider: string(accountdomain.ProviderWeb)})
+	if err != nil || total != 1 || len(values) != 1 || values[0].Credential.ID != accountID {
+		t.Fatalf("accounts = %#v, total = %d, err = %v", values, total, err)
+	}
+}
+
+func TestAccountAnalyticsRouteReturnsCurrentSnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "account-analytics.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewAccountRepository(database)
+	service := accountapp.NewService(repository, nil, nil, nil, provider.NewRegistry(cliprovider.NewAdapter(cliprovider.Config{}, cipher)), cipher, nil)
+	if _, err := service.ImportCredentials(ctx, []byte(`{"name":"build","user_id":"user-analytics","refresh_token":"refresh"}`)); err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	NewHandler(service, nil).Register(router.Group("/api/admin/v1"))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/v1/accounts/analytics?period=24h", nil)
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"intervalMinutes":15`) || !strings.Contains(recorder.Body.String(), `"provider":"grok_build"`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }
 

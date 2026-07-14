@@ -208,16 +208,9 @@ func fallbackScopes(scope domain.Scope) []domain.Scope {
 func (m *Manager) selectNode(nodes []domain.Node, affinity string) domain.Node {
 	if affinity != "" {
 		digest := sha256.Sum256([]byte(affinity))
-		selected := nodes[int(binary.BigEndian.Uint64(digest[:8])%uint64(len(nodes)))]
-		if selected.Health >= 0.8 || len(nodes) == 1 {
-			return selected
-		}
-		for _, node := range nodes {
-			if node.Health > selected.Health {
-				selected = node
-			}
-		}
-		return selected
+		// 显式 affinity 表示账号、会话或资产已与出口身份绑定。
+		// 不能因为节点健康度下降而切换代理，否则 IP、Cookie 和 UA 立即失配。
+		return nodes[int(binary.BigEndian.Uint64(digest[:8])%uint64(len(nodes)))]
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -290,9 +283,9 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 		value.LastError = ""
 	case status == http.StatusUnauthorized || status == http.StatusTooManyRequests:
 		return
-	case scope == domain.ScopeBuild && status == http.StatusForbidden:
-		// Build 403 可能是账号权限、额度、Token 或出口策略，响应体由网关层
-		// 分类；仅凭状态码不能把标准 CLI 出口误判为 Web anti-bot。
+	case scope == domain.ScopeBuild && status >= 400 && status < 500 && status != http.StatusProxyAuthRequired:
+		// Build 4xx 通常是账号、Token、额度或请求参数问题，响应体由网关层继续分类。
+		// 仅凭状态码不应污染共享出口健康度；407 仍明确表示代理认证失败。
 		return
 	case status == http.StatusForbidden:
 		value.FailureCount++

@@ -437,6 +437,9 @@ func upsertAccountByIdentity(tx *gorm.DB, value account.Credential) (repository.
 
 func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existing *accountModel) (repository.AccountUpsertResult, accountModel, error) {
 	row := fromAccountDomain(value)
+	if row.AuthStatus == "" {
+		row.AuthStatus = string(account.AuthStatusActive)
+	}
 	if existing != nil {
 		row.ID = existing.ID
 		row.CreatedAt = existing.CreatedAt
@@ -444,9 +447,10 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 		row.Priority = existing.Priority
 		row.MaxConcurrent = existing.MaxConcurrent
 		row.MinimumRemaining = existing.MinimumRemaining
-		row.FailureCount = existing.FailureCount
-		row.CooldownUntil = existing.CooldownUntil
-		row.LastError = existing.LastError
+		// 显式重新导入有效凭据表示管理员正在恢复账号；保留路由配置，但清除旧认证失败和冷却状态。
+		row.FailureCount = 0
+		row.CooldownUntil = nil
+		row.LastError = ""
 		row.LastUsedAt = existing.LastUsedAt
 		row.ObservedModel = existing.ObservedModel
 		row.ObservedModelAt = existing.ObservedModelAt
@@ -457,9 +461,6 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 			return repository.AccountUpsertResult{}, accountModel{}, err
 		}
 		return repository.AccountUpsertResult{ID: row.ID}, row, nil
-	}
-	if row.AuthStatus == "" {
-		row.AuthStatus = string(account.AuthStatusActive)
 	}
 	if row.Priority == 0 {
 		row.Priority = account.DefaultPriority

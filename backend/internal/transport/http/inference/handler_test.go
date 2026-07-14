@@ -222,6 +222,13 @@ func TestVideoGenerationResponseMatchesOfficialPollingShape(t *testing.T) {
 	}
 }
 
+func TestVideoCreationResponseIncludesInitialTaskState(t *testing.T) {
+	response := videoCreationResponse(mediadomain.Job{ID: "video_123", Model: "grok-imagine-video"})
+	if response["request_id"] != "video_123" || response["model"] != "grok-imagine-video" || response["status"] != "pending" || response["progress"] != 0 {
+		t.Fatalf("creation response=%#v", response)
+	}
+}
+
 func TestImageGenerationEndpointValidatesXAIContractBeforeRouting(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

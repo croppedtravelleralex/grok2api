@@ -107,6 +107,52 @@ export type AccountSummaryDTO = {
   issues: { disabled: number; reauthRequired: number };
 };
 
+export type AccountAnalyticsPeriod = "24h" | "7d" | "30d";
+
+export type AccountAnalyticsPointDTO = {
+  bucketAt: string;
+  provider: AccountProvider;
+  total: number;
+  available: number;
+  cooldown: number;
+  waitingReset: number;
+  probing: number;
+  disabled: number;
+  reauthRequired: number;
+  free: number;
+  paid: number;
+  unknown: number;
+  tierAuto: number;
+  tierBasic: number;
+  tierSuper: number;
+  tierHeavy: number;
+  quotaRemaining: number;
+  quotaTotal: number;
+  quotaKnown: number;
+};
+
+export type AccountAnalyticsDTO = {
+  from: string;
+  to: string;
+  intervalMinutes: number;
+  points: AccountAnalyticsPointDTO[];
+};
+
+export type AccountReauthenticateInput = {
+  accessToken?: string;
+  refreshToken?: string;
+  clientId?: string;
+  expiresAt?: string;
+  ssoToken?: string;
+  webTier?: "auto" | "basic" | "super" | "heavy";
+};
+
+export type AccountReauthenticateResultDTO = {
+  account: AccountDTO;
+  synced: number;
+  syncFailed: number;
+};
+
 export type DeviceSessionDTO = {
   sessionId: string;
   userCode: string;
@@ -165,6 +211,18 @@ const decodeAccountSummary = createObjectDecoder<AccountSummaryDTO>("account sum
   recovery: hasShape({ cooldown: isNumber, waitingReset: isNumber, probing: isNumber }),
   issues: hasShape({ disabled: isNumber, reauthRequired: isNumber }),
 });
+const accountAnalyticsPointValidator = hasShape({
+  bucketAt: isString, provider: isOneOf("grok_build", "grok_web", "grok_console"), total: isNumber, available: isNumber,
+  cooldown: isNumber, waitingReset: isNumber, probing: isNumber, disabled: isNumber, reauthRequired: isNumber,
+  free: isNumber, paid: isNumber, unknown: isNumber, tierAuto: isNumber, tierBasic: isNumber, tierSuper: isNumber,
+  tierHeavy: isNumber, quotaRemaining: isNumber, quotaTotal: isNumber, quotaKnown: isNumber,
+});
+const decodeAccountAnalytics = createObjectDecoder<AccountAnalyticsDTO>("account analytics", {
+  from: isString, to: isString, intervalMinutes: isNumber, points: isArrayOf(accountAnalyticsPointValidator),
+});
+const decodeAccountReauthenticate = createObjectDecoder<AccountReauthenticateResultDTO>("account reauthentication", {
+  account: accountValidator, synced: isNumber, syncFailed: isNumber,
+});
 const decodeDeviceSession = createObjectDecoder<DeviceSessionDTO>("device session", {
   sessionId: isString, userCode: isString, verificationUri: isString, verificationUriComplete: isOptional(isString),
   intervalSeconds: isNumber, expiresAt: isString,
@@ -203,6 +261,10 @@ export function getAccountSummary(): Promise<AccountSummaryDTO> {
   return apiRequest("/api/admin/v1/accounts/summary", {}, decodeAccountSummary);
 }
 
+export function getAccountAnalytics(period: AccountAnalyticsPeriod): Promise<AccountAnalyticsDTO> {
+  return apiRequest(`/api/admin/v1/accounts/analytics?period=${period}`, {}, decodeAccountAnalytics);
+}
+
 export function updateAccount(id: string, input: AccountUpdateInput): Promise<AccountDTO> {
   return apiRequest(`/api/admin/v1/accounts/${id}`, { method: "PATCH", body: input }, decodeAccount);
 }
@@ -217,6 +279,10 @@ export function refreshAccountBilling(id: string): Promise<BillingDTO> {
 
 export function refreshAccountToken(id: string): Promise<AccountDTO> {
   return apiRequest(`/api/admin/v1/accounts/${id}/refresh-token`, { method: "POST" }, decodeAccount);
+}
+
+export function reauthenticateAccount(id: string, input: AccountReauthenticateInput): Promise<AccountReauthenticateResultDTO> {
+  return apiRequest(`/api/admin/v1/accounts/${id}/reauth`, { method: "POST", body: input }, decodeAccountReauthenticate);
 }
 
 export type AccountBatchResultDTO = { succeeded: number; failed: number };

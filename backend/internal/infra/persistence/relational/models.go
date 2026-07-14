@@ -129,6 +129,33 @@ type billingModel struct {
 
 func (billingModel) TableName() string { return "account_billing_snapshots" }
 
+type accountPoolSnapshotModel struct {
+	ID             uint64    `gorm:"primaryKey;autoIncrement"`
+	BucketAt       time.Time `gorm:"not null"`
+	Provider       string    `gorm:"size:32;not null;check:chk_account_pool_snapshots_provider,provider IN ('grok_build','grok_web','grok_console')"`
+	Total          int64     `gorm:"not null;default:0"`
+	Available      int64     `gorm:"not null;default:0"`
+	Cooldown       int64     `gorm:"not null;default:0"`
+	WaitingReset   int64     `gorm:"not null;default:0"`
+	Probing        int64     `gorm:"not null;default:0"`
+	Disabled       int64     `gorm:"not null;default:0"`
+	ReauthRequired int64     `gorm:"not null;default:0"`
+	Free           int64     `gorm:"not null;default:0"`
+	Paid           int64     `gorm:"not null;default:0"`
+	Unknown        int64     `gorm:"not null;default:0"`
+	TierAuto       int64     `gorm:"not null;default:0"`
+	TierBasic      int64     `gorm:"not null;default:0"`
+	TierSuper      int64     `gorm:"not null;default:0"`
+	TierHeavy      int64     `gorm:"not null;default:0"`
+	QuotaRemaining float64   `gorm:"not null;default:0"`
+	QuotaTotal     float64   `gorm:"not null;default:0"`
+	QuotaKnown     int64     `gorm:"not null;default:0"`
+	CreatedAt      time.Time `gorm:"not null"`
+	UpdatedAt      time.Time `gorm:"not null"`
+}
+
+func (accountPoolSnapshotModel) TableName() string { return "account_pool_snapshots" }
+
 type quotaRecoveryModel struct {
 	AccountID       uint64 `gorm:"primaryKey"`
 	Kind            string `gorm:"size:16;not null;check:chk_quota_recovery_kind,kind IN ('free','paid')"`

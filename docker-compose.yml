@@ -8,12 +8,66 @@ services:
       - "${GROK2API_PORT:-8000}:8000"
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
+      GROK2API_BROWSER_BRIDGE_URL: "${GROK2API_BROWSER_BRIDGE_URL:-http://browser-bridge:8192}"
+      GROK2API_BROWSER_BRIDGE_KEY_FILE: /run/secrets/browser-bridge-key
     volumes:
       - "${GROK2API_CONFIG:-./config.yaml}:/run/grok2api/config.yaml:ro"
+      - "${GROK2API_BROWSER_BRIDGE_KEY_FILE:-./data/browser-bridge-key}:/run/secrets/browser-bridge-key:ro"
       - grok2api-data:/app/data
     restart: unless-stopped
     init: true
+    cpus: "0.75"
+    mem_limit: 512m
+    pids_limit: 128
     stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+
+  browser-bridge:
+    container_name: grok2api-browser-bridge
+    image: "${GROK2API_BROWSER_BRIDGE_IMAGE:-grok2api-browser-bridge:local}"
+    build:
+      context: .
+      dockerfile: browser-bridge/Dockerfile
+      args:
+        FLARESOLVERR_IMAGE: "${FLARESOLVERR_IMAGE:-flaresolverr-custom:3.5.0-chrome146}"
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      BRIDGE_KEY_FILE: /run/secrets/browser-bridge-key
+      BRIDGE_SESSION_LIMIT: "${BRIDGE_SESSION_LIMIT:-1}"
+      BRIDGE_SESSION_TTL_SECONDS: "${BRIDGE_SESSION_TTL_SECONDS:-1800}"
+      BRIDGE_THREADS: "${BRIDGE_THREADS:-2}"
+    volumes:
+      - "${GROK2API_BROWSER_BRIDGE_KEY_FILE:-./data/browser-bridge-key}:/run/secrets/browser-bridge-key:ro"
+    restart: unless-stopped
+    init: true
+    cpus: "1.0"
+    mem_limit: 900m
+    pids_limit: 256
+    shm_size: 512m
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8192/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     security_opt:
       - no-new-privileges:true
 

@@ -26,3 +26,7 @@ backend/**/*_test.go
 
 !docker/
 !docker/entrypoint.sh
+
+!browser-bridge/
+!browser-bridge/app.py
+!browser-bridge/Dockerfile

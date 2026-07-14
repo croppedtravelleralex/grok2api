@@ -75,6 +75,7 @@ func (a *Adapter) config() Config {
 }
 
 func (a *Adapter) ForwardResponse(ctx context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	ctx = withBuildEgressAccountAffinity(ctx, request.Credential.ID)
 	accessToken, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
 	if err != nil {
 		return nil, err
@@ -217,6 +218,7 @@ func invalidConversationResponse(operation string, err error) *provider.Response
 }
 
 func (a *Adapter) ListModels(ctx context.Context, credential account.Credential) ([]string, error) {
+	ctx = withBuildEgressAccountAffinity(ctx, credential.ID)
 	accessToken, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
 		return nil, err
@@ -298,6 +300,7 @@ func mergeBillingSnapshots(monthly, credits account.Billing) account.Billing {
 }
 
 func (a *Adapter) RefreshCredential(ctx context.Context, credential account.Credential) (provider.RefreshedCredential, error) {
+	ctx = withBuildEgressAccountAffinity(ctx, credential.ID)
 	refreshToken, err := a.cipher.Decrypt(credential.EncryptedRefreshToken)
 	if err != nil {
 		return provider.RefreshedCredential{}, &provider.CredentialRefreshError{Code: "credential_decrypt_failed", Permanent: true, Cause: err}
@@ -436,7 +439,16 @@ func randomUUID() (string, error) {
 }
 
 func normalizeGzipResponse(response *http.Response) error {
-	if response == nil || response.Body == nil || !strings.EqualFold(strings.TrimSpace(response.Header.Get("Content-Encoding")), "gzip") {
+	if response == nil || response.Body == nil {
+		return nil
+	}
+	if response.Uncompressed {
+		response.Header.Del("Content-Encoding")
+		response.Header.Del("Content-Length")
+		response.ContentLength = -1
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(response.Header.Get("Content-Encoding")), "gzip") {
 		return nil
 	}
 	reader, err := gzip.NewReader(response.Body)
@@ -470,6 +482,7 @@ func (a *Adapter) url(path string) string {
 }
 
 func (a *Adapter) getBilling(ctx context.Context, credential account.Credential, accessToken, query string) (account.Billing, error) {
+	ctx = withBuildEgressAccountAffinity(ctx, credential.ID)
 	endpoint := a.url("/billing")
 	if query != "" {
 		endpoint += "?" + query

@@ -15,6 +15,8 @@ import (
 
 type Config struct {
 	BaseURL             string
+	BrowserBridgeURL    string
+	BrowserBridgeKey    string
 	StatsigMode         string
 	StatsigManualValue  string
 	StatsigSignerURL    string
@@ -34,12 +36,15 @@ type Adapter struct {
 	states  repository.ResponseRepository
 	assets  provider.ImageAssetStore
 	statsig *statsigSigner
+	bridge  *browserBridge
 	logger  *slog.Logger
 }
 
 func NewAdapter(cfg Config, egress *infraegress.Manager, cipher *security.Cipher, states repository.ResponseRepository, assets provider.ImageAssetStore) *Adapter {
 	cfg = normalizedConfig(cfg)
-	return &Adapter{cfg: cfg, egress: egress, cipher: cipher, states: states, assets: assets, statsig: newStatsigSigner(), logger: slog.Default()}
+	bridge := newBrowserBridge(cfg.BrowserBridgeURL, cfg.BrowserBridgeKey)
+	signer := newStatsigSigner()
+	return &Adapter{cfg: cfg, egress: egress, cipher: cipher, states: states, assets: assets, statsig: signer, bridge: bridge, logger: slog.Default()}
 }
 
 func (a *Adapter) SetLogger(logger *slog.Logger) {
@@ -88,6 +93,7 @@ func (a *Adapter) UpdateConfig(cfg Config) {
 	a.mu.Lock()
 	changed := a.cfg.StatsigMode != cfg.StatsigMode || a.cfg.StatsigManualValue != cfg.StatsigManualValue || a.cfg.StatsigSignerURL != cfg.StatsigSignerURL || a.cfg.BaseURL != cfg.BaseURL
 	a.cfg = cfg
+	a.bridge = newBrowserBridge(cfg.BrowserBridgeURL, cfg.BrowserBridgeKey)
 	a.mu.Unlock()
 	if changed && a.statsig != nil {
 		a.statsig.Clear()

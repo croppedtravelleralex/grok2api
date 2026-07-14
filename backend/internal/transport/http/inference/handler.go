@@ -528,7 +528,16 @@ func (h *Handler) generateVideo(c *gin.Context) {
 		writeGatewayError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"request_id": job.ID})
+	c.JSON(http.StatusOK, videoCreationResponse(job))
+}
+
+func videoCreationResponse(job mediadomain.Job) gin.H {
+	return gin.H{
+		"request_id": job.ID,
+		"model":      job.Model,
+		"status":     "pending",
+		"progress":   0,
+	}
 }
 
 func (h *Handler) getVideo(c *gin.Context) {

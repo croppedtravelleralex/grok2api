@@ -113,6 +113,17 @@ func TestConfiguredWebNodeKeepsChromeBrowserTransport(t *testing.T) {
 	}
 }
 
+func TestAffinityKeepsSelectedNodeWhenItsHealthDrops(t *testing.T) {
+	manager := &Manager{}
+	selected := manager.selectNode([]domain.Node{
+		{ID: 1, Health: 0.1},
+		{ID: 2, Health: 1},
+	}, "account")
+	if selected.ID != 1 {
+		t.Fatalf("affinity moved from node 1 to healthier node %d", selected.ID)
+	}
+}
+
 func TestBuildForbiddenDoesNotPoisonEgressNode(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
@@ -131,6 +142,27 @@ func TestBuildForbiddenDoesNotPoisonEgressNode(t *testing.T) {
 	}
 	if _, exists := manager.clients[1]; !exists {
 		t.Fatal("build client was invalidated by an ambiguous 403")
+	}
+}
+
+func TestBuildBadRequestDoesNotPoisonEgressNode(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "build", Scope: domain.ScopeBuild, Enabled: true, Health: 1}}
+	manager := NewManager(repository, cipher)
+	lease, _, err := manager.AcquireIfConfigured(context.Background(), domain.ScopeBuild, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.Release()
+	manager.FeedbackForScope(context.Background(), domain.ScopeBuild, 1, http.StatusBadRequest, nil)
+	if repository.updates != 0 || repository.node.Health != 1 || repository.node.LastError != "" {
+		t.Fatalf("build 400 poisoned node: updates=%d node=%#v", repository.updates, repository.node)
+	}
+	if _, exists := manager.clients[1]; !exists {
+		t.Fatal("build client was invalidated by an account-scoped 400")
 	}
 }
 

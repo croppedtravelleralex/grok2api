@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - codex/panda-safe-completion
     tags:
       - "v*.*.*"
   pull_request:

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -128,11 +129,13 @@ func (p *accountSyncPipeline) reportProgress() {
 func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/accounts", h.list)
 	router.GET("/accounts/summary", h.summary)
+	router.GET("/accounts/analytics", h.analytics)
 	router.GET("/accounts/export", h.exportCredentials)
 	router.GET("/accounts/:id", h.get)
 	router.POST("/accounts/device/start", h.startDevice)
 	router.POST("/accounts/device/:sessionId/poll", h.pollDevice)
 	router.POST("/accounts/import", h.importAuth)
+	router.POST("/accounts/import-json", h.importJSON)
 	router.POST("/accounts/web/import", h.importWebAuth)
 	router.POST("/accounts/console/import", h.importConsoleAuth)
 	router.POST("/accounts/web/convert-to-build", h.convertWebToBuild)
@@ -147,6 +150,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.PATCH("/accounts/:id", h.update)
 	router.DELETE("/accounts/:id", h.delete)
 	router.POST("/accounts/:id/refresh-token", h.refreshToken)
+	router.POST("/accounts/:id/reauth", h.reauthenticate)
 	router.POST("/accounts/:id/refresh-billing", h.refreshBilling)
 	router.POST("/accounts/:id/refresh-quota", h.refreshWebQuota)
 }
@@ -157,6 +161,16 @@ type updateRequest struct {
 	Priority         *int     `json:"priority"`
 	MaxConcurrent    *int     `json:"maxConcurrent"`
 	MinimumRemaining *float64 `json:"minimumRemaining"`
+}
+
+type reauthenticateRequest struct {
+	Name         string                `json:"name"`
+	AccessToken  string                `json:"accessToken"`
+	RefreshToken string                `json:"refreshToken"`
+	ClientID     string                `json:"clientId"`
+	ExpiresAt    *time.Time            `json:"expiresAt"`
+	SSOToken     string                `json:"ssoToken"`
+	WebTier      accountdomain.WebTier `json:"webTier"`
 }
 
 type batchUpdateRequest struct {
@@ -205,10 +219,11 @@ type accountTokenRefreshResponse struct {
 }
 
 type accountImportResponse struct {
-	Created    int `json:"created"`
-	Updated    int `json:"updated"`
-	Synced     int `json:"synced"`
-	SyncFailed int `json:"syncFailed"`
+	Provider   string `json:"provider,omitempty"`
+	Created    int    `json:"created"`
+	Updated    int    `json:"updated"`
+	Synced     int    `json:"synced"`
+	SyncFailed int    `json:"syncFailed"`
 }
 
 type accountResponse struct {
@@ -353,6 +368,26 @@ func (h *Handler) summary(c *gin.Context) {
 	})
 }
 
+func (h *Handler) analytics(c *gin.Context) {
+	value, err := h.service.Analytics(c.Request.Context(), c.Query("period"))
+	if err != nil {
+		h.writeServiceError(c, "accountAnalyticsFailed", err, http.StatusInternalServerError, "读取账号趋势失败")
+		return
+	}
+	points := make([]gin.H, 0, len(value.Points))
+	for _, point := range value.Points {
+		points = append(points, gin.H{
+			"bucketAt": point.BucketAt, "provider": point.Provider,
+			"total": point.Total, "available": point.Available, "cooldown": point.Cooldown,
+			"waitingReset": point.WaitingReset, "probing": point.Probing, "disabled": point.Disabled,
+			"reauthRequired": point.ReauthRequired, "free": point.Free, "paid": point.Paid, "unknown": point.Unknown,
+			"tierAuto": point.TierAuto, "tierBasic": point.TierBasic, "tierSuper": point.TierSuper, "tierHeavy": point.TierHeavy,
+			"quotaRemaining": point.QuotaRemaining, "quotaTotal": point.QuotaTotal, "quotaKnown": point.QuotaKnown,
+		})
+	}
+	response.Success(c, http.StatusOK, gin.H{"from": value.From, "to": value.To, "intervalMinutes": value.IntervalMinutes, "points": points})
+}
+
 func (h *Handler) batchUpdate(c *gin.Context) {
 	var request batchUpdateRequest
 	if c.ShouldBindJSON(&request) != nil {
@@ -483,6 +518,61 @@ func (h *Handler) importWebAuth(c *gin.Context) {
 
 func (h *Handler) importConsoleAuth(c *gin.Context) {
 	h.importFile(c, accountdomain.ProviderConsole)
+}
+
+// importJSON 提供适合自动化调用的账号导入入口，并复用文件导入相同的持久化与首次同步流程。
+func (h *Handler) importJSON(c *gin.Context) {
+	data, providerValue, ok := readAccountImportJSON(c)
+	if !ok {
+		return
+	}
+	pipeline := h.startSyncPipeline(c.Request.Context(), nil)
+	var (
+		result accountapp.ImportResult
+		err    error
+	)
+	switch providerValue {
+	case accountdomain.ProviderBuild:
+		result, err = h.service.ImportCredentialsWithObserver(pipeline.ctx, data, pipeline.Observe)
+	case accountdomain.ProviderWeb:
+		result, err = h.service.ImportWebCredentialsWithObserver(pipeline.ctx, data, pipeline.Observe)
+	case accountdomain.ProviderConsole:
+		result, err = h.service.ImportConsoleCredentialsWithObserver(pipeline.ctx, data, pipeline.Observe)
+	}
+	syncResult := pipeline.Finish(err != nil)
+	if err != nil {
+		h.writeServiceError(c, "authImportFailed", err, http.StatusInternalServerError, "导入账号失败")
+		return
+	}
+	response.Success(c, http.StatusOK, accountImportResponse{
+		Provider: string(providerValue), Created: result.Created, Updated: result.Updated,
+		Synced: syncResult.Succeeded, SyncFailed: syncResult.Failed,
+	})
+}
+
+func readAccountImportJSON(c *gin.Context) ([]byte, accountdomain.Provider, bool) {
+	data, err := io.ReadAll(io.LimitReader(c.Request.Body, maxAccountImportBytes+1))
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidAuthJSON", "无法读取账号凭据 JSON")
+		return nil, "", false
+	}
+	if len(data) > maxAccountImportBytes {
+		response.Error(c, http.StatusRequestEntityTooLarge, "accountImportFileTooLarge", "账号凭据 JSON 大小不能超过 30 MiB")
+		return nil, "", false
+	}
+	var metadata struct {
+		Provider string `json:"provider"`
+	}
+	if len(data) == 0 || json.Unmarshal(data, &metadata) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidAuthJSON", "账号凭据必须是有效的 JSON")
+		return nil, "", false
+	}
+	providerValue := accountdomain.Provider(strings.ToLower(strings.TrimSpace(metadata.Provider)))
+	if providerValue != accountdomain.ProviderBuild && providerValue != accountdomain.ProviderWeb && providerValue != accountdomain.ProviderConsole {
+		response.Error(c, http.StatusBadRequest, "invalidAccountProvider", "provider 必须是 grok_build、grok_web 或 grok_console")
+		return nil, "", false
+	}
+	return data, providerValue, true
 }
 
 func (h *Handler) convertWebToBuild(c *gin.Context) {
@@ -882,6 +972,37 @@ func (h *Handler) refreshToken(c *gin.Context) {
 		return
 	}
 	response.Success(c, http.StatusOK, newAccountResponse(value))
+}
+
+func (h *Handler) reauthenticate(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	var request reauthenticateRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	expiresAt := time.Time{}
+	if request.ExpiresAt != nil {
+		expiresAt = request.ExpiresAt.UTC()
+	}
+	value, err := h.service.Reauthenticate(c.Request.Context(), id, accountapp.ReauthenticateInput{
+		Name: request.Name, AccessToken: request.AccessToken, RefreshToken: request.RefreshToken,
+		OIDCClientID: request.ClientID, ExpiresAt: expiresAt, SSOToken: request.SSOToken, WebTier: request.WebTier,
+	})
+	if err != nil {
+		h.writeServiceError(c, "accountReauthFailed", err, http.StatusInternalServerError, "重新认证账号失败")
+		return
+	}
+	syncResult := h.syncInitial(c.Request.Context(), value.ID)
+	view, getErr := h.service.Get(c.Request.Context(), value.ID)
+	if getErr != nil {
+		h.writeServiceError(c, "accountReadFailed", getErr, http.StatusInternalServerError, "读取账号失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"account": newAccountResponse(view), "synced": syncResult.Succeeded, "syncFailed": syncResult.Failed})
 }
 
 func (h *Handler) refreshBilling(c *gin.Context) {

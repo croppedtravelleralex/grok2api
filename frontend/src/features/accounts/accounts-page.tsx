@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ClipboardPaste, Compass, Copy, Download, ExternalLink, FileUp, Link2, MoreHorizontal, Pencil, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
+import { ArrowRight, ClipboardPaste, Compass, Copy, Download, ExternalLink, FileUp, KeyRound, Link2, MoreHorizontal, Pencil, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -38,6 +38,7 @@ import {
   convertWebAccountsToBuild,
   exportAccounts,
   getAccountSummary,
+  reauthenticateAccount,
   importAccounts,
   importConsoleAccounts,
   importWebAccounts,
@@ -59,12 +60,14 @@ import {
   type AccountProvider,
   type AccountUpdateInput,
   type AccountTaskProgressDTO,
+  type AccountReauthenticateInput,
   type BuildConversionInput,
   type WebConsoleSyncInput,
   type DeviceSessionDTO,
   type QuotaDTO,
 } from "@/features/accounts/accounts-api";
 import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/account-quota";
+import { AccountTrends } from "@/features/accounts/account-trends";
 
 function isAbortError(error: unknown): boolean {
   return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
@@ -105,6 +108,10 @@ export function AccountsPage() {
   const [renewAllOpen, setRenewAllOpen] = useState(false);
   const [renewalProgress, setRenewalProgress] = useState<AccountTaskProgressDTO | null>(null);
   const [editing, setEditing] = useState<AccountDTO | null>(null);
+  const [reauthenticating, setReauthenticating] = useState<AccountDTO | null>(null);
+  const [reauthRefreshToken, setReauthRefreshToken] = useState("");
+  const [reauthAccessToken, setReauthAccessToken] = useState("");
+  const [reauthSSOToken, setReauthSSOToken] = useState("");
   const [deleting, setDeleting] = useState<AccountDTO | null>(null);
   const [deviceOpen, setDeviceOpen] = useState(false);
   const [deviceSession, setDeviceSession] = useState<DeviceSessionDTO | null>(null);
@@ -188,6 +195,23 @@ export function AccountsPage() {
     onSuccess: () => {
       invalidateAccountData();
       toast.success(t("accounts.authRefreshed"));
+    },
+    onError: showError,
+  });
+
+  const reauthMutation = useMutation({
+    mutationFn: (input: AccountReauthenticateInput) => {
+      if (!reauthenticating) throw new Error(t("errors.generic"));
+      return reauthenticateAccount(reauthenticating.id, input);
+    },
+    onSuccess: (result) => {
+      invalidateAccountData();
+      setReauthenticating(null);
+      setReauthRefreshToken("");
+      setReauthAccessToken("");
+      setReauthSSOToken("");
+      if (result.syncFailed > 0) toast.warning(t("accounts.reauthSyncFailed"));
+      else toast.success(t("accounts.reauthSucceeded"));
     },
     onError: showError,
   });
@@ -468,6 +492,22 @@ export function AccountsPage() {
     });
   }
 
+  function beginReauthentication(account: AccountDTO): void {
+    setReauthenticating(account);
+    setReauthRefreshToken("");
+    setReauthAccessToken("");
+    setReauthSSOToken("");
+  }
+
+  function submitReauthentication(): void {
+    if (!reauthenticating) return;
+    if (reauthenticating.provider === "grok_build") {
+      reauthMutation.mutate({ refreshToken: reauthRefreshToken.trim() || undefined, accessToken: reauthAccessToken.trim() || undefined });
+      return;
+    }
+    reauthMutation.mutate({ ssoToken: reauthSSOToken.trim(), webTier: reauthenticating.webTier });
+  }
+
   const convertingProgress = conversionProgress?.converting;
   const syncingProgress = conversionProgress?.syncing;
   const activeConversionProgress = convertingProgress?.completed === convertingProgress?.total && syncingProgress
@@ -533,6 +573,7 @@ export function AccountsPage() {
         <AccountMetricPanel icon={<Webhook />} loading={summaryLoading} label={t("accounts.consoleAccountCount")} value={summaryUnavailable ? "-" : formatNumber(consoleSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(consoleSummary.available, i18n.language, 0) })} />
         <AccountMetricPanel icon={<TriangleAlert />} loading={summaryLoading} label={t("accounts.abnormalAccountCount")} value={summaryUnavailable ? "-" : formatNumber(abnormalAccounts, i18n.language, 0)} detail={t("accounts.abnormalAccountBreakdown", { recovering: formatNumber(recoveringAccounts, i18n.language, 0), attention: formatNumber(attentionAccounts, i18n.language, 0) })} />
       </section>
+      <AccountTrends provider={provider} />
       <div className="space-y-6">
         <Tabs value={provider} onValueChange={(value) => changeProvider(value as AccountProvider)}>
           <TabsList>
@@ -696,6 +737,7 @@ export function AccountsPage() {
                         <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="size-8" aria-label={t("common.actions")}><MoreHorizontal /></Button></DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem onClick={() => beginEdit(account)}><Pencil />{t("common.edit")}</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => beginReauthentication(account)}><KeyRound />{t("accounts.reauthenticate")}</DropdownMenuItem>
                           {provider === "grok_web" && !account.linkedAccountId ? <DropdownMenuItem onClick={() => setConversionTargets([account.id])}><ArrowRight />{t("accounts.convertToBuild")}</DropdownMenuItem> : null}
                           {provider === "grok_web" ? <DropdownMenuItem onClick={() => setWebConsoleSyncTargets([account.id])}><ArrowRight />{t("webConsoleSync.action")}</DropdownMenuItem> : null}
                           {provider === "grok_build" ? <DropdownMenuItem onClick={() => tokenMutation.mutate(account.id)}><RotateCw />{t("accounts.refreshToken")}</DropdownMenuItem> : null}
@@ -843,6 +885,44 @@ export function AccountsPage() {
             <div className="space-y-2"><Label htmlFor="account-minimum">{t("accounts.minimumRemaining")}</Label><Input id="account-minimum" type="number" min="0" step="0.01" {...form.register("minimumRemaining", { valueAsNumber: true })} /></div>
             <DialogFooter><Button type="button" variant="secondary" size="sm" onClick={() => setEditing(null)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={updateMutation.isPending}>{updateMutation.isPending ? <Spinner /> : null}{t("common.save")}</Button></DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(reauthenticating)} onOpenChange={(open) => {
+        if (!open) {
+          setReauthenticating(null);
+          setReauthRefreshToken("");
+          setReauthAccessToken("");
+          setReauthSSOToken("");
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("accounts.reauthTitle", { name: reauthenticating?.name ?? "" })}</DialogTitle>
+            <DialogDescription>{t(reauthenticating?.provider === "grok_build" ? "accounts.reauthBuildDescription" : "accounts.reauthSSODescription")}</DialogDescription>
+          </DialogHeader>
+          {reauthenticating?.provider === "grok_build" ? (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="reauth-refresh-token">{t("accounts.refreshTokenValue")}</Label>
+                <Textarea id="reauth-refresh-token" className="min-h-28 font-mono" autoComplete="off" spellCheck={false} value={reauthRefreshToken} onChange={(event) => setReauthRefreshToken(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="reauth-access-token">{t("accounts.accessTokenOptional")}</Label>
+                <Textarea id="reauth-access-token" className="min-h-20 font-mono" autoComplete="off" spellCheck={false} value={reauthAccessToken} onChange={(event) => setReauthAccessToken(event.target.value)} />
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <Label htmlFor="reauth-sso-token">{t("accounts.ssoTokenValue")}</Label>
+              <Textarea id="reauth-sso-token" className="min-h-40 font-mono" autoComplete="off" spellCheck={false} value={reauthSSOToken} onChange={(event) => setReauthSSOToken(event.target.value)} />
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">{t("accounts.reauthSecurityNote")}</p>
+          <DialogFooter>
+            <Button type="button" variant="secondary" size="sm" onClick={() => setReauthenticating(null)}>{t("common.cancel")}</Button>
+            <Button type="button" size="sm" disabled={reauthMutation.isPending || (reauthenticating?.provider === "grok_build" ? !reauthRefreshToken.trim() && !reauthAccessToken.trim() : !reauthSSOToken.trim())} onClick={submitReauthentication}>{reauthMutation.isPending ? <Spinner /> : null}{t("accounts.reauthenticate")}</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

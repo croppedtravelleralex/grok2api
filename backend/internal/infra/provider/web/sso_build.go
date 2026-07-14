@@ -54,7 +54,7 @@ func (a *Adapter) ConvertToBuild(ctx context.Context, credential accountdomain.C
 	if token == "" {
 		return provider.CredentialSeed{}, provider.ErrUnauthorized
 	}
-	lease, err := a.egress.Acquire(ctx, egressdomain.ScopeWeb, "sso-build:"+credential.SourceKey)
+	lease, err := a.egress.Acquire(ctx, egressdomain.ScopeWeb, ssoBuildAffinity(credential))
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}
@@ -72,6 +72,10 @@ func (a *Adapter) ConvertToBuild(ctx context.Context, credential accountdomain.C
 	}
 	a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, http.StatusOK, nil)
 	return seed, nil
+}
+
+func ssoBuildAffinity(credential accountdomain.Credential) string {
+	return strconv.FormatUint(credential.ID, 10)
 }
 
 func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Credential) (provider.CredentialSeed, error) {

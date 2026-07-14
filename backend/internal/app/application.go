@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -181,13 +183,16 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	conversionPool := batch.NewSharedChildPool(cfg.Batch.ConversionConcurrency, concurrency, "bulk:conversion", bulkPool)
 	syncPool := batch.NewSharedChildPool(cfg.Batch.SyncConcurrency, concurrency, "bulk:sync", bulkPool)
 	refreshPool := batch.NewSharedChildPool(cfg.Batch.RefreshConcurrency, concurrency, "bulk:refresh", bulkPool)
+	webQuotaPool := batch.NewPool(1)
 	for _, pool := range []*batch.Pool{importPool, conversionPool, syncPool, refreshPool} {
 		pool.UpdateJitter(cfg.Batch.RandomDelay.Value())
 	}
+	webQuotaPool.UpdateJitter(maxDuration(cfg.Batch.RandomDelay.Value(), time.Second))
 	accountService := accountapp.NewService(accountRepo, auditRepo, deviceSessions, sticky, providers, cipher, refreshLock)
 	accountService.SetLogger(logger)
 	accountService.SetQuotaRecoveryQueue(quotaQueue)
 	accountService.SetTaskPools(conversionPool, syncPool, refreshPool)
+	accountService.SetWebQuotaPool(webQuotaPool)
 	windows, err := accountRepo.ListQuotaRecoveryWindows(ctx, 100000)
 	if err != nil {
 		if runtimeStore != nil {
@@ -294,7 +299,9 @@ func maxBatchConcurrency(value config.BatchConfig) int {
 func webProviderConfig(cfg config.Config) webprovider.Config {
 	return webprovider.Config{
 		BaseURL: cfg.Provider.Web.BaseURL, QuotaTimeoutSeconds: int(cfg.Provider.Web.QuotaTimeout.Value().Seconds()),
-		StatsigMode: cfg.Provider.Web.StatsigMode, StatsigManualValue: cfg.Provider.Web.StatsigManualValue,
+		BrowserBridgeURL: strings.TrimSpace(os.Getenv("GROK2API_BROWSER_BRIDGE_URL")),
+		BrowserBridgeKey: readOptionalSecretFile(os.Getenv("GROK2API_BROWSER_BRIDGE_KEY_FILE")),
+		StatsigMode:      cfg.Provider.Web.StatsigMode, StatsigManualValue: cfg.Provider.Web.StatsigManualValue,
 		StatsigSignerURL:   cfg.Provider.Web.StatsigSignerURL,
 		ChatTimeoutSeconds: int(cfg.Provider.Web.ChatTimeout.Value().Seconds()), ImageTimeoutSeconds: int(cfg.Provider.Web.ImageTimeout.Value().Seconds()),
 		VideoTimeoutSeconds: int(cfg.Provider.Web.VideoTimeout.Value().Seconds()), MaxInputImageBytes: cfg.Media.MaxImageBytes,
@@ -307,6 +314,18 @@ func consoleProviderConfig(cfg config.Config) consoleprovider.Config {
 		BaseURL: cfg.Provider.Console.BaseURL, UserAgent: cfg.Provider.Console.UserAgent,
 		TimeoutSeconds: int(cfg.Provider.Console.ChatTimeout.Value().Seconds()),
 	}
+}
+
+func readOptionalSecretFile(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	value, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(value))
 }
 
 func mediaConfig(cfg config.Config) mediaapp.Config {
@@ -379,6 +398,15 @@ func (a *Application) Run(ctx context.Context) error {
 	})
 	startBackground("web_quota_refresh", func(taskCtx context.Context) error {
 		a.accounts.RunWebQuotaRefresh(taskCtx)
+		return nil
+	})
+	startBackground("account_analytics", func(taskCtx context.Context) error {
+		captureCtx, cancel := context.WithTimeout(taskCtx, 30*time.Second)
+		if err := a.accounts.CaptureAnalytics(captureCtx); err != nil {
+			a.logger.Warn("account_analytics_capture_failed", "error", err)
+		}
+		cancel()
+		a.runPeriodicTask(taskCtx, 15*time.Minute, "account_analytics", a.accounts.CaptureAnalytics)
 		return nil
 	})
 	startBackground("credential_refresh", func(taskCtx context.Context) error {
@@ -506,6 +534,13 @@ func resetTimer(timer *time.Timer, interval time.Duration) {
 
 func minDuration(left, right time.Duration) time.Duration {
 	if left < right {
+		return left
+	}
+	return right
+}
+
+func maxDuration(left, right time.Duration) time.Duration {
+	if left > right {
 		return left
 	}
 	return right

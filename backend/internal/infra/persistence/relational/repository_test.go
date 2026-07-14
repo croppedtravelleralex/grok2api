@@ -91,6 +91,11 @@ func TestAccountRepositoryUpsertsImportChunkInOneBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored.Priority = 99
+	stored.AuthStatus = account.AuthStatusReauthRequired
+	stored.FailureCount = 3
+	stored.LastError = "expired credential"
+	cooldownUntil := time.Now().UTC().Add(time.Hour)
+	stored.CooldownUntil = &cooldownUntil
 	if _, err := repo.Update(ctx, stored); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +111,7 @@ func TestAccountRepositoryUpsertsImportChunkInOneBatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Name != "batch-1-updated" || stored.Priority != 99 {
+	if stored.Name != "batch-1-updated" || stored.Priority != 99 || stored.AuthStatus != account.AuthStatusActive || stored.FailureCount != 0 || stored.CooldownUntil != nil || stored.LastError != "" {
 		t.Fatalf("stored = %#v", stored)
 	}
 }
