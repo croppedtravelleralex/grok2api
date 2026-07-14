@@ -75,6 +75,8 @@ class HealthCleanupTest(unittest.TestCase):
     def test_health_closes_expired_browser_sessions(self):
         app = _load_app()
         driver = _Driver()
+        orphan_cleanup = []
+        app._terminate_orphaned_browser_processes = lambda: orphan_cleanup.append(True)
         session = app.BrowserSession(driver, "direct://", "https://grok.com/")
         session.last_used = time.monotonic() - app.SESSION_TTL - 1
         app.SESSIONS["expired"] = session
@@ -84,6 +86,7 @@ class HealthCleanupTest(unittest.TestCase):
         self.assertEqual('{"status":"ok","sessions":0}', payload)
         self.assertTrue(driver.closed)
         self.assertEqual(0, len(app.SESSIONS))
+        self.assertEqual([True], orphan_cleanup)
 
     def test_health_force_closes_a_stuck_driver_within_its_budget(self):
         app = _load_app()

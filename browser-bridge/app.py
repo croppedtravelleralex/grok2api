@@ -53,10 +53,10 @@ class BrowserSession:
                 completed.set()
 
         threading.Thread(target=graceful_close, name="browser-session-close", daemon=True).start()
-        if completed.wait(CLOSE_TIMEOUT):
-            return
-        _terminate_driver_processes(self.driver)
-        completed.wait(0.5)
+        if not completed.wait(CLOSE_TIMEOUT):
+            _terminate_driver_processes(self.driver)
+            completed.wait(0.5)
+        _terminate_orphaned_browser_processes()
 
 
 def _process_children():
@@ -112,6 +112,34 @@ def _terminate_driver_processes(driver):
             roots.append(pid)
     for pid in roots:
         _terminate_process_tree(pid)
+
+
+def _terminate_orphaned_browser_processes():
+    targets = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return
+    browser_names = {"chrome", "chromedriver", "chromium", "chromium-browser", "chrome_crashpad"}
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/comm", encoding="utf-8") as comm_file:
+                name = comm_file.read().strip()
+            pid = int(entry)
+        except (OSError, ValueError):
+            continue
+        if pid > 1 and name in browser_names:
+            targets.append(pid)
+    for signal_value in (signal.SIGTERM, signal.SIGKILL):
+        for pid in targets:
+            try:
+                os.kill(pid, signal_value)
+            except (OSError, ProcessLookupError):
+                pass
+        if signal_value == signal.SIGTERM and targets:
+            time.sleep(0.15)
 
 
 def load_key():
