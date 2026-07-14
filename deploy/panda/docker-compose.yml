@@ -1,0 +1,68 @@
+name: grok2api
+
+services:
+  grok2api:
+    container_name: grok2api
+    image: "${GROK2API_IMAGE:-ghcr.io/croppedtravelleralex/grok2api@sha256:8e7f0c622e1df82219d682107940bbdeb1940e7749540138d3869fc7f3dc82cd}"
+    ports:
+      - "127.0.0.1:18000:8000"
+    environment:
+      TZ: Asia/Shanghai
+      GROK2API_BROWSER_BRIDGE_URL: http://browser-bridge:8192
+      GROK2API_BROWSER_BRIDGE_KEY_FILE: /run/secrets/browser-bridge-key
+    volumes:
+      - /opt/grok2api/config.yaml:/run/grok2api/config.yaml:ro
+      - /opt/grok2api/data:/app/data
+      - /root/.secrets/grok2api-browser-bridge-key-main:/run/secrets/browser-bridge-key:ro
+    restart: unless-stopped
+    init: true
+    cpus: "0.75"
+    mem_limit: 512m
+    pids_limit: 128
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+
+  browser-bridge:
+    container_name: grok2api-browser-bridge
+    image: grok2api-browser-bridge:chrome146
+    environment:
+      TZ: Asia/Shanghai
+      LOG_LEVEL: warning
+      BRIDGE_KEY_FILE: /run/secrets/browser-bridge-key
+      BRIDGE_SESSION_LIMIT: "1"
+      BRIDGE_SESSION_TTL_SECONDS: "600"
+      BRIDGE_THREADS: "2"
+    volumes:
+      - /root/.secrets/grok2api-browser-bridge-key:/run/secrets/browser-bridge-key:ro
+    restart: unless-stopped
+    init: true
+    cpus: "1.0"
+    mem_limit: 900m
+    pids_limit: 256
+    shm_size: 512m
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8192/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
