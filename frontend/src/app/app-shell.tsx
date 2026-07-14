@@ -25,6 +25,7 @@ const navigation = [
   { href: "/client-keys", label: "nav.clientKeys", icon: KeyRound },
   { href: "/models", label: "nav.models", icon: Box },
   { href: "/request-audits", label: "nav.audits", icon: Eye },
+  { href: "/media/images", label: "nav.images", icon: Image },
 ] as const;
 
 const documentation = [

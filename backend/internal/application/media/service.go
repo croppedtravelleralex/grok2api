@@ -49,6 +49,23 @@ type Config struct {
 	CleanupInterval         time.Duration
 }
 
+type ImageItem struct {
+	mediadomain.Asset
+	URL string
+}
+
+type ImagePage struct {
+	Items    []ImageItem
+	Page     int
+	PageSize int
+	Total    int64
+}
+
+type ImageStatistics struct {
+	Count      int64
+	TotalBytes int64
+}
+
 func NewService(assets repository.MediaAssetRepository, objects repository.MediaObjectStorage, cleanupLock repository.DistributedLock, cfg Config) *Service {
 	return &Service{
 		assets: assets, objects: objects, cleanupLock: cleanupLock,
@@ -112,6 +129,59 @@ func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset
 // PublicImageURL 返回可直接用于图片展示的公开资源地址。
 func (s *Service) PublicImageURL(id string) string {
 	return s.publicBaseURL + "/v1/media/images/" + id
+}
+
+func (s *Service) ListImages(ctx context.Context, page, pageSize int) (ImagePage, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	assets, total, err := s.assets.ListMediaAssets(ctx, (page-1)*pageSize, pageSize)
+	if err != nil {
+		return ImagePage{}, err
+	}
+	items := make([]ImageItem, 0, len(assets))
+	for _, asset := range assets {
+		items = append(items, ImageItem{Asset: asset, URL: s.PublicImageURL(asset.ID)})
+	}
+	return ImagePage{Items: items, Page: page, PageSize: pageSize, Total: total}, nil
+}
+
+func (s *Service) ImageStats(ctx context.Context) (ImageStatistics, error) {
+	count, err := s.assets.CountMediaAssets(ctx)
+	if err != nil {
+		return ImageStatistics{}, err
+	}
+	totalBytes, err := s.assets.TotalMediaAssetBytes(ctx)
+	if err != nil {
+		return ImageStatistics{}, err
+	}
+	return ImageStatistics{Count: count, TotalBytes: totalBytes}, nil
+}
+
+func (s *Service) DeleteImage(ctx context.Context, id string) error {
+	asset, err := s.assets.GetMediaAsset(ctx, strings.TrimSpace(id))
+	if errors.Is(err, repository.ErrNotFound) {
+		return ErrAssetNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if asset.Kind != "image" {
+		return ErrAssetNotFound
+	}
+	if err := s.objects.Delete(ctx, asset.StorageKey); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := s.assets.DeleteMediaAsset(ctx, asset.ID); errors.Is(err, repository.ErrNotFound) {
+		return ErrAssetNotFound
+	} else if err != nil {
+		return err
+	}
+	s.totalBytes.Add(-asset.SizeBytes)
+	return nil
 }
 
 // OpenImage 读取图片元数据和正文，不向调用方暴露实际文件路径。

@@ -42,7 +42,7 @@ const (
 	credentialRefreshTimeout    time.Duration = 30 * time.Second
 	credentialRefreshStateTTL   time.Duration = 5 * time.Second
 	credentialRefreshBatchSize                = 100
-	webQuotaRefreshWorkerCount                = 2
+	webQuotaRefreshWorkerCount                = 1
 	webQuotaRefreshQueueSize                  = 4096
 	webQuotaRefreshTimeout                    = 30 * time.Second
 	maxCredentialExportAccounts               = 10000
@@ -1490,7 +1490,22 @@ func (s *Service) RefreshQuota(ctx context.Context, id uint64) ([]accountdomain.
 }
 
 func (s *Service) RefreshWebQuota(ctx context.Context, id uint64) ([]accountdomain.QuotaWindow, error) {
-	return s.RefreshQuota(ctx, id)
+	credential, err := s.accounts.Get(ctx, id)
+	if err != nil {
+		return nil, mapRepositoryError(err)
+	}
+	if credential.Provider != accountdomain.ProviderWeb {
+		return s.RefreshQuota(ctx, id)
+	}
+	var windows []accountdomain.QuotaWindow
+	var refreshErr error
+	if err := s.webQuotaPool.Do(ctx, func(workCtx context.Context) error {
+		windows, refreshErr = s.RefreshQuota(workCtx, id)
+		return refreshErr
+	}); err != nil {
+		return nil, err
+	}
+	return windows, refreshErr
 }
 
 func (s *Service) refreshQuota(ctx context.Context, id uint64) ([]accountdomain.QuotaWindow, error) {
@@ -1823,7 +1838,7 @@ func (s *Service) syncAllQuotasWithProgress(ctx context.Context, providerValue a
 // SyncWebQuotaAccounts 同步指定 Web 账号集合，供启动追赶任务复用共享并发池。
 func (s *Service) SyncWebQuotaAccounts(ctx context.Context, ids []uint64) (int, int, error) {
 	return s.runAccountBatch(ctx, "web_quota_startup_catchup", ids, s.webQuotaPool, nil, func(workCtx context.Context, id uint64) error {
-		_, err := s.RefreshWebQuota(workCtx, id)
+		_, err := s.RefreshQuota(workCtx, id)
 		return err
 	})
 }

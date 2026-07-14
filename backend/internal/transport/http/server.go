@@ -141,6 +141,7 @@ func New(deps Dependencies) *gin.Engine {
 	dashboardhttp.NewHandler(deps.Dashboard).Register(adminProtected)
 	settingshttp.NewHandler(deps.Settings).Register(adminProtected)
 	egresshttp.NewHandler(deps.Egress).Register(adminProtected)
+	mediahttp.NewHandler(deps.Media).RegisterAdmin(adminProtected)
 	systemhttp.NewHandler(deps.PublicAPIBaseURL).Register(adminProtected)
 
 	v1 := router.Group("/v1")

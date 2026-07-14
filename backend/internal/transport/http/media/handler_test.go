@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,5 +60,50 @@ func TestPublicImageSupportsGetHeadAndETag(t *testing.T) {
 	router.ServeHTTP(notModified, notModifiedRequest)
 	if notModified.Code != http.StatusNotModified || notModified.Body.Len() != 0 {
 		t.Fatalf("conditional GET status=%d size=%d", notModified.Code, notModified.Body.Len())
+	}
+}
+
+func TestAdminImageManagementListsStatsAndDeletes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-admin-http.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := localmedia.NewLocalStore(filepath.Join(t.TempDir(), "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := mediaapp.NewService(relational.NewMediaAssetRepository(database), objects, nil, mediaapp.Config{
+		PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30,
+		CleanupThresholdPercent: 80, CleanupInterval: 10 * time.Minute,
+	})
+	raw, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+	asset, err := service.SaveImage(ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	admin := router.Group("/api/admin/v1")
+	NewHandler(service).RegisterAdmin(admin)
+
+	list := httptest.NewRecorder()
+	router.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/admin/v1/media/images?page=1&pageSize=20", nil))
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), asset.ID) || !strings.Contains(list.Body.String(), "https://api.example/v1/media/images/") {
+		t.Fatalf("list status=%d body=%s", list.Code, list.Body.String())
+	}
+	stats := httptest.NewRecorder()
+	router.ServeHTTP(stats, httptest.NewRequest(http.MethodGet, "/api/admin/v1/media/images/stats", nil))
+	if stats.Code != http.StatusOK || !strings.Contains(stats.Body.String(), `"count":1`) {
+		t.Fatalf("stats status=%d body=%s", stats.Code, stats.Body.String())
+	}
+	deleted := httptest.NewRecorder()
+	router.ServeHTTP(deleted, httptest.NewRequest(http.MethodDelete, "/api/admin/v1/media/images/"+asset.ID, nil))
+	if deleted.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", deleted.Code, deleted.Body.String())
 	}
 }

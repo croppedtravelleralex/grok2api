@@ -62,6 +62,59 @@ func TestServicePersistsAndReopensImage(t *testing.T) {
 	}
 }
 
+func TestServiceListsStatsAndDeletesImages(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-admin.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := localmedia.NewLocalStore(filepath.Join(t.TempDir(), "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(relational.NewMediaAssetRepository(database), objects, nil, Config{
+		PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30,
+		CleanupThresholdPercent: 80, CleanupInterval: 10 * time.Minute,
+	})
+	raw, _ := base64.StdEncoding.DecodeString(onePixelPNG)
+	first, err := service.SaveImage(ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.SaveImage(ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := service.ListImages(ctx, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 2 || len(page.Items) != 1 || page.Items[0].ID != second.ID || page.Items[0].URL != service.PublicImageURL(second.ID) {
+		t.Fatalf("page = %#v", page)
+	}
+	stats, err := service.ImageStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Count != 2 || stats.TotalBytes != int64(len(raw)*2) {
+		t.Fatalf("stats = %#v", stats)
+	}
+	if err := service.DeleteImage(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.OpenImage(ctx, first.ID); !errors.Is(err, ErrAssetNotFound) {
+		t.Fatalf("deleted image still opens: %v", err)
+	}
+	if err := service.DeleteImage(ctx, first.ID); !errors.Is(err, ErrAssetNotFound) {
+		t.Fatalf("second delete error = %v", err)
+	}
+}
+
 func TestCleanupDeletesOldestAssetsAtThreshold(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-cleanup.db"))

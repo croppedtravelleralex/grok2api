@@ -155,7 +155,8 @@ func isPermanentAccountDenial(text string) bool {
 	if strings.Contains(text, "access to the chat endpoint is denied") {
 		return true
 	}
-	return strings.Trim(strings.TrimSpace(text), " .!\t\r\n") == "access denied"
+	normalized := strings.Trim(strings.TrimSpace(text), " .!\t\r\n")
+	return normalized == "access denied" || strings.Contains(normalized, "permission-denied")
 }
 
 func isPaidQuotaExhaustion(text string) bool {

@@ -877,7 +877,7 @@ func (h *Handler) refreshWebQuota(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := h.service.RefreshQuota(c.Request.Context(), id); err != nil {
+	if _, err := h.service.RefreshWebQuota(c.Request.Context(), id); err != nil {
 		h.writeServiceError(c, "quotaRefreshFailed", err, http.StatusBadGateway, "同步 Provider 额度失败")
 		return
 	}

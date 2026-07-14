@@ -37,6 +37,35 @@ func (r *MediaAssetRepository) GetMediaAsset(ctx context.Context, id string) (me
 	}, nil
 }
 
+func (r *MediaAssetRepository) ListMediaAssets(ctx context.Context, offset, limit int) ([]media.Asset, int64, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	query := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).Where("kind = ?", "image")
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var rows []mediaAssetModel
+	if err := query.Order("created_at DESC, id DESC").Offset(offset).Limit(limit).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	values := make([]media.Asset, 0, len(rows))
+	for _, row := range rows {
+		values = append(values, mediaAssetToDomain(row))
+	}
+	return values, total, nil
+}
+
+func (r *MediaAssetRepository) CountMediaAssets(ctx context.Context) (int64, error) {
+	var count int64
+	err := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).Where("kind = ?", "image").Count(&count).Error
+	return count, err
+}
+
 func (r *MediaAssetRepository) TotalMediaAssetBytes(ctx context.Context) (int64, error) {
 	var total int64
 	err := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).Select("COALESCE(SUM(size_bytes), 0)").Scan(&total).Error
@@ -53,12 +82,16 @@ func (r *MediaAssetRepository) ListOldestMediaAssets(ctx context.Context, limit 
 	}
 	values := make([]media.Asset, 0, len(rows))
 	for _, row := range rows {
-		values = append(values, media.Asset{
-			ID: row.ID, Kind: row.Kind, StorageKey: row.StorageKey, MIMEType: row.MIMEType,
-			SizeBytes: row.SizeBytes, SHA256: row.SHA256, CreatedAt: row.CreatedAt,
-		})
+		values = append(values, mediaAssetToDomain(row))
 	}
 	return values, nil
+}
+
+func mediaAssetToDomain(row mediaAssetModel) media.Asset {
+	return media.Asset{
+		ID: row.ID, Kind: row.Kind, StorageKey: row.StorageKey, MIMEType: row.MIMEType,
+		SizeBytes: row.SizeBytes, SHA256: row.SHA256, CreatedAt: row.CreatedAt,
+	}
 }
 
 func (r *MediaAssetRepository) DeleteMediaAsset(ctx context.Context, id string) error {

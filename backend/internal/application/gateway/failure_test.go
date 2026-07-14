@@ -21,6 +21,10 @@ func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 			accountScoped: true, permanentAccountDenial: true,
 		},
 		{
+			name: "structured permission denied", body: `{"error":{"code":"permission-denied","message":"Access denied"}}`,
+			accountScoped: true, permanentAccountDenial: true, upstreamCode: "permission-denied",
+		},
+		{
 			name: "spending limit", body: `{"code":"personal-team-blocked:spending-limit","error":"quota exhausted"}`,
 			accountScoped: true, quotaExhausted: true, upstreamCode: "personal-team-blocked:spending-limit",
 		},
