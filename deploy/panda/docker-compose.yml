@@ -43,6 +43,7 @@ services:
       BRIDGE_KEY_FILE: /run/secrets/browser-bridge-key
       BRIDGE_SESSION_LIMIT: "1"
       BRIDGE_SESSION_TTL_SECONDS: "180"
+      BRIDGE_CLOSE_TIMEOUT_SECONDS: "2"
       BRIDGE_THREADS: "2"
     volumes:
       - /root/.secrets/grok2api-browser-bridge-key:/run/secrets/browser-bridge-key:ro
@@ -57,7 +58,7 @@ services:
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8192/healthz', timeout=3).read()"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
       start_period: 30s
     logging:

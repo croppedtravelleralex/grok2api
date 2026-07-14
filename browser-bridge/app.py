@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -23,6 +24,7 @@ from flaresolverr_service import _evil_logic
 APP = Bottle()
 SESSION_LIMIT = max(1, int(os.environ.get("BRIDGE_SESSION_LIMIT", "1")))
 SESSION_TTL = max(60, int(os.environ.get("BRIDGE_SESSION_TTL_SECONDS", "1800")))
+CLOSE_TIMEOUT = min(5.0, max(0.5, float(os.environ.get("BRIDGE_CLOSE_TIMEOUT_SECONDS", "2"))))
 SIGNER_MODULE_ID = int(os.environ.get("BRIDGE_SIGNER_MODULE_ID", "4629918"))
 KEY_FILE = os.environ.get("BRIDGE_KEY_FILE", "/run/secrets/browser-bridge-key")
 ALLOWED_HOSTS = {"grok.com", "www.grok.com"}
@@ -39,10 +41,76 @@ class BrowserSession:
         self.last_used = time.monotonic()
 
     def close(self):
+        completed = threading.Event()
+
+        def graceful_close():
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            finally:
+                completed.set()
+
+        threading.Thread(target=graceful_close, name="browser-session-close", daemon=True).start()
+        if completed.wait(CLOSE_TIMEOUT):
+            return
+        _terminate_driver_processes(self.driver)
+        completed.wait(0.5)
+
+
+def _process_children():
+    children = {}
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return children
+    for entry in entries:
+        if not entry.isdigit():
+            continue
         try:
-            self.driver.quit()
-        except Exception:
-            pass
+            with open(f"/proc/{entry}/stat", encoding="utf-8") as stat_file:
+                value = stat_file.read()
+            fields = value.rsplit(")", 1)[1].split()
+            parent = int(fields[1])
+            children.setdefault(parent, []).append(int(entry))
+        except (OSError, ValueError, IndexError):
+            continue
+    return children
+
+
+def _terminate_process_tree(root_pid):
+    if not isinstance(root_pid, int) or root_pid <= 1:
+        return
+    children = _process_children()
+    descendants = []
+    pending = [root_pid]
+    while pending:
+        parent = pending.pop()
+        for child in children.get(parent, []):
+            descendants.append(child)
+            pending.append(child)
+    targets = list(reversed(descendants)) + [root_pid]
+    for signal_value in (signal.SIGTERM, signal.SIGKILL):
+        for pid in targets:
+            try:
+                os.kill(pid, signal_value)
+            except (OSError, ProcessLookupError):
+                pass
+        if signal_value == signal.SIGTERM:
+            time.sleep(0.15)
+
+
+def _terminate_driver_processes(driver):
+    roots = []
+    service = getattr(driver, "service", None)
+    process = getattr(service, "process", None)
+    process_pid = getattr(process, "pid", None)
+    browser_pid = getattr(driver, "browser_pid", None)
+    for pid in (process_pid, browser_pid):
+        if isinstance(pid, int) and pid > 1 and pid not in roots:
+            roots.append(pid)
+    for pid in roots:
+        _terminate_process_tree(pid)
 
 
 def load_key():

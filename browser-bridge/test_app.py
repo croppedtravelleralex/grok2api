@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import threading
 import time
 import types
 import unittest
@@ -24,6 +25,16 @@ class _Driver:
         self.closed = False
 
     def quit(self):
+        self.closed = True
+
+
+class _BlockingDriver:
+    def __init__(self):
+        self.closed = False
+        self.release = threading.Event()
+
+    def quit(self):
+        self.release.wait(5)
         self.closed = True
 
 
@@ -70,6 +81,22 @@ class HealthCleanupTest(unittest.TestCase):
         self.assertEqual('{"status":"ok","sessions":0}', payload)
         self.assertTrue(driver.closed)
         self.assertEqual(0, len(app.SESSIONS))
+
+    def test_health_force_closes_a_stuck_driver_within_its_budget(self):
+        app = _load_app()
+        driver = _BlockingDriver()
+        session = app.BrowserSession(driver, "direct://", "https://grok.com/")
+        session.last_used = time.monotonic() - app.SESSION_TTL - 1
+        app.SESSIONS["expired"] = session
+        app.CLOSE_TIMEOUT = 0.01
+        app._terminate_driver_processes = lambda value: value.release.set()
+
+        started = time.monotonic()
+        payload = app.health()
+
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual('{"status":"ok","sessions":0}', payload)
+        self.assertTrue(driver.closed)
 
 
 if __name__ == "__main__":
