@@ -255,6 +255,35 @@ class HealthCleanupTest(unittest.TestCase):
         self.assertTrue(driver.closed)
         self.assertEqual(0, len(app.SESSIONS))
 
+    def test_timed_out_bootstrap_releases_creating_state_before_worker_exits(self):
+        app = _load_app()
+        driver = _Driver()
+        bootstrap_started = threading.Event()
+        release_bootstrap = threading.Event()
+        app.utils.get_webdriver = lambda _proxy: driver
+
+        def blocking_bootstrap(*_args):
+            bootstrap_started.set()
+            release_bootstrap.wait(5)
+
+        app._evil_logic = blocking_bootstrap
+        app.CLOSE_TIMEOUT = 0.01
+        app._terminate_orphaned_browser_processes = lambda: None
+        try:
+            with self.assertRaises(app.BrowserOperationTimeout):
+                app.acquire_session(
+                    "account-1",
+                    "direct://",
+                    [],
+                    "",
+                    "https://grok.com/rest/app-chat/conversations/new",
+                    timeout_ms=10,
+                )
+            self.assertTrue(bootstrap_started.is_set())
+            self.assertFalse(app.SESSION_CREATING.is_set())
+        finally:
+            release_bootstrap.set()
+
 
 if __name__ == "__main__":
     unittest.main()

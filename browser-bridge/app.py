@@ -34,6 +34,8 @@ SESSIONS = OrderedDict()
 SESSIONS_LOCK = threading.Lock()
 SESSION_CREATE_LOCK = threading.Lock()
 SESSION_CREATING = threading.Event()
+SESSION_CREATION_LOCK = threading.Lock()
+ACTIVE_SESSION_CREATIONS = set()
 
 
 class BrowserSession:
@@ -70,6 +72,21 @@ class BrowserSession:
 
 class BrowserOperationTimeout(TimeoutError):
     pass
+
+
+def begin_session_creation():
+    token = object()
+    with SESSION_CREATION_LOCK:
+        ACTIVE_SESSION_CREATIONS.add(token)
+        SESSION_CREATING.set()
+    return token
+
+
+def end_session_creation(token):
+    with SESSION_CREATION_LOCK:
+        ACTIVE_SESSION_CREATIONS.discard(token)
+        if not ACTIVE_SESSION_CREATIONS:
+            SESSION_CREATING.clear()
 
 
 def _process_children():
@@ -294,7 +311,7 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeou
                     stale.append(oldest)
             for session in stale:
                 session.close()
-            SESSION_CREATING.set()
+            creation_token = begin_session_creation()
             completed = threading.Event()
             cancelled = threading.Event()
             state = {}
@@ -338,7 +355,7 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeou
                     if browser is not None:
                         browser.close()
                 finally:
-                    SESSION_CREATING.clear()
+                    end_session_creation(creation_token)
                     completed.set()
 
             threading.Thread(target=bootstrap, name="browser-session-bootstrap", daemon=True).start()
@@ -350,6 +367,8 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeou
                 else:
                     _terminate_orphaned_browser_processes()
                 completed.wait(0.5)
+                end_session_creation(creation_token)
+                _terminate_orphaned_browser_processes()
                 raise BrowserOperationTimeout("browser session bootstrap exceeded its deadline")
             error = state.get("error")
             if error is not None:
