@@ -49,6 +49,7 @@ services:
       BRIDGE_SESSION_TTL_SECONDS: "180"
       BRIDGE_CLOSE_TIMEOUT_SECONDS: "2"
       BRIDGE_THREADS: "2"
+      BRIDGE_WARM_USER_AGENT: "false"
     volumes:
       - /root/.secrets/grok2api-browser-bridge-key:/run/secrets/browser-bridge-key:ro
       - /opt/grok2api/browser-bridge/app.py:/bridge/app.py:ro

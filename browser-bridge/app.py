@@ -31,6 +31,7 @@ ALLOWED_HOSTS = {"grok.com", "www.grok.com"}
 SESSIONS = OrderedDict()
 SESSIONS_LOCK = threading.Lock()
 SESSION_CREATE_LOCK = threading.Lock()
+SESSION_CREATING = threading.Event()
 
 
 class BrowserSession:
@@ -149,6 +150,15 @@ def load_key():
         return ""
 
 
+def env_flag(name, fallback):
+    value = str(os.environ.get(name, "")).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return fallback
+
+
 def authorized():
     expected = load_key()
     if not expected:
@@ -195,6 +205,7 @@ def close_expired_locked(now):
     expired = [key for key, value in SESSIONS.items() if now - value.last_used > SESSION_TTL]
     for key in expired:
         SESSIONS.pop(key).close()
+    return len(expired)
 
 
 def acquire_session(session_key, proxy_url, cookies, referer, target_url):
@@ -223,6 +234,7 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url):
             for session in stale:
                 session.close()
             driver = None
+            SESSION_CREATING.set()
             try:
                 driver = utils.get_webdriver(parse_proxy(proxy_url))
                 if target.hostname in {"grok.com", "www.grok.com"}:
@@ -246,13 +258,15 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url):
                 bootstrap = V1RequestBase({"url": bootstrap_url, "cookies": cookies, "returnOnlyCookies": True})
                 _evil_logic(bootstrap, driver, "GET")
                 current = BrowserSession(driver, proxy_url, origin)
+                with SESSIONS_LOCK:
+                    SESSIONS[session_key] = current
+                    current.last_used = time.monotonic()
             except Exception:
                 if driver is not None:
                     BrowserSession(driver, proxy_url, origin).close()
                 raise
-            with SESSIONS_LOCK:
-                SESSIONS[session_key] = current
-                current.last_used = time.monotonic()
+            finally:
+                SESSION_CREATING.clear()
     if referer:
         parsed = validate_target(referer, {"https"})
         if urllib.parse.urlsplit(current.driver.current_url).path != parsed.path:
@@ -277,8 +291,10 @@ def encode_response(value, status=200):
 @APP.get("/healthz")
 def health():
     with SESSIONS_LOCK:
-        close_expired_locked(time.monotonic())
+        expired_count = close_expired_locked(time.monotonic())
         session_count = len(SESSIONS)
+    if session_count == 0 and expired_count == 0 and not SESSION_CREATING.is_set():
+        _terminate_orphaned_browser_processes()
     return encode_response({"status": "ok", "sessions": session_count})
 
 
@@ -417,5 +433,6 @@ socket.onmessage = event => {
 
 
 if __name__ == "__main__":
-    utils.get_user_agent()
+    if env_flag("BRIDGE_WARM_USER_AGENT", True):
+        utils.get_user_agent()
     serve(APP, host="0.0.0.0", port=int(os.environ.get("PORT", "8192")), threads=max(2, int(os.environ.get("BRIDGE_THREADS", "2"))))

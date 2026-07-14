@@ -109,6 +109,8 @@ class HealthCleanupTest(unittest.TestCase):
         driver = _Driver()
         bootstrap_started = threading.Event()
         release_bootstrap = threading.Event()
+        orphan_cleanup = []
+        app._terminate_orphaned_browser_processes = lambda: orphan_cleanup.append(True)
 
         def get_webdriver(_proxy):
             bootstrap_started.set()
@@ -132,7 +134,16 @@ class HealthCleanupTest(unittest.TestCase):
 
         self.assertLess(elapsed, 0.1)
         self.assertEqual('{"status":"ok","sessions":0}', payload)
+        self.assertEqual([], orphan_cleanup)
         self.assertEqual(1, len(result))
+
+    def test_boolean_environment_flag_can_disable_user_agent_warmup(self):
+        app = _load_app()
+        app.os.environ["BRIDGE_WARM_USER_AGENT"] = "false"
+        try:
+            self.assertFalse(app.env_flag("BRIDGE_WARM_USER_AGENT", True))
+        finally:
+            app.os.environ.pop("BRIDGE_WARM_USER_AGENT", None)
 
 
 if __name__ == "__main__":
