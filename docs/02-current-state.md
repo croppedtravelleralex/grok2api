@@ -8,7 +8,7 @@
 ## 整体状态摘要
 
 - 后端为 Go 网关，前端为 React/Vite 管理端，支持 Grok Build、Web、Console 三个账号池。
-- 本地工作分支为 `codex/panda-safe-completion`；Panda 已运行本轮镜像摘要 `sha256:719a85035355...`。
+- 本地工作分支为 `codex/panda-safe-completion`；Panda 已运行本轮镜像摘要 `sha256:80d6ab8d5922...`。
 - Panda 为低资源生产机，部署采用本地提交、GitHub Actions/GHCR 构建、Panda 拉取镜像的方式。
 - NewAPI 已按 Chat Completions、Responses、Messages、Images 和 Videos 拆分接入；本轮不改其渠道结构。
 
@@ -37,33 +37,32 @@
 
 ## 账号池诊断事实
 
-- 部署和两次单账号修复后，Panda 上 Build 启用账号为 97 个 `active`、98 个 `reauthRequired`。
-- 当前 98 个异常账号中：85 个为 OAuth `invalid_grant`，13 个为 Build Chat `access denied`。
-- 2 个已有 Web 关联的 `invalid_grant` Build 账号已通过 Web→Build 转换恢复为 active，并完成模型/额度同步。
-- 剩余 85 个 `invalid_grant` 必须导入新的有效 RT；13 个 `access denied` 账号继续隔离在调度池外，同 Token 刷新不会产生 Build 权限。
+- 完成能力探测后，Panda 上 Build 账号为 80 个 `active`、115 个 `reauthRequired`；195 个账号均保持启用，但异常账号不会进入调度池。
+- 当前 115 个异常账号中：85 个为 OAuth `invalid_grant`，30 个为 Build Chat `access denied`。
+- 2 个已有 Web 关联的 `invalid_grant` Build 账号已通过 Web→Build 转换换取并保存新凭据，账号 ID 与关联关系得到保留；随后能力探测确认两者仍缺少 Build Chat 权限，因此没有将其伪装为可用账号。
+- 剩余 85 个 `invalid_grant` 必须导入新的有效 RT；30 个 `access denied` 账号继续隔离在调度池外，同 Token 刷新不会产生 Build 权限。
 - Web 额度刷新应用层原本已有独立单并发池；Panda 单节点代理测试显示 Webshare 连接正常，但直接访问 Grok 返回 Cloudflare 403。
 - 单浏览器、单账号额度 canary 在加载 Grok 页面阶段超时并返回 502；桥接容器已停止，未执行全量刷新。当前根因是所选代理上的 Cloudflare 浏览器会话无法建立，不是代理白名单或并发连接失败。
 
 ## 进行中事项
 
-- 本地完善浏览器桥接的 30 秒启动上限、阶段化错误和结构化 502，避免一次失败长期占用 Panda。
+- 浏览器桥接的 30 秒启动上限、阶段化错误和结构化 502 已部署；桥接默认保持停止，避免一次失败长期占用 Panda。
 - 等待新的住宅/ISP 出口或可建立 Cloudflare 会话的节点后，再做一个 Web 账号 canary。
 
 ## 已知阻塞与风险
 
 - Grok Web 当前被 Cloudflare 浏览器会话建立失败阻塞；代理白名单正常不能证明该出口可通过 Grok 风控。
 - 85 个未关联 Web 的 `invalid_grant` Build 账号没有可用的新 RT，无法自动恢复。
-- 13 个 Build `access denied` 账号没有已确认的 Build Chat 权限。
+- 30 个 Build `access denied` 账号没有已确认的 Build Chat 权限。
 - 当前图片尺寸解析仅内置 PNG/JPEG/GIF；若上游保存 WebP，尺寸会暂时显示未知。
 - 全局 Web 单并发优先稳定性，会降低高并发吞吐；提升并发前必须在 Panda 上逐级 canary。
 
 ## 下一步 3-5 项
 
-1. 提交浏览器桥接的失败上限和诊断增强，并只更新桥接脚本。
-2. 保持浏览器桥接停止，避免无效会话占用内存。
-3. 更换可通过 Grok Cloudflare 的住宅/ISP 代理后进行单账号 canary。
-4. 为剩余 85 个账号导入新 RT；为 13 个无权限账号更换具备 Build 权限的授权。
-5. 新生图片验证生成耗时、模型和请求分辨率字段；旧图片只展示可解析的实际尺寸。
+1. 保持浏览器桥接停止，避免无效会话占用内存。
+2. 更换可通过 Grok Cloudflare 的住宅/ISP 代理后进行单账号 canary。
+3. 为剩余 85 个账号导入新 RT；为 30 个无权限账号更换具备 Build 权限的授权。
+4. 新生图片验证生成耗时、模型和请求分辨率字段；旧图片只展示可解析的实际尺寸。
 
 ## 与 README 或旧文档的不一致处
 
