@@ -60,6 +60,8 @@ services:
       BRIDGE_THREADS: "${BRIDGE_THREADS:-2}"
     volumes:
       - "${GROK2API_BROWSER_BRIDGE_KEY_FILE:-./data/browser-bridge-key}:/run/secrets/browser-bridge-key:ro"
+      # 浏览器镜像只提供 Chrome 运行时；桥接代码从项目目录只读挂载，避免旧镜像继续执行过期 app.py。
+      - "${GROK2API_BROWSER_BRIDGE_APP:-./browser-bridge/app.py}:/bridge/app.py:ro"
     restart: unless-stopped
     init: true
     cpus: "0.75"

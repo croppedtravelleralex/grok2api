@@ -68,6 +68,7 @@
 
 - Grok Web 当前被 Cloudflare 浏览器会话建立失败阻塞；桥接停止是失败后的资源保护状态，不是 Cloudflare 403 的根因。
 - 浏览器桥接资源上限已收紧到 0.75 CPU / 768 MiB，生产验证继续坚持单浏览器、单账号、单代理；桥接不可达不得再污染 Web 出口池。
+- 生产曾出现宿主机新版 `app.py` 与 `chrome146` 镜像内旧版不一致，导致 UA/CDP 和会话连续性修复没有实际运行。Compose 现将项目目录 `browser-bridge/app.py` 只读挂载到 `/bridge/app.py`，Chrome 镜像仅作为运行时。
 - Compose 数据目录固定为 `${GROK2API_DATA:-./data}:/app/data`，禁止因 compose 项目名变化切换到空命名卷；Panda 原库已验证完整，包含管理员、账号、出口和模型路由。
 - Panda 默认调度改为 Web 启动补偿 0 个、每 30 分钟补偿 1 个；Build 能力恢复每 5 分钟 1 个、启动延迟 2 分钟。关闭的 Build worker 会等待应用退出，不再被 supervisor 当成崩溃循环重启。
 - 当前 Webshare 节点不适合继续做全量 Grok 会话尝试；需要可粘滞的住宅/ISP 出口，并让登录与后续请求复用同一 IP、UA 和持久化浏览器 profile。
