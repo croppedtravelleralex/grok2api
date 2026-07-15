@@ -26,6 +26,7 @@ SESSION_LIMIT = max(1, int(os.environ.get("BRIDGE_SESSION_LIMIT", "1")))
 SESSION_TTL = max(60, int(os.environ.get("BRIDGE_SESSION_TTL_SECONDS", "1800")))
 CLOSE_TIMEOUT = min(5.0, max(0.5, float(os.environ.get("BRIDGE_CLOSE_TIMEOUT_SECONDS", "2"))))
 MAX_OPERATION_MS = min(900000, max(1000, int(float(os.environ.get("BRIDGE_MAX_OPERATION_SECONDS", "900")) * 1000)))
+BOOTSTRAP_TIMEOUT_MS = min(MAX_OPERATION_MS, max(5000, int(float(os.environ.get("BRIDGE_BOOTSTRAP_SECONDS", "30")) * 1000)))
 OPERATION_GRACE_SECONDS = min(15.0, max(0.1, float(os.environ.get("BRIDGE_OPERATION_GRACE_SECONDS", "2"))))
 SIGNER_MODULE_ID = int(os.environ.get("BRIDGE_SIGNER_MODULE_ID", "4629918"))
 KEY_FILE = os.environ.get("BRIDGE_KEY_FILE", "/run/secrets/browser-bridge-key")
@@ -291,7 +292,7 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeou
     deadline = time.monotonic() + (timeout_ms / 1000)
     target = validate_target(target_url, {"https", "wss"})
     origin = "https://" + target.hostname + "/"
-    bootstrap_url = origin + ("index" if target.hostname in {"grok.com", "www.grok.com"} else "")
+    bootstrap_url = origin
     with SESSION_CREATE_LOCK:
         now = time.monotonic()
         with SESSIONS_LOCK:
@@ -320,6 +321,7 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeou
                 driver = None
                 browser = None
                 try:
+                    state["stage"] = "launching browser"
                     driver = utils.get_webdriver(parse_proxy(proxy_url))
                     browser = BrowserSession(driver, proxy_url, origin)
                     state["browser"] = browser
@@ -344,12 +346,14 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeou
   globalThis.TURBOPACK = queue;
 })();
 """})
+                    state["stage"] = "loading Grok through the selected proxy"
                     request_value = V1RequestBase({"url": bootstrap_url, "cookies": cookies, "returnOnlyCookies": True})
                     _evil_logic(request_value, driver, "GET")
                     if cancelled.is_set():
                         browser.close()
                         return
                     state["session"] = browser
+                    state["stage"] = "ready"
                 except Exception as error:
                     state["error"] = error
                     if browser is not None:
@@ -359,8 +363,10 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeou
                     completed.set()
 
             threading.Thread(target=bootstrap, name="browser-session-bootstrap", daemon=True).start()
-            if not completed.wait(remaining_timeout_ms(deadline) / 1000):
+            bootstrap_timeout_ms = min(remaining_timeout_ms(deadline), BOOTSTRAP_TIMEOUT_MS)
+            if not completed.wait(bootstrap_timeout_ms / 1000):
                 cancelled.set()
+                stage = state.get("stage", "unknown stage")
                 browser = state.get("browser")
                 if browser is not None:
                     browser.close()
@@ -369,10 +375,11 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeou
                 completed.wait(0.5)
                 end_session_creation(creation_token)
                 _terminate_orphaned_browser_processes()
-                raise BrowserOperationTimeout("browser session bootstrap exceeded its deadline")
+                raise BrowserOperationTimeout("browser session bootstrap timed out while " + stage)
             error = state.get("error")
             if error is not None:
-                raise error
+                stage = state.get("stage", "unknown stage")
+                raise RuntimeError("browser session bootstrap failed while " + stage + ": " + type(error).__name__ + ": " + str(error)[:240]) from error
             current = state.get("session")
             if current is None:
                 raise RuntimeError("browser session bootstrap returned no session")
@@ -404,6 +411,11 @@ def encode_response(value, status=200):
     return json.dumps(value, separators=(",", ":"))
 
 
+def error_response(error):
+    message = type(error).__name__ + ": " + str(error)[:300]
+    return encode_response({"error": message}, 502)
+
+
 @APP.get("/healthz")
 def health():
     with SESSIONS_LOCK:
@@ -426,7 +438,12 @@ def fetch():
     timeout_ms = bounded_timeout_ms(payload.get("timeoutMs"), 120000)
     deadline = time.monotonic() + (timeout_ms / 1000)
     cookies = parse_cookies(payload.get("cookie"))
-    browser = acquire_session(str(payload.get("sessionKey") or ""), str(payload.get("proxyUrl") or ""), cookies, str(payload.get("referer") or ""), str(payload.get("url") or ""), remaining_timeout_ms(deadline))
+    try:
+        browser = acquire_session(str(payload.get("sessionKey") or ""), str(payload.get("proxyUrl") or ""), cookies, str(payload.get("referer") or ""), str(payload.get("url") or ""), remaining_timeout_ms(deadline))
+    except HTTPError:
+        raise
+    except Exception as error:
+        return error_response(error)
     timeout_ms = remaining_timeout_ms(deadline)
     script = r"""
 const cfg = arguments[0], done = arguments[arguments.length - 1];
@@ -508,7 +525,12 @@ def websocket():
     idle_ms = min(max(int(payload.get("idleMs") or 5000), 500), 30000)
     expected = min(max(int(payload.get("expected") or 1), 1), 10)
     cookies = parse_cookies(payload.get("cookie"))
-    browser = acquire_session(str(payload.get("sessionKey") or ""), str(payload.get("proxyUrl") or ""), cookies, str(payload.get("referer") or "https://grok.com/imagine"), str(payload.get("url") or ""), remaining_timeout_ms(deadline))
+    try:
+        browser = acquire_session(str(payload.get("sessionKey") or ""), str(payload.get("proxyUrl") or ""), cookies, str(payload.get("referer") or "https://grok.com/imagine"), str(payload.get("url") or ""), remaining_timeout_ms(deadline))
+    except HTTPError:
+        raise
+    except Exception as error:
+        return error_response(error)
     timeout_ms = remaining_timeout_ms(deadline)
     script = r"""
 const cfg = arguments[0], done = arguments[arguments.length - 1];

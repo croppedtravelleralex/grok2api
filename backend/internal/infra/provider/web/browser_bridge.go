@@ -170,6 +170,12 @@ func (b *browserBridge) call(ctx context.Context, path string, payload, output a
 		return errors.New("浏览器桥接响应超过 192 MiB")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		var failure struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(body, &failure) == nil && strings.TrimSpace(failure.Error) != "" {
+			return fmt.Errorf("浏览器桥接返回 %d: %s", response.StatusCode, strings.TrimSpace(failure.Error))
+		}
 		return fmt.Errorf("浏览器桥接返回 %d", response.StatusCode)
 	}
 	if err := json.Unmarshal(body, output); err != nil {

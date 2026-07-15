@@ -90,3 +90,20 @@ func TestBrowserBridgeWebSocketReturnsTextFrames(t *testing.T) {
 		t.Fatalf("frames = %#v", frames)
 	}
 }
+
+func TestBrowserBridgeReturnsStructuredUpstreamError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusBadGateway)
+		_, _ = writer.Write([]byte(`{"error":"BrowserOperationTimeout: loading Grok through the selected proxy"}`))
+	}))
+	defer server.Close()
+	bridge := newBrowserBridge(server.URL, "")
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://grok.com/rest/rate-limits", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = bridge.Do(context.Background(), &infraegress.Lease{ProxyURL: "direct://"}, request, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "loading Grok through the selected proxy") {
+		t.Fatalf("error = %v", err)
+	}
+}

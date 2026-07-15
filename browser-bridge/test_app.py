@@ -255,6 +255,42 @@ class HealthCleanupTest(unittest.TestCase):
         self.assertTrue(driver.closed)
         self.assertEqual(0, len(app.SESSIONS))
 
+    def test_browser_launch_timeout_reports_bootstrap_stage(self):
+        app = _load_app()
+        release = threading.Event()
+        app.BOOTSTRAP_TIMEOUT_MS = 10
+        app.CLOSE_TIMEOUT = 0.01
+        app._terminate_orphaned_browser_processes = lambda: None
+        app.utils.get_webdriver = lambda _proxy: release.wait(5)
+        try:
+            with self.assertRaisesRegex(app.BrowserOperationTimeout, "launching browser"):
+                app.acquire_session(
+                    "account-1",
+                    "direct://",
+                    [],
+                    "",
+                    "https://grok.com/rest/rate-limits",
+                    timeout_ms=1000,
+                )
+        finally:
+            release.set()
+
+    def test_fetch_returns_json_error_when_bootstrap_fails(self):
+        app = _load_app()
+        app.authorized = lambda: True
+        app.json_body = lambda: {
+            "sessionKey": "account-1",
+            "url": "https://grok.com/rest/rate-limits",
+            "method": "POST",
+            "timeoutMs": 1000,
+        }
+        app.acquire_session = lambda *_args: (_ for _ in ()).throw(app.BrowserOperationTimeout("browser bootstrap timeout"))
+
+        payload = app.fetch()
+
+        self.assertEqual(502, app.response.status)
+        self.assertIn('"error":"BrowserOperationTimeout: browser bootstrap timeout"', payload)
+
     def test_timed_out_bootstrap_releases_creating_state_before_worker_exits(self):
         app = _load_app()
         driver = _Driver()
