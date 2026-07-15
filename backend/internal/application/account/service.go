@@ -53,7 +53,10 @@ const (
 	credentialImportChunkSize                 = 100
 	maxBuildConversionAccounts                = 1000
 	maxWebConsoleSyncAccounts                 = 1000
+	buildRecoveryMaxAttempts                  = 3
 )
+
+var buildRecoveryBackoff = [...]time.Duration{15 * time.Minute, time.Hour, 6 * time.Hour}
 
 type webQuotaRefreshState struct {
 	pending bool
@@ -230,6 +233,8 @@ type Service struct {
 	webQuotaPool          *batch.Pool
 	refreshPool           *batch.Pool
 	credentialRefreshWake chan struct{}
+	buildProbeMu          sync.Mutex
+	buildRecoveryTurn     bool
 	logger                *slog.Logger
 	now                   func() time.Time
 }
@@ -245,6 +250,7 @@ func NewService(accounts repository.AccountRepository, audits repository.AuditRe
 		lastRefreshAt: make(map[uint64]time.Time), quotaRefreshes: make(map[string]*webQuotaRefreshState),
 		quotaRefreshQueue:     make(chan webQuotaRefreshRequest, webQuotaRefreshQueueSize),
 		credentialRefreshWake: make(chan struct{}, 1),
+		buildRecoveryTurn:     true,
 		conversionPool:        batch.NewPool(25), syncPool: batch.NewPool(25), webQuotaPool: batch.NewPool(1), refreshPool: batch.NewPool(25), logger: slog.Default(),
 		now: func() time.Time { return time.Now().UTC() },
 	}
@@ -435,6 +441,16 @@ func (s *Service) ObserveResponseModel(ctx context.Context, id uint64, model str
 // ProbeNextBuildChat 用一个最小 Responses 请求串行验证下一个未确认的 Build 账号。
 // 成功后才写入 observed_model；权限拒绝会立即隔离，临时错误只进入短冷却。
 func (s *Service) ProbeNextBuildChat(ctx context.Context) (uint64, bool, error) {
+	recoveryTurn := s.nextBuildRecoveryTurn()
+	if recoveryTurn {
+		recovery, err := s.accounts.ListRecoveryCandidates(ctx, accountdomain.ProviderBuild, s.now(), 1)
+		if err != nil {
+			return 0, false, mapRepositoryError(err)
+		}
+		if len(recovery) > 0 {
+			return s.recoverBuildChat(ctx, recovery[0])
+		}
+	}
 	values, err := s.accounts.ListEnabled(ctx, accountdomain.ProviderBuild)
 	if err != nil {
 		return 0, false, mapRepositoryError(err)
@@ -452,6 +468,15 @@ func (s *Service) ProbeNextBuildChat(ctx context.Context) (uint64, bool, error) 
 		break
 	}
 	if candidate.ID == 0 {
+		if !recoveryTurn {
+			recovery, recoveryErr := s.accounts.ListRecoveryCandidates(ctx, accountdomain.ProviderBuild, s.now(), 1)
+			if recoveryErr != nil {
+				return 0, false, mapRepositoryError(recoveryErr)
+			}
+			if len(recovery) > 0 {
+				return s.recoverBuildChat(ctx, recovery[0])
+			}
+		}
 		return 0, false, nil
 	}
 	selectedID := candidate.ID
@@ -459,12 +484,57 @@ func (s *Service) ProbeNextBuildChat(ctx context.Context) (uint64, bool, error) 
 	if err != nil {
 		return selectedID, true, err
 	}
+	return s.probeBuildChatCredential(ctx, candidate, false)
+}
+
+func (s *Service) nextBuildRecoveryTurn() bool {
+	s.buildProbeMu.Lock()
+	defer s.buildProbeMu.Unlock()
+	value := s.buildRecoveryTurn
+	s.buildRecoveryTurn = !s.buildRecoveryTurn
+	return value
+}
+
+func (s *Service) recoverBuildChat(ctx context.Context, candidate accountdomain.Credential) (uint64, bool, error) {
+	selectedID := candidate.ID
+	reason := strings.ToLower(strings.TrimSpace(candidate.LastError + " " + candidate.LastRefreshErrorCode))
+	recoveredFromWeb := false
+	if candidate.LinkedProvider == accountdomain.ProviderWeb && candidate.LinkedAccountID != 0 {
+		linked, err := s.accounts.Get(ctx, candidate.LinkedAccountID)
+		if err == nil && linked.Enabled && linked.AuthStatus == accountdomain.AuthStatusActive {
+			if _, _, _, convertErr := s.convertWebAccountToBuild(ctx, linked.ID); convertErr == nil {
+				candidate, err = s.accounts.Get(ctx, selectedID)
+				if err != nil {
+					return selectedID, true, mapRepositoryError(err)
+				}
+				recoveredFromWeb = true
+			} else {
+				return s.deferOrRetireBuildRecovery(ctx, candidate, "linked Web SSO recovery failed: "+convertErr.Error())
+			}
+		}
+	}
+	// invalid_grant 表示旧 RT 已被撤销或轮换；重复提交同一 RT 只会制造请求风暴。
+	// 其余认证/权限拒绝在第一次恢复时最多旋转一次 RT，再用最小请求验证真实能力。
+	if candidate.FailureCount == 0 && candidate.EncryptedRefreshToken != "" && !strings.Contains(reason, "invalid_grant") {
+		refreshed, err := s.ensureCredential(ctx, candidate, true, true, false)
+		if err != nil {
+			return s.deferOrRetireBuildRecovery(ctx, candidate, "RT refresh failed: "+err.Error())
+		}
+		candidate = refreshed
+	}
+	if strings.Contains(reason, "invalid_grant") && !recoveredFromWeb {
+		return s.deferOrRetireBuildRecovery(ctx, candidate, "invalid_grant requires a fresh RT")
+	}
+	return s.probeBuildChatCredential(ctx, candidate, true)
+}
+
+func (s *Service) probeBuildChatCredential(ctx context.Context, candidate accountdomain.Credential, recovery bool) (uint64, bool, error) {
 	if s.providers == nil {
-		return selectedID, true, fmt.Errorf("Grok Build Provider 未注册")
+		return candidate.ID, true, fmt.Errorf("Grok Build Provider 未注册")
 	}
 	adapter, ok := s.providers.Responses(accountdomain.ProviderBuild)
 	if !ok {
-		return selectedID, true, fmt.Errorf("Grok Build Responses Provider 未注册")
+		return candidate.ID, true, fmt.Errorf("Grok Build Responses Provider 未注册")
 	}
 	payload := []byte(`{"model":"grok-4.5","input":"Reply with OK only.","max_output_tokens":16,"store":false,"stream":false}`)
 	response, err := adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{
@@ -472,12 +542,18 @@ func (s *Service) ProbeNextBuildChat(ctx context.Context) (uint64, bool, error) 
 		Model: "grok-4.5", NormalizeBody: false, Operation: "responses",
 	})
 	if err != nil {
+		if recovery {
+			return s.deferOrRetireBuildRecovery(ctx, candidate, "Build Chat recovery transport failed: "+err.Error())
+		}
 		s.cooldownBuildProbe(ctx, candidate, 0)
 		return candidate.ID, true, fmt.Errorf("Build Chat 能力探测连接失败: %w", err)
 	}
 	defer response.Body.Close()
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 	if readErr != nil {
+		if recovery {
+			return s.deferOrRetireBuildRecovery(ctx, candidate, "Build Chat recovery response read failed: "+readErr.Error())
+		}
 		s.cooldownBuildProbe(ctx, candidate, response.StatusCode)
 		return candidate.ID, true, fmt.Errorf("读取 Build Chat 能力探测响应: %w", readErr)
 	}
@@ -493,20 +569,69 @@ func (s *Service) ProbeNextBuildChat(ctx context.Context) (uint64, bool, error) 
 		if err := s.ObserveResponseModel(ctx, candidate.ID, observedModel); err != nil {
 			return candidate.ID, true, err
 		}
-		_ = s.accounts.UpdateHealth(ctx, candidate.ID, 0, nil, "", true)
+		if recovery {
+			candidate.AuthStatus = accountdomain.AuthStatusActive
+			candidate.Enabled = true
+			candidate.FailureCount = 0
+			candidate.CooldownUntil = nil
+			candidate.LastError = ""
+			observedAt := s.now()
+			candidate.ObservedModel = observedModel
+			candidate.ObservedModelAt = &observedAt
+			if _, err := s.accounts.Update(ctx, candidate); err != nil {
+				return candidate.ID, true, mapRepositoryError(err)
+			}
+		} else {
+			_ = s.accounts.UpdateHealth(ctx, candidate.ID, 0, nil, "", true)
+		}
 		return candidate.ID, true, nil
 	}
 	metadata := strings.ToLower(string(body))
 	if response.StatusCode == http.StatusUnauthorized {
+		if recovery {
+			return s.deferOrRetireBuildRecovery(ctx, candidate, "grok_build credential rejected after recovery")
+		}
 		_ = s.MarkReauthRequired(ctx, candidate.ID, "grok_build credential rejected")
 		return candidate.ID, true, fmt.Errorf("Build Chat 能力探测认证失败")
 	}
 	if response.StatusCode == http.StatusForbidden && (strings.Contains(metadata, "permission-denied") || strings.Contains(metadata, "permission_denied") || strings.Contains(metadata, "access to the chat endpoint is denied")) {
+		if recovery {
+			return s.deferOrRetireBuildRecovery(ctx, candidate, "grok_build chat endpoint access denied after recovery")
+		}
 		_ = s.MarkReauthRequired(ctx, candidate.ID, "grok_build chat endpoint access denied")
 		return candidate.ID, true, fmt.Errorf("Build Chat 权限不足")
 	}
+	if recovery {
+		return s.deferOrRetireBuildRecovery(ctx, candidate, fmt.Sprintf("Build Chat recovery returned %d", response.StatusCode))
+	}
 	s.cooldownBuildProbe(ctx, candidate, response.StatusCode)
 	return candidate.ID, true, fmt.Errorf("Build Chat 能力探测返回 %d", response.StatusCode)
+}
+
+func (s *Service) deferOrRetireBuildRecovery(ctx context.Context, candidate accountdomain.Credential, reason string) (uint64, bool, error) {
+	attempts := candidate.FailureCount + 1
+	candidate.AuthStatus = accountdomain.AuthStatusReauthRequired
+	candidate.FailureCount = attempts
+	candidate.LastError = strings.TrimSpace(reason)
+	if attempts >= buildRecoveryMaxAttempts {
+		candidate.Enabled = false
+		candidate.CooldownUntil = nil
+		candidate.LastError = "retired: " + candidate.LastError
+	} else {
+		until := s.now().Add(buildRecoveryBackoff[min(attempts-1, len(buildRecoveryBackoff)-1)])
+		candidate.CooldownUntil = &until
+		candidate.LastError = "recovery pending: " + candidate.LastError
+	}
+	if len(candidate.LastError) > 512 {
+		candidate.LastError = candidate.LastError[:512]
+	}
+	if _, err := s.accounts.Update(ctx, candidate); err != nil {
+		return candidate.ID, true, mapRepositoryError(err)
+	}
+	if s.sticky != nil {
+		_ = s.sticky.DeleteByAccount(ctx, candidate.ID)
+	}
+	return candidate.ID, true, errors.New(candidate.LastError)
 }
 
 func (s *Service) cooldownBuildProbe(ctx context.Context, credential accountdomain.Credential, status int) {
@@ -1198,7 +1323,12 @@ func (s *Service) MarkReauthRequired(ctx context.Context, id uint64, reason stri
 	if err != nil {
 		return mapRepositoryError(err)
 	}
+	wasActive := value.AuthStatus == accountdomain.AuthStatusActive
 	value.AuthStatus = accountdomain.AuthStatusReauthRequired
+	if wasActive {
+		value.FailureCount = 0
+		value.CooldownUntil = nil
+	}
 	value.LastError = reason
 	if len(value.LastError) > 512 {
 		value.LastError = value.LastError[:512]

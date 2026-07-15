@@ -40,10 +40,11 @@ ACTIVE_SESSION_CREATIONS = set()
 
 
 class BrowserSession:
-    def __init__(self, driver, proxy_url, origin):
+    def __init__(self, driver, proxy_url, origin, user_agent=""):
         self.driver = driver
         self.proxy_url = proxy_url
         self.origin = origin
+        self.user_agent = user_agent
         self.lock = threading.Lock()
         self.close_lock = threading.Lock()
         self.closed = False
@@ -243,6 +244,15 @@ def parse_cookies(raw_cookie):
     return values
 
 
+def user_agent_platform(user_agent):
+    lowered = str(user_agent or "").lower()
+    if "macintosh" in lowered or "mac os x" in lowered:
+        return "MacIntel"
+    if "windows" in lowered:
+        return "Win32"
+    return "Linux x86_64"
+
+
 def close_expired_locked(now):
     expired = [key for key, value in SESSIONS.items() if now - value.last_used > SESSION_TTL]
     for key in expired:
@@ -285,7 +295,7 @@ def execute_browser_operation(browser, timeout_ms, operation):
     return state.get("result")
 
 
-def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeout_ms=None):
+def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeout_ms=None, user_agent=""):
     if not session_key or len(session_key) > 128:
         raise HTTPError(400, "invalid session key")
     timeout_ms = bounded_timeout_ms(None, 120000) if timeout_ms is None else max(1, min(MAX_OPERATION_MS, int(timeout_ms)))
@@ -298,7 +308,7 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeou
         with SESSIONS_LOCK:
             close_expired_locked(now)
             current = SESSIONS.get(session_key)
-            if current is not None and (current.proxy_url != proxy_url or current.origin != origin):
+            if current is not None and (current.proxy_url != proxy_url or current.origin != origin or current.user_agent != user_agent):
                 SESSIONS.pop(session_key).close()
                 current = None
             if current is not None:
@@ -323,12 +333,14 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeou
                 try:
                     state["stage"] = "launching browser"
                     driver = utils.get_webdriver(parse_proxy(proxy_url))
-                    browser = BrowserSession(driver, proxy_url, origin)
+                    browser = BrowserSession(driver, proxy_url, origin, user_agent)
                     state["browser"] = browser
                     if cancelled.is_set():
                         browser.close()
                         return
                     if target.hostname in {"grok.com", "www.grok.com"}:
+                        if user_agent:
+                            driver.execute_cdp_cmd("Network.setUserAgentOverride", {"userAgent": user_agent, "platform": user_agent_platform(user_agent)})
                         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": r"""
 (() => {
   const queue = [];
@@ -439,7 +451,7 @@ def fetch():
     deadline = time.monotonic() + (timeout_ms / 1000)
     cookies = parse_cookies(payload.get("cookie"))
     try:
-        browser = acquire_session(str(payload.get("sessionKey") or ""), str(payload.get("proxyUrl") or ""), cookies, str(payload.get("referer") or ""), str(payload.get("url") or ""), remaining_timeout_ms(deadline))
+        browser = acquire_session(str(payload.get("sessionKey") or ""), str(payload.get("proxyUrl") or ""), cookies, str(payload.get("referer") or ""), str(payload.get("url") or ""), remaining_timeout_ms(deadline), str(payload.get("userAgent") or ""))
     except HTTPError:
         raise
     except Exception as error:
@@ -526,7 +538,7 @@ def websocket():
     expected = min(max(int(payload.get("expected") or 1), 1), 10)
     cookies = parse_cookies(payload.get("cookie"))
     try:
-        browser = acquire_session(str(payload.get("sessionKey") or ""), str(payload.get("proxyUrl") or ""), cookies, str(payload.get("referer") or "https://grok.com/imagine"), str(payload.get("url") or ""), remaining_timeout_ms(deadline))
+        browser = acquire_session(str(payload.get("sessionKey") or ""), str(payload.get("proxyUrl") or ""), cookies, str(payload.get("referer") or "https://grok.com/imagine"), str(payload.get("url") or ""), remaining_timeout_ms(deadline), str(payload.get("userAgent") or ""))
     except HTTPError:
         raise
     except Exception as error:

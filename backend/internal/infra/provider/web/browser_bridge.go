@@ -88,7 +88,7 @@ func (b *browserBridge) Do(ctx context.Context, lease *infraegress.Lease, reques
 	}
 	cookie := request.Header.Get("Cookie")
 	payload := browserBridgeRequest{
-		SessionKey: browserSessionKey(lease.ProxyURL, cookie), URL: request.URL.String(), Method: request.Method,
+		SessionKey: browserSessionKey(lease.ProxyURL, cookie, lease.UserAgent), URL: request.URL.String(), Method: request.Method,
 		Headers: browserFetchHeaders(request.Header), Body: base64.StdEncoding.EncodeToString(body),
 		Cookie: cookie, ProxyURL: lease.ProxyURL, UserAgent: lease.UserAgent, Referer: request.Header.Get("Referer"),
 		TimeoutMS: max(1000, timeout.Milliseconds()),
@@ -120,7 +120,7 @@ func (b *browserBridge) WebSocket(ctx context.Context, lease *infraegress.Lease,
 	payload.ProxyURL = lease.ProxyURL
 	payload.UserAgent = lease.UserAgent
 	if payload.SessionKey == "" {
-		payload.SessionKey = browserSessionKey(lease.ProxyURL, payload.Cookie)
+		payload.SessionKey = browserSessionKey(lease.ProxyURL, payload.Cookie, lease.UserAgent)
 	}
 	var result browserBridgeWebSocketResponse
 	if err := b.call(ctx, "/v1/websocket", payload, &result); err != nil {
@@ -214,7 +214,7 @@ func browserFetchHeaders(source http.Header) http.Header {
 	return result
 }
 
-func browserSessionKey(proxyURL, cookie string) string {
-	digest := sha256.Sum256([]byte(proxyURL + "\x00" + cookie))
+func browserSessionKey(proxyURL, cookie, userAgent string) string {
+	digest := sha256.Sum256([]byte(proxyURL + "\x00" + cookie + "\x00" + userAgent))
 	return hex.EncodeToString(digest[:16])
 }

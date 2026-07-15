@@ -242,6 +242,30 @@ func (r *AccountRepository) ListEnabled(ctx context.Context, provider account.Pr
 	return out, nil
 }
 
+// ListRecoveryCandidates 返回已隔离且到达恢复时间的账号。恢复调度与生产路由分离，
+// 因此 reauthRequired 账号不会重新进入真实流量，只会被单并发恢复 worker 选中。
+func (r *AccountRepository) ListRecoveryCandidates(ctx context.Context, provider account.Provider, now time.Time, limit int) ([]account.Credential, error) {
+	if limit < 1 {
+		return []account.Credential{}, nil
+	}
+	var rows []accountModel
+	err := r.db.db.WithContext(ctx).
+		Preload("Credential").Preload("WebProfile").
+		Where("provider = ? AND enabled = ? AND auth_status = ? AND (cooldown_until IS NULL OR cooldown_until <= ?)", provider, true, account.AuthStatusReauthRequired, now.UTC()).
+		Order("failure_count ASC, updated_at ASC, id ASC").Limit(limit).Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]account.Credential, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toAccountDomain(row))
+	}
+	if err := r.attachAccountLinks(ctx, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (r *AccountRepository) ListEnabledAccountIDs(ctx context.Context, provider account.Provider, refreshableOnly bool) ([]uint64, error) {
 	query := r.db.db.WithContext(ctx).
 		Table("provider_accounts AS account").
@@ -444,6 +468,11 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 		row.ID = existing.ID
 		row.CreatedAt = existing.CreatedAt
 		row.Enabled = existing.Enabled
+		// 自动恢复失败达到上限后只做软退役。管理员显式重导入新凭据时恢复启用，
+		// 既保留账号 ID、关联和审计，又不会让旧死号继续污染生产池。
+		if !existing.Enabled && strings.HasPrefix(strings.ToLower(strings.TrimSpace(existing.LastError)), "retired:") {
+			row.Enabled = true
+		}
 		row.Priority = existing.Priority
 		row.MaxConcurrent = existing.MaxConcurrent
 		row.MinimumRemaining = existing.MinimumRemaining

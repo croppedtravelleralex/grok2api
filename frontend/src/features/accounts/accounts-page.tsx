@@ -996,17 +996,37 @@ function AccountTypeText({ label, variant }: { label: string; variant: "default"
 }
 
 function AccountStatus({ account }: { account: AccountDTO }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const zh = i18n.language.toLowerCase().startsWith("zh");
+  const poolText = {
+    quarantine: zh ? "隔离" : "Quarantined",
+    recovery: zh ? "恢复中" : "Recovering",
+    retired: zh ? "已退役" : "Retired",
+    verification: zh ? "待验证" : "Verifying",
+    retiredDescription: zh ? "自动恢复达到上限，账号已软退役；重新导入有效凭据可恢复" : "Automatic recovery reached its limit. Reimport fresh credentials to revive this account.",
+    verificationDescription: zh ? "尚未通过最小 Build Chat 能力探测，不会承接生产请求" : "This account has not passed the minimal Build Chat probe and will not receive production traffic.",
+  };
+  const issue = account.lastError || account.lastRefreshErrorCode;
+  const action = issue?.includes("invalid_grant") ? t("accounts.invalidGrantAction") : issue?.includes("access denied") ? t("accounts.accessDeniedAction") : issue;
+  if (account.pool === "retired") {
+    return <Tooltip><TooltipTrigger asChild><Badge variant="outline" className="cursor-help text-muted-foreground">{poolText.retired}</Badge></TooltipTrigger><TooltipContent className="max-w-80">{action || poolText.retiredDescription}</TooltipContent></Tooltip>;
+  }
   if (!account.enabled) {
     return <Badge variant="outline" className="text-muted-foreground">{t("accounts.statusDisabled")}</Badge>;
   }
+  if (account.pool === "recovery") {
+    const next = account.nextRecoveryAt ? formatDateTime(account.nextRecoveryAt, i18n.language) : t("accounts.quotaResetUnknown");
+    const recoveryDetail = zh ? `第 ${account.recoveryAttempts} 次恢复失败，计划于 ${next} 再试` : `Recovery attempt ${account.recoveryAttempts} failed; retry scheduled for ${next}`;
+    return <Tooltip><TooltipTrigger asChild><Badge variant="secondary" className="cursor-help bg-amber-500/10 text-amber-700 dark:text-amber-300">{poolText.recovery}</Badge></TooltipTrigger><TooltipContent className="max-w-80">{recoveryDetail}{action ? ` · ${action}` : ""}</TooltipContent></Tooltip>;
+  }
   if (account.authStatus === "reauthRequired") {
-    const issue = account.lastError || account.lastRefreshErrorCode;
-    const detail = issue?.includes("invalid_grant") ? t("accounts.invalidGrantAction") : issue?.includes("access denied") ? t("accounts.accessDeniedAction") : issue;
-    if (detail) {
-      return <Tooltip><TooltipTrigger asChild><Badge variant="destructive" className="cursor-help">{t("accounts.statusReauthRequired")}</Badge></TooltipTrigger><TooltipContent className="max-w-80">{detail}</TooltipContent></Tooltip>;
+    if (action) {
+      return <Tooltip><TooltipTrigger asChild><Badge variant="destructive" className="cursor-help">{poolText.quarantine}</Badge></TooltipTrigger><TooltipContent className="max-w-80">{action}</TooltipContent></Tooltip>;
     }
-    return <Badge variant="destructive">{t("accounts.statusReauthRequired")}</Badge>;
+    return <Badge variant="destructive">{poolText.quarantine}</Badge>;
+  }
+  if (account.pool === "verification") {
+    return <Tooltip><TooltipTrigger asChild><Badge variant="secondary" className="cursor-help bg-sky-500/10 text-sky-700 dark:text-sky-300">{poolText.verification}</Badge></TooltipTrigger><TooltipContent>{poolText.verificationDescription}</TooltipContent></Tooltip>;
   }
   if (account.provider === "grok_console" && account.quotaWindows?.some((window) => window.mode === "console" && window.remaining <= 0)) {
     return <Badge variant="secondary" className="bg-amber-500/10 text-amber-700 dark:text-amber-300">{t("accounts.waitingReset")}</Badge>;

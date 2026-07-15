@@ -67,6 +67,9 @@ export type AccountDTO = {
   teamId?: string;
   enabled: boolean;
   authStatus: "active" | "reauthRequired";
+  pool: "production" | "verification" | "cooldown" | "quarantine" | "recovery" | "retired" | "disabled";
+  recoveryAttempts: number;
+  nextRecoveryAt?: string;
   expiresAt?: string;
   refreshable: boolean;
   refreshDueAt?: string;
@@ -83,6 +86,7 @@ export type AccountDTO = {
   linkedAccountId?: string;
   linkedAccountName?: string;
   linkedProvider?: "grok_build" | "grok_web";
+  observedModel?: string;
   createdAt: string;
   billing?: BillingDTO;
   quota: QuotaDTO;
@@ -195,11 +199,12 @@ const quotaWindowValidator = hasShape({
 const accountValidator = hasShape({
   id: isString, provider: isOneOf("grok_build", "grok_web", "grok_console"), authType: isOneOf("oauth", "sso"), webTier: isOptional(isOneOf("auto", "basic", "super", "heavy")),
   webTierSyncedAt: isOptional(isString), name: isString, email: isOptional(isString), userId: isOptional(isString), teamId: isOptional(isString),
-  enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), expiresAt: isOptional(isString), refreshable: isBoolean,
+  enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), pool: isOneOf("production", "verification", "cooldown", "quarantine", "recovery", "retired", "disabled"),
+  recoveryAttempts: isNumber, nextRecoveryAt: isOptional(isString), expiresAt: isOptional(isString), refreshable: isBoolean,
   refreshDueAt: isOptional(isString), lastRefreshAt: isOptional(isString), refreshFailureCount: isNumber,
   lastRefreshErrorCode: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
   failureCount: isNumber, cooldownUntil: isOptional(isString), lastError: isOptional(isString), lastUsedAt: isOptional(isString),
-  linkedAccountId: isOptional(isString), linkedAccountName: isOptional(isString), linkedProvider: isOptional(isOneOf("grok_build", "grok_web")),
+  linkedAccountId: isOptional(isString), linkedAccountName: isOptional(isString), linkedProvider: isOptional(isOneOf("grok_build", "grok_web")), observedModel: isOptional(isString),
   createdAt: isString, billing: isOptional(billingValidator), quota: quotaValidator, quotaWindows: isOptional(isArrayOf(quotaWindowValidator)),
 });
 const decodeBilling = createValidatedDecoder<BillingDTO>("billing", billingValidator);

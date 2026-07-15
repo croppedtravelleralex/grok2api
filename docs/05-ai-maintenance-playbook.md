@@ -30,7 +30,9 @@
 
 - Build `invalid_grant`：RT 已撤销/轮换；只有导入新 RT，或用有效且已关联的 Web SSO 重新生成 Build 凭据。
 - Build `access denied`：账号缺少 Build Chat 能力；同 Token 重刷无效，保持隔离并换有权限账号。
+- Build 自动恢复：同一个单并发能力 worker 交替处理恢复池和待验证池；不可恢复账号只软退役，禁止后台直接级联硬删。重新导入新凭据应保留账号 ID 并复活。
 - Web 403：先区分代理连接、Cloudflare 浏览器状态和 SSO 是否有效；代理 IP 白名单成功不等于 Grok 会话有效。
+- Web 浏览器身份：代理、SSO/clearance、UA、平台和浏览器 profile 必须保持一致；桥接停止通常是失败后的保护结果，不能当作 403 根因。
 - Web 全量额度刷新：必须走独立单并发池，先单账号 canary，禁止直接全量重跑。
 
 ## 更新纪律

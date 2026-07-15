@@ -23,8 +23,10 @@ class _Response:
 class _Driver:
     def __init__(self):
         self.closed = False
+        self.cdp_commands = []
 
     def execute_cdp_cmd(self, _name, _payload):
+        self.cdp_commands.append((_name, _payload))
         return None
 
     def set_script_timeout(self, _timeout):
@@ -100,6 +102,41 @@ def _load_app():
 
 
 class HealthCleanupTest(unittest.TestCase):
+    def test_browser_bootstrap_applies_configured_user_agent(self):
+        app = _load_app()
+        driver = _Driver()
+        app.utils.get_webdriver = lambda _proxy: driver
+        app._evil_logic = lambda *_args: None
+
+        session = app.acquire_session(
+            "account-1",
+            "direct://",
+            [],
+            "",
+            "https://grok.com/rest/rate-limits",
+            user_agent="Mozilla/5.0 TestBrowser/146",
+        )
+
+        self.assertEqual("Mozilla/5.0 TestBrowser/146", session.user_agent)
+        self.assertIn(("Network.setUserAgentOverride", {"userAgent": "Mozilla/5.0 TestBrowser/146", "platform": "Linux x86_64"}), driver.cdp_commands)
+
+    def test_browser_bootstrap_aligns_macos_platform_with_user_agent(self):
+        app = _load_app()
+        driver = _Driver()
+        app.utils.get_webdriver = lambda _proxy: driver
+        app._evil_logic = lambda *_args: None
+
+        app.acquire_session(
+            "account-mac",
+            "direct://",
+            [],
+            "",
+            "https://grok.com/rest/rate-limits",
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/146.0.0.0 Safari/537.36",
+        )
+
+        self.assertIn(("Network.setUserAgentOverride", {"userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/146.0.0.0 Safari/537.36", "platform": "MacIntel"}), driver.cdp_commands)
+
     def test_health_closes_expired_browser_sessions(self):
         app = _load_app()
         driver = _Driver()

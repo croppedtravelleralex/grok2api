@@ -238,6 +238,9 @@ type accountResponse struct {
 	TeamID           string                `json:"teamId,omitempty"`
 	Enabled          bool                  `json:"enabled"`
 	AuthStatus       string                `json:"authStatus"`
+	Pool             string                `json:"pool"`
+	RecoveryAttempts int                   `json:"recoveryAttempts"`
+	NextRecoveryAt   *time.Time            `json:"nextRecoveryAt,omitempty"`
 	ExpiresAt        *time.Time            `json:"expiresAt,omitempty"`
 	Refreshable      bool                  `json:"refreshable"`
 	RefreshDueAt     *time.Time            `json:"refreshDueAt,omitempty"`
@@ -1067,7 +1070,7 @@ func newAccountResponse(value accountapp.View) accountResponse {
 	result := accountResponse{
 		ID: c.ID, Provider: string(c.Provider), AuthType: string(c.AuthType), WebTier: string(c.WebTier),
 		WebTierSyncedAt: c.WebTierSyncedAt, Name: c.Name, Email: c.Email, UserID: c.UserID, TeamID: c.TeamID,
-		Enabled: c.Enabled, AuthStatus: string(c.AuthStatus), Refreshable: c.EncryptedRefreshToken != "",
+		Enabled: c.Enabled, AuthStatus: string(c.AuthStatus), Pool: accountPool(c), RecoveryAttempts: c.FailureCount, Refreshable: c.EncryptedRefreshToken != "",
 		RefreshDueAt: c.RefreshDueAt, LastRefreshAt: c.LastRefreshAt,
 		RefreshFailures: c.RefreshFailureCount, LastRefreshError: c.LastRefreshErrorCode,
 		Priority: c.Priority, MaxConcurrent: c.MaxConcurrent, MinimumRemaining: c.MinimumRemaining,
@@ -1075,6 +1078,9 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		LastUsedAt: c.LastUsedAt, LinkedAccountID: c.LinkedAccountID, LinkedName: c.LinkedAccountName, LinkedProvider: string(c.LinkedProvider),
 		CreatedAt: c.CreatedAt, ObservedModel: c.ObservedModel, ObservedModelAt: c.ObservedModelAt,
 		Quota: newQuotaResponse(value.Quota), QuotaWindows: make([]quotaWindowResponse, 0, len(value.QuotaWindows)),
+	}
+	if c.AuthStatus == accountdomain.AuthStatusReauthRequired {
+		result.NextRecoveryAt = c.CooldownUntil
 	}
 	for _, window := range value.QuotaWindows {
 		breakdown := make([]quotaBreakdownResponse, 0, len(window.Breakdown))
@@ -1097,6 +1103,28 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		result.Billing = &billing
 	}
 	return result
+}
+
+func accountPool(value accountdomain.Credential) string {
+	if !value.Enabled {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(value.LastError)), "retired:") {
+			return "retired"
+		}
+		return "disabled"
+	}
+	if value.AuthStatus == accountdomain.AuthStatusReauthRequired {
+		if value.CooldownUntil != nil && value.CooldownUntil.After(time.Now().UTC()) {
+			return "recovery"
+		}
+		return "quarantine"
+	}
+	if value.CooldownUntil != nil && value.CooldownUntil.After(time.Now().UTC()) {
+		return "cooldown"
+	}
+	if value.Provider == accountdomain.ProviderBuild && strings.TrimSpace(value.ObservedModel) == "" {
+		return "verification"
+	}
+	return "production"
 }
 
 func newQuotaResponse(value accountapp.QuotaView) quotaResponse {
