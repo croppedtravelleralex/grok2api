@@ -29,6 +29,7 @@ const (
 	defaultWebQuotaCatchupLimit        = 100
 	defaultWebQuotaCatchupInitialDelay = 5 * time.Second
 	defaultWebQuotaCatchupInterval     = 30 * time.Minute
+	defaultBuildChatProbeInitialDelay  = 2 * time.Minute
 )
 
 func boundedEnvInt(name string, fallback, minimum, maximum int) int {
@@ -69,6 +70,22 @@ func webQuotaCatchupInitialDelay() time.Duration {
 
 func webQuotaCatchupInterval() time.Duration {
 	return boundedEnvDuration("GROK2API_WEB_QUOTA_CATCHUP_EVERY", defaultWebQuotaCatchupInterval, 5*time.Minute, 24*time.Hour)
+}
+
+func buildChatProbeInterval() time.Duration {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("GROK2API_BUILD_CHAT_PROBE_EVERY")))
+	if value == "" || value == "0" || value == "off" || value == "disabled" {
+		return 0
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed < 5*time.Minute || parsed > 24*time.Hour {
+		return 0
+	}
+	return parsed
+}
+
+func buildChatProbeInitialDelay() time.Duration {
+	return boundedEnvDuration("GROK2API_BUILD_CHAT_PROBE_INITIAL_DELAY", defaultBuildChatProbeInitialDelay, 10*time.Second, 24*time.Hour)
 }
 
 type startupReport struct {
@@ -467,5 +484,31 @@ func (a *Application) runModelCatalogCatchup(ctx context.Context) {
 			a.logger.Warn("model_catalog_stale_catchup_failed", "error", err)
 		}
 		resetTimer(timer, modelCatalogCatchupEvery)
+	}
+}
+
+// runBuildChatProbe 每个周期只验证一个未确认 Build 账号，避免用生产请求试错或形成刷新风暴。
+func (a *Application) runBuildChatProbe(ctx context.Context) {
+	interval := buildChatProbeInterval()
+	if interval <= 0 {
+		return
+	}
+	timer := time.NewTimer(buildChatProbeInitialDelay())
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		accountID, found, err := a.accounts.ProbeNextBuildChat(probeCtx)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			a.logger.Warn("build_chat_capability_probe_failed", "account_id", accountID, "error", err)
+		} else if found {
+			a.logger.Info("build_chat_capability_probe_succeeded", "account_id", accountID)
+		}
+		resetTimer(timer, interval)
 	}
 }

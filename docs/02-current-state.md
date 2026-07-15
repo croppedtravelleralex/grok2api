@@ -46,6 +46,8 @@
 - 剩余 85 个 `invalid_grant` 必须导入新的有效 RT；30 个 `access denied` 账号继续隔离在调度池外，同 Token 刷新不会产生 Build 权限。
 - 已修复 Token 刷新无条件把 `access denied` 账号恢复为 active 的缺陷；权限拒绝后不再强制刷新 RT。
 - Build 在线请求优先且仅使用已有成功响应型号记录的账号；未验证账号不再借真实用户请求试错。诊断快照中 active 账号只有少量已有成功响应记录，因此后续必须使用单并发能力探测逐步扩大可信池。
+- Panda 的 Build 能力探测配置为延迟 2 分钟启动、每 5 分钟只处理 1 个未验证账号；成功才进入可信池，权限拒绝转为 `reauthRequired`，临时错误冷却 15 分钟。
+- 重新导入处于 `reauthRequired` 的 Build 账号时会清除旧 `observed_model`，防止旧权限结论污染新凭据；新凭据必须重新通过能力探测。
 - Web 额度刷新应用层原本已有独立单并发池；Panda 单节点代理测试显示 Webshare 连接正常，但直接访问 Grok 返回 Cloudflare 403。
 - 单浏览器、单账号额度 canary 在加载 Grok 页面阶段超时并返回 502；桥接容器已停止，未执行全量刷新。当前根因是所选代理上的 Cloudflare 浏览器会话无法建立，不是代理白名单或并发连接失败。
 - Webshare 100 个出口仅分布在 10 个 `/24`，集中于新加坡机房 ASN。Panda canary 已证明代理鉴权和外网连通正常、但 Grok 返回 Cloudflare 403；主要风险是机房 ASN 信誉、IP/账号地域不一致，以及 SSO/clearance 与原始 IP、UA、TLS/浏览器指纹不一致。
@@ -68,7 +70,7 @@
 
 1. 保持浏览器桥接停止，避免无效会话占用内存。
 2. 更换可通过 Grok Cloudflare 的住宅/ISP 代理后进行单账号 canary。
-3. 为 `invalid_grant` 账号导入新 RT；为 `access denied` 账号更换具备 Build Chat 权限的授权，然后以单并发最小请求验证后再进入可信池。
+3. 为 `invalid_grant` 账号导入新 RT；为 `access denied` 账号更换具备 Build Chat 权限的授权，后台会以单并发最小请求验证后再放入可信池。
 4. 新生图片验证生成耗时、模型和请求分辨率字段；旧图片只展示可解析的实际尺寸。
 
 ## 与 README 或旧文档的不一致处

@@ -145,3 +145,22 @@ func TestWebQuotaCatchupSettingsRejectUnsafeValues(t *testing.T) {
 		t.Fatalf("unsafe interval = %s", got)
 	}
 }
+
+func TestBuildChatProbeSettingsAreDisabledByDefaultAndBounded(t *testing.T) {
+	t.Setenv("GROK2API_BUILD_CHAT_PROBE_EVERY", "")
+	if got := buildChatProbeInterval(); got != 0 {
+		t.Fatalf("default probe interval = %s", got)
+	}
+	t.Setenv("GROK2API_BUILD_CHAT_PROBE_EVERY", "5m")
+	t.Setenv("GROK2API_BUILD_CHAT_PROBE_INITIAL_DELAY", "2m")
+	if got := buildChatProbeInterval(); got != 5*time.Minute {
+		t.Fatalf("probe interval = %s", got)
+	}
+	if got := buildChatProbeInitialDelay(); got != 2*time.Minute {
+		t.Fatalf("probe initial delay = %s", got)
+	}
+	t.Setenv("GROK2API_BUILD_CHAT_PROBE_EVERY", "10s")
+	if got := buildChatProbeInterval(); got != 0 {
+		t.Fatalf("unsafe probe interval = %s", got)
+	}
+}

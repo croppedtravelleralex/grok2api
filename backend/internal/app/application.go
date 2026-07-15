@@ -425,6 +425,10 @@ func (a *Application) Run(ctx context.Context) error {
 		a.runModelCatalogCatchup(taskCtx)
 		return nil
 	})
+	startBackground("build_chat_capability_probe", func(taskCtx context.Context) error {
+		a.runBuildChatProbe(taskCtx)
+		return nil
+	})
 	startBackground("video_recovery", func(taskCtx context.Context) error {
 		a.gateway.RunVideoRecovery(taskCtx)
 		return nil

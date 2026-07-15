@@ -335,6 +335,41 @@ func TestUpdateTokensDoesNotReactivateBuildPermissionDeniedAccount(t *testing.T)
 	}
 }
 
+func TestReimportingReauthBuildAccountClearsStaleObservedModel(t *testing.T) {
+	ctx := context.Background()
+	repo := NewAccountRepository(openTestDatabase(t))
+	credential, _, err := repo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "stale", SourceKey: "stale",
+		EncryptedAccessToken: testEncryptedToken, AuthStatus: account.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateObservedModel(ctx, credential.ID, "grok-4.5-build-free", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	credential, err = repo.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential.AuthStatus = account.AuthStatusReauthRequired
+	credential.LastError = "grok_build chat endpoint access denied"
+	if _, err := repo.Update(ctx, credential); err != nil {
+		t.Fatal(err)
+	}
+
+	reimported, created, err := repo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "stale", SourceKey: "stale",
+		EncryptedAccessToken: "new-access", EncryptedRefreshToken: "new-refresh", AuthStatus: account.AuthStatusActive,
+	})
+	if err != nil || created {
+		t.Fatalf("created=%v err=%v", created, err)
+	}
+	if reimported.ObservedModel != "" || reimported.AuthStatus != account.AuthStatusActive {
+		t.Fatalf("reimported = %#v", reimported)
+	}
+}
+
 func TestForeignKeysCascadeRuntimeStateButPreserveAuditHistory(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)

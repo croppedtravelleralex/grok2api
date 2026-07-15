@@ -454,6 +454,10 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 		row.LastUsedAt = existing.LastUsedAt
 		row.ObservedModel = existing.ObservedModel
 		row.ObservedModelAt = existing.ObservedModelAt
+		if existing.Provider == string(account.ProviderBuild) && existing.AuthStatus == string(account.AuthStatusReauthRequired) {
+			row.ObservedModel = ""
+			row.ObservedModelAt = nil
+		}
 		if err := tx.Save(&row).Error; err != nil {
 			return repository.AccountUpsertResult{}, accountModel{}, err
 		}

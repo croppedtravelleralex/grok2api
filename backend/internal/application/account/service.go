@@ -2,9 +2,12 @@ package account
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -427,6 +430,88 @@ func (s *Service) ObserveResponseModel(ctx context.Context, id uint64, model str
 		return nil
 	}
 	return s.accounts.UpdateObservedModel(ctx, id, model, time.Now().UTC())
+}
+
+// ProbeNextBuildChat 用一个最小 Responses 请求串行验证下一个未确认的 Build 账号。
+// 成功后才写入 observed_model；权限拒绝会立即隔离，临时错误只进入短冷却。
+func (s *Service) ProbeNextBuildChat(ctx context.Context) (uint64, bool, error) {
+	values, err := s.accounts.ListEnabled(ctx, accountdomain.ProviderBuild)
+	if err != nil {
+		return 0, false, mapRepositoryError(err)
+	}
+	now := s.now()
+	var candidate accountdomain.Credential
+	for _, value := range values {
+		if value.AuthStatus != accountdomain.AuthStatusActive || strings.TrimSpace(value.ObservedModel) != "" {
+			continue
+		}
+		if value.CooldownUntil != nil && now.Before(*value.CooldownUntil) {
+			continue
+		}
+		candidate = value
+		break
+	}
+	if candidate.ID == 0 {
+		return 0, false, nil
+	}
+	selectedID := candidate.ID
+	candidate, err = s.EnsureCredential(ctx, candidate, false)
+	if err != nil {
+		return selectedID, true, err
+	}
+	if s.providers == nil {
+		return selectedID, true, fmt.Errorf("Grok Build Provider 未注册")
+	}
+	adapter, ok := s.providers.Responses(accountdomain.ProviderBuild)
+	if !ok {
+		return selectedID, true, fmt.Errorf("Grok Build Responses Provider 未注册")
+	}
+	payload := []byte(`{"model":"grok-4.5","input":"Reply with OK only.","max_output_tokens":16,"store":false,"stream":false}`)
+	response, err := adapter.ForwardResponse(ctx, provider.ResponseResourceRequest{
+		Credential: candidate, Method: http.MethodPost, Path: "/responses", Body: payload,
+		Model: "grok-4.5", NormalizeBody: false, Operation: "responses",
+	})
+	if err != nil {
+		s.cooldownBuildProbe(ctx, candidate, 0)
+		return candidate.ID, true, fmt.Errorf("Build Chat 能力探测连接失败: %w", err)
+	}
+	defer response.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if readErr != nil {
+		s.cooldownBuildProbe(ctx, candidate, response.StatusCode)
+		return candidate.ID, true, fmt.Errorf("读取 Build Chat 能力探测响应: %w", readErr)
+	}
+	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		var envelope struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &envelope)
+		observedModel := strings.TrimSpace(envelope.Model)
+		if observedModel == "" {
+			observedModel = "grok-4.5"
+		}
+		if err := s.ObserveResponseModel(ctx, candidate.ID, observedModel); err != nil {
+			return candidate.ID, true, err
+		}
+		_ = s.accounts.UpdateHealth(ctx, candidate.ID, 0, nil, "", true)
+		return candidate.ID, true, nil
+	}
+	metadata := strings.ToLower(string(body))
+	if response.StatusCode == http.StatusUnauthorized {
+		_ = s.MarkReauthRequired(ctx, candidate.ID, "grok_build credential rejected")
+		return candidate.ID, true, fmt.Errorf("Build Chat 能力探测认证失败")
+	}
+	if response.StatusCode == http.StatusForbidden && (strings.Contains(metadata, "permission-denied") || strings.Contains(metadata, "permission_denied") || strings.Contains(metadata, "access to the chat endpoint is denied")) {
+		_ = s.MarkReauthRequired(ctx, candidate.ID, "grok_build chat endpoint access denied")
+		return candidate.ID, true, fmt.Errorf("Build Chat 权限不足")
+	}
+	s.cooldownBuildProbe(ctx, candidate, response.StatusCode)
+	return candidate.ID, true, fmt.Errorf("Build Chat 能力探测返回 %d", response.StatusCode)
+}
+
+func (s *Service) cooldownBuildProbe(ctx context.Context, credential accountdomain.Credential, status int) {
+	until := s.now().Add(15 * time.Minute)
+	_ = s.accounts.UpdateHealth(ctx, credential.ID, credential.FailureCount+1, &until, fmt.Sprintf("build chat capability probe status %d", status), false)
 }
 
 func newQuotaView(billing *accountdomain.Billing, observedTokens int64, recovery *accountdomain.QuotaRecovery, observedModel string) QuotaView {
