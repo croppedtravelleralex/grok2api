@@ -8,9 +8,10 @@
 ## 整体状态摘要
 
 - 后端为 Go 网关，前端为 React/Vite 管理端，支持 Grok Build、Web、Console 三个账号池。
-- 本地工作分支为 `codex/panda-safe-completion`；Panda 已运行本轮镜像摘要 `sha256:80d6ab8d5922...`。
+- 本地工作分支为 `codex/panda-safe-completion`；Panda 已运行本轮镜像摘要 `sha256:7901d845009c...`。
 - Panda 为低资源生产机，部署采用本地提交、GitHub Actions/GHCR 构建、Panda 拉取镜像的方式。
 - NewAPI 已按 Chat Completions、Responses、Messages、Images 和 Videos 拆分接入；本轮不改其渠道结构。
+- NewAPI 图片渠道已移除人为的 `gpt-image-*` 名称，统一为 `grok-imagine-image`、`grok-imagine-image-quality` 和 `grok-imagine-image-edit`；由于 Web/Cloudflare 仍不可用，generations/edits 暂时 disabled，模型列表不再暴露旧别名或不可用入口。
 
 ## 已完成功能
 
@@ -48,6 +49,8 @@
 - Build 在线请求优先且仅使用已有成功响应型号记录的账号；未验证账号不再借真实用户请求试错。诊断快照中 active 账号只有少量已有成功响应记录，因此后续必须使用单并发能力探测逐步扩大可信池。
 - Panda 的 Build 能力探测配置为延迟 2 分钟启动、每 5 分钟只处理 1 个未验证账号；成功才进入可信池，权限拒绝转为 `reauthRequired`，临时错误冷却 15 分钟。
 - 重新导入处于 `reauthRequired` 的 Build 账号时会清除旧 `observed_model`，防止旧权限结论污染新凭据；新凭据必须重新通过能力探测。
+- 生产 Messages canary 已通过：NewAPI `/v1/messages` 返回 200，对外及 NewAPI 记录的上游模型均为 `grok-4.5`；最终 usage 正确记录输入和输出 Token。
+- 首个后台 Build 能力探测已按计划只处理 1 个账号，并把确认无权限的账号转为 `reauthRequired`；探测后 grok2api 约 34–40 MiB，服务持续 healthy。
 - Web 额度刷新应用层原本已有独立单并发池；Panda 单节点代理测试显示 Webshare 连接正常，但直接访问 Grok 返回 Cloudflare 403。
 - 单浏览器、单账号额度 canary 在加载 Grok 页面阶段超时并返回 502；桥接容器已停止，未执行全量刷新。当前根因是所选代理上的 Cloudflare 浏览器会话无法建立，不是代理白名单或并发连接失败。
 - Webshare 100 个出口仅分布在 10 个 `/24`，集中于新加坡机房 ASN。Panda canary 已证明代理鉴权和外网连通正常、但 Grok 返回 Cloudflare 403；主要风险是机房 ASN 信誉、IP/账号地域不一致，以及 SSO/clearance 与原始 IP、UA、TLS/浏览器指纹不一致。
