@@ -164,3 +164,24 @@ func TestBuildChatProbeSettingsAreDisabledByDefaultAndBounded(t *testing.T) {
 		t.Fatalf("unsafe probe interval = %s", got)
 	}
 }
+
+func TestDisabledBuildChatProbeWaitsForShutdown(t *testing.T) {
+	t.Setenv("GROK2API_BUILD_CHAT_PROBE_EVERY", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		(&Application{}).runBuildChatProbe(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("disabled build chat probe returned before shutdown")
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("disabled build chat probe did not stop with context")
+	}
+}

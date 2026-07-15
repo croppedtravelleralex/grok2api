@@ -491,6 +491,9 @@ func (a *Application) runModelCatalogCatchup(ctx context.Context) {
 func (a *Application) runBuildChatProbe(ctx context.Context) {
 	interval := buildChatProbeInterval()
 	if interval <= 0 {
+		// Supervisor 把后台任务正常返回视为异常退出。关闭探测时保持任务存活，
+		// 直到应用关闭，避免每 30 秒重启并刷 error 日志。
+		<-ctx.Done()
 		return
 	}
 	timer := time.NewTimer(buildChatProbeInitialDelay())

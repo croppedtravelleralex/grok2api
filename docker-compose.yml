@@ -10,10 +10,17 @@ services:
       TZ: "${TZ:-Asia/Shanghai}"
       GROK2API_BROWSER_BRIDGE_URL: "${GROK2API_BROWSER_BRIDGE_URL:-http://browser-bridge:8192}"
       GROK2API_BROWSER_BRIDGE_KEY_FILE: /run/secrets/browser-bridge-key
+      # 低资源生产调度：启动不扫 Web 全池，持续任务和 Build 能力恢复均保持单账号节拍。
+      GROK2API_WEB_QUOTA_STARTUP_LIMIT: "${GROK2API_WEB_QUOTA_STARTUP_LIMIT:-0}"
+      GROK2API_WEB_QUOTA_CATCHUP_LIMIT: "${GROK2API_WEB_QUOTA_CATCHUP_LIMIT:-1}"
+      GROK2API_WEB_QUOTA_CATCHUP_EVERY: "${GROK2API_WEB_QUOTA_CATCHUP_EVERY:-30m}"
+      GROK2API_BUILD_CHAT_PROBE_EVERY: "${GROK2API_BUILD_CHAT_PROBE_EVERY:-5m}"
+      GROK2API_BUILD_CHAT_PROBE_INITIAL_DELAY: "${GROK2API_BUILD_CHAT_PROBE_INITIAL_DELAY:-2m}"
     volumes:
       - "${GROK2API_CONFIG:-./config.yaml}:/run/grok2api/config.yaml:ro"
       - "${GROK2API_BROWSER_BRIDGE_KEY_FILE:-./data/browser-bridge-key}:/run/secrets/browser-bridge-key:ro"
-      - grok2api-data:/app/data
+      # 生产数据必须显式绑定项目目录，避免 compose 项目名变化时切换到空命名卷。
+      - "${GROK2API_DATA:-./data}:/app/data"
     restart: unless-stopped
     init: true
     cpus: "0.75"
@@ -86,6 +93,3 @@ services:
   #     - WARP_SLEEP=2
   #   cap_add:
   #     - NET_ADMIN
-
-volumes:
-  grok2api-data:
