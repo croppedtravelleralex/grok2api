@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,18 @@ import (
 
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 )
+
+func TestBrowserBridgeConnectionFailureIsControlPlaneError(t *testing.T) {
+	bridge := newBrowserBridge("http://127.0.0.1:1", "bridge-secret")
+	request, err := http.NewRequest(http.MethodGet, "https://grok.com/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = bridge.Do(context.Background(), &infraegress.Lease{ProxyURL: "direct://"}, request, time.Second)
+	if !errors.Is(err, errBrowserBridgeUnavailable) {
+		t.Fatalf("error = %v, want browser bridge unavailable", err)
+	}
+}
 
 func TestBrowserBridgeDoUsesAuthenticatedBrowserPayload(t *testing.T) {
 	var captured browserBridgeRequest

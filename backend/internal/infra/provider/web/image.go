@@ -517,7 +517,7 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 			IdleMS:    5000, Expected: modelConfig.NativeBatchSize,
 		})
 		if bridgeErr != nil {
-			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, bridgeErr)
+			a.feedbackTransportError(ctx, lease, bridgeErr)
 			return nil, fmt.Errorf("浏览器桥接 Imagine WebSocket: %w", bridgeErr)
 		}
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, http.StatusOK, nil)
@@ -555,11 +555,11 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 	deadline := time.Now().Add(time.Duration(cfg.ImageTimeoutSeconds) * time.Second)
 	_ = connection.SetReadDeadline(deadline)
 	if err := connection.WriteJSON(imagineResetMessage()); err != nil {
-		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
+		a.feedbackTransportError(ctx, lease, err)
 		return nil, err
 	}
 	if err := connection.WriteJSON(imagineRequestMessage(newWebID("img"), request.Prompt, ratio, cfg.AllowNSFW, modelConfig.Pro, modelConfig.NativeBatchSize)); err != nil {
-		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
+		a.feedbackTransportError(ctx, lease, err)
 		return nil, err
 	}
 	if request.Streaming {
@@ -576,7 +576,7 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 	for !collector.Done(modelConfig.NativeBatchSize) {
 		messageType, data, readErr := connection.ReadMessage()
 		if readErr != nil {
-			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, readErr)
+			a.feedbackTransportError(ctx, lease, readErr)
 			return nil, fmt.Errorf("读取 Imagine WebSocket: %w", readErr)
 		}
 		if messageType != websocket.TextMessage {
@@ -588,7 +588,7 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 		}
 		if message["type"] == "error" {
 			upstreamErr := fmt.Errorf("Imagine WebSocket 返回错误")
-			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, upstreamErr)
+			a.feedbackTransportError(ctx, lease, upstreamErr)
 			return nil, upstreamErr
 		}
 		collector.Accept(message)
@@ -1149,7 +1149,7 @@ func (a *Adapter) streamImagineImages(ctx context.Context, writer *io.PipeWriter
 				_ = writer.CloseWithError(ctx.Err())
 				return
 			}
-			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, readErr)
+			a.feedbackTransportError(ctx, lease, readErr)
 			writeImagineStreamFailure(writer, streamID, "upstream_stream_error", "图片生成流意外中断")
 			_ = writer.CloseWithError(readErr)
 			return
@@ -1163,7 +1163,7 @@ func (a *Adapter) streamImagineImages(ctx context.Context, writer *io.PipeWriter
 		}
 		if message["type"] == "error" {
 			upstreamErr := fmt.Errorf("Imagine WebSocket 返回错误")
-			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, upstreamErr)
+			a.feedbackTransportError(ctx, lease, upstreamErr)
 			writeImagineStreamFailure(writer, streamID, "upstream_error", "上游图片生成失败")
 			_ = writer.CloseWithError(upstreamErr)
 			return

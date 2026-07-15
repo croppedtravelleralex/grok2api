@@ -20,6 +20,8 @@ import (
 
 const browserBridgeBodyLimit = 192 << 20
 
+var errBrowserBridgeUnavailable = errors.New("浏览器桥接不可用")
+
 type browserBridge struct {
 	baseURL string
 	key     string
@@ -159,7 +161,9 @@ func (b *browserBridge) call(ctx context.Context, path string, payload, output a
 	}
 	response, err := b.client.Do(request)
 	if err != nil {
-		return err
+		// 桥接容器停止、DNS 失败或本机连接被拒绝属于控制面故障，不能把
+		// 账号绑定的代理节点误判为坏节点，否则一次桥接停机会冷却整个 Web 池。
+		return fmt.Errorf("%w: %v", errBrowserBridgeUnavailable, err)
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, browserBridgeBodyLimit+1))

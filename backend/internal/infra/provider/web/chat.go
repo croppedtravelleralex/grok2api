@@ -203,7 +203,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				a.feedbackAntiBot(ctx, lease, statsigTarget)
 				return antiBotProviderResponse(), nil
 			}
-			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, consumeErr)
+			a.feedbackTransportError(ctx, lease, consumeErr)
 			return nil, consumeErr
 		}
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, http.StatusOK, nil)
@@ -324,7 +324,7 @@ func (a *Adapter) openChat(ctx context.Context, credential account.Credential, p
 	response, err := a.doModelRequest(requestCtx, lease, request, time.Duration(cfg.ChatTimeoutSeconds)*time.Second)
 	if err != nil {
 		cancel()
-		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
+		a.feedbackTransportError(ctx, lease, err)
 		lease.Release()
 		return nil, nil, nil, "", err
 	}
@@ -415,7 +415,7 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 			return writeWebStreamDelta(writer, messagesStream, operation, responseID, model, kind, delta)
 		})
 		if err != nil {
-			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
+			a.feedbackTransportError(ctx, lease, err)
 			_ = writer.CloseWithError(err)
 			return
 		}

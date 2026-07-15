@@ -137,7 +137,7 @@ func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credenti
 		a.applySignedStatsig(requestCtx, request, token, lease)
 		response, err = a.doModelRequest(requestCtx, lease, request, time.Duration(cfg.QuotaTimeoutSeconds)*time.Second)
 		if err != nil {
-			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
+			a.feedbackTransportError(ctx, lease, err)
 			return account.QuotaWindow{}, err
 		}
 		body, err = io.ReadAll(io.LimitReader(response.Body, 4<<20))
@@ -209,7 +209,7 @@ func (a *Adapter) syncWeeklyCredits(ctx context.Context, credential account.Cred
 
 	response, err := a.doModelRequest(requestCtx, lease, request, time.Duration(cfg.QuotaTimeoutSeconds)*time.Second)
 	if err != nil {
-		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
+		a.feedbackTransportError(ctx, lease, err)
 		return account.QuotaWindow{}, err
 	}
 	defer response.Body.Close()
