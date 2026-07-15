@@ -55,8 +55,8 @@ services:
       - "${GROK2API_BROWSER_BRIDGE_KEY_FILE:-./data/browser-bridge-key}:/run/secrets/browser-bridge-key:ro"
     restart: unless-stopped
     init: true
-    cpus: "1.0"
-    mem_limit: 900m
+    cpus: "0.75"
+    mem_limit: 768m
     pids_limit: 256
     shm_size: 512m
     stop_grace_period: 30s
