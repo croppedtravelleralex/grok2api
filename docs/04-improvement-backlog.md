@@ -36,4 +36,5 @@
 | MTN-002 | Web 并发逐级容量测试 | 单并发稳定但吞吐受限 | 1→2 逐级测试 CPU/内存/403 率 | P1 | Planned | 必须遵守 Panda 门槛 |
 | MTN-003 | 账号错误趋势 | 目前主要看当前状态 | 记录错误码、刷新成功率和恢复时长趋势 | P1 | Idea | 不记录凭据正文 |
 | MTN-005 | Webshare 出口替换 | 100 节点集中在 10 个新加坡机房网段，Grok CF 403 | 采用粘滞住宅/ISP 节点；同账号固定 IP、UA、持久化浏览器 profile | P0 | Planned | Panda 单节点已证明白名单正常但 Grok 会话被拒绝 |
+| MTN-006 | 独立浏览器 Worker | Panda 启动真实 Chromium 12 秒后 load1 达 2.10，触发低资源硬门槛 | 将现有认证桥接部署到独立 2C/4G 以上 worker，通过私网/Tailscale 供 Panda 调用 | P0 | Planned | Panda 只保留 Go 网关；worker 单浏览器、单会话、粘滞代理 |
 | MTN-006 | 浏览器身份连续性 | 生产配置每次销毁会话且桥接忽略出口 UA | 会话复用 30 分钟；UA、平台、代理、Cookie 纳入同一会话身份 | P0 | In Progress | 本地 13 项桥接测试通过，待 Panda 单账号 canary |
