@@ -137,6 +137,12 @@ class HealthCleanupTest(unittest.TestCase):
 
         self.assertIn(("Network.setUserAgentOverride", {"userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/146.0.0.0 Safari/537.36", "platform": "MacIntel"}), driver.cdp_commands)
 
+    def test_safe_error_message_redacts_proxy_credentials(self):
+        app = _load_app()
+        message = app.safe_error_message(RuntimeError("proxy failed at http://user:secret@proxy.example:8080"))
+        self.assertIn("http://***@proxy.example:8080", message)
+        self.assertNotIn("user:secret", message)
+
     def test_health_closes_expired_browser_sessions(self):
         app = _load_app()
         driver = _Driver()

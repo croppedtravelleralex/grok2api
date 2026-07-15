@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import signal
 import sys
 import threading
@@ -423,8 +424,19 @@ def encode_response(value, status=200):
     return json.dumps(value, separators=(",", ":"))
 
 
-def error_response(error):
+def safe_error_message(error):
     message = type(error).__name__ + ": " + str(error)[:300]
+    # Selenium/代理库的异常偶尔会回显带认证信息的 URL；日志只保留协议和地址。
+    return re.sub(r"(?i)(https?://)([^/@\s]+)@", r"\1***@", message)
+
+
+def log_bridge_error(phase, error):
+    print(json.dumps({"event": "browser_bridge_error", "phase": phase, "error": safe_error_message(error)}, separators=(",", ":")), flush=True)
+
+
+def error_response(error):
+    message = safe_error_message(error)
+    log_bridge_error("bootstrap", error)
     return encode_response({"error": message}, 502)
 
 
@@ -518,8 +530,11 @@ const timer = setTimeout(() => finish({error: 'browser fetch timeout'}), cfg.tim
             return browser.driver.execute_async_script(script, cfg)
 
         result = execute_browser_operation(browser, timeout_ms, operation)
+        if isinstance(result, dict) and result.get("error"):
+            log_bridge_error("fetch", RuntimeError(str(result.get("error"))))
         return encode_response(result if isinstance(result, dict) else {"error": "invalid browser result"})
     except Exception as error:
+        log_bridge_error("fetch", error)
         return encode_response({"error": type(error).__name__ + ": " + str(error)[:300]}, 502)
     finally:
         if not env_flag("BRIDGE_REUSE_SESSIONS", True):
@@ -585,9 +600,12 @@ socket.onmessage = event => {
             return browser.driver.execute_async_script(script, cfg)
 
         result = execute_browser_operation(browser, timeout_ms, operation)
+        if isinstance(result, dict) and result.get("error"):
+            log_bridge_error("websocket", RuntimeError(str(result.get("error"))))
         frames = [base64.b64encode(str(value).encode()).decode() for value in (result or {}).get("frames", [])]
         return encode_response({"frames": frames, "error": (result or {}).get("error", "")})
     except Exception as error:
+        log_bridge_error("websocket", error)
         return encode_response({"error": type(error).__name__ + ": " + str(error)[:300]}, 502)
     finally:
         if not env_flag("BRIDGE_REUSE_SESSIONS", True):
