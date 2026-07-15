@@ -350,7 +350,7 @@ func TestGatewayPreservesRepeatedSystemicForbiddenWithoutCoolingAccounts(t *test
 	}
 }
 
-func TestGatewayRefreshesAndRetriesBuildPermissionDenialOnce(t *testing.T) {
+func TestGatewayQuarantinesBuildPermissionDenialWithoutRefreshing(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "auth-rescue.db"))
 	if err != nil {
@@ -393,27 +393,22 @@ func TestGatewayRefreshesAndRetriesBuildPermissionDenialOnce(t *testing.T) {
 	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
 	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 2)
 
-	result, err := service.CreateResponse(ctx, Input{
+	_, err = service.CreateResponse(ctx, Input{
 		RequestID: "req-rescue", ClientKey: clientKey, PublicModel: "grok-rescue",
 		Body: []byte(`{"model":"grok-rescue","input":"hello"}`),
 	})
-	if err != nil {
-		t.Fatal(err)
+	var failure *UpstreamFailure
+	if !errors.As(err, &failure) || !failure.PermanentAccountDenial {
+		t.Fatalf("failure = %#v, err=%v", failure, err)
 	}
-	body, err := io.ReadAll(result.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result.Finalize(Usage{}, "", "")
-	_ = result.Body.Close()
-	if string(body) != "ok" || adapter.attempts.Load() != 2 || adapter.refreshes.Load() != 1 {
-		t.Fatalf("body=%q attempts=%d refreshes=%d", body, adapter.attempts.Load(), adapter.refreshes.Load())
+	if adapter.attempts.Load() != 1 || adapter.refreshes.Load() != 0 {
+		t.Fatalf("attempts=%d refreshes=%d", adapter.attempts.Load(), adapter.refreshes.Load())
 	}
 	updated, err := accountRepo.Get(ctx, credential.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.EncryptedAccessToken != "access-new" || updated.AuthStatus != account.AuthStatusActive || updated.RefreshFailureCount != 0 {
+	if updated.EncryptedAccessToken != "access-old" || updated.AuthStatus != account.AuthStatusReauthRequired || !strings.Contains(updated.LastError, "chat endpoint access denied") {
 		t.Fatalf("updated credential = %#v", updated)
 	}
 }

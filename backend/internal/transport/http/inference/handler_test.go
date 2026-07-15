@@ -335,6 +335,59 @@ func TestUsageInspectorHandlesChunkedSSE(t *testing.T) {
 	}
 }
 
+func TestPermanentBuildDenialIsReportedAsTemporaryPoolFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	openAIRouter := gin.New()
+	openAIRouter.GET("/", func(c *gin.Context) {
+		writeGatewayError(c, &gateway.UpstreamFailure{
+			HTTPStatus: http.StatusForbidden, Code: "upstream_forbidden", PublicMessage: "上游拒绝了该请求", PermanentAccountDenial: true,
+		})
+	})
+	openAIRecorder := httptest.NewRecorder()
+	openAIRouter.ServeHTTP(openAIRecorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if openAIRecorder.Code != http.StatusServiceUnavailable || !strings.Contains(openAIRecorder.Body.String(), `"code":"upstream_account_unavailable"`) {
+		t.Fatalf("OpenAI status=%d body=%s", openAIRecorder.Code, openAIRecorder.Body.String())
+	}
+
+	anthropicRouter := gin.New()
+	anthropicRouter.GET("/", func(c *gin.Context) {
+		writeGatewayAnthropicError(c, &gateway.UpstreamFailure{
+			HTTPStatus: http.StatusForbidden, Code: "upstream_forbidden", PublicMessage: "上游拒绝了该请求", PermanentAccountDenial: true,
+		})
+	})
+	anthropicRecorder := httptest.NewRecorder()
+	anthropicRouter.ServeHTTP(anthropicRecorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if anthropicRecorder.Code != http.StatusServiceUnavailable || !strings.Contains(anthropicRecorder.Body.String(), `"type":"overloaded_error"`) {
+		t.Fatalf("Anthropic status=%d body=%s", anthropicRecorder.Code, anthropicRecorder.Body.String())
+	}
+}
+
+func TestUsageInspectorMergesAnthropicStreamUsage(t *testing.T) {
+	inspector := &responseInspector{}
+	inspector.Inspect([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"grok-4.5\",\"usage\":{\"input_tokens\":120,\"cache_read_input_tokens\":80,\"output_tokens\":0}}}\n\n"))
+	inspector.Inspect([]byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":120,\"cache_read_input_tokens\":80,\"output_tokens\":7}}\n\n"))
+	usage := inspector.Metadata().Usage
+	if usage.InputTokens != 120 || usage.CachedInputTokens != 80 || usage.OutputTokens != 7 || usage.TotalTokens != 127 {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestDeriveAnthropicPromptCacheKeyUsesMarkedPrefix(t *testing.T) {
+	first := []byte(`{"model":"grok-4.5","max_tokens":64,"system":[{"type":"text","text":"stable system","cache_control":{"type":"ephemeral"}}],"tools":[{"name":"Read","input_schema":{"type":"object"},"cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"first question"}]}`)
+	second := []byte(`{"model":"grok-4.5","max_tokens":64,"system":[{"type":"text","text":"stable system","cache_control":{"type":"ephemeral"}}],"tools":[{"name":"Read","input_schema":{"type":"object"},"cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"different tail"}]}`)
+	changed := []byte(`{"model":"grok-4.5","max_tokens":64,"system":[{"type":"text","text":"changed system","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"first question"}]}`)
+	firstKey := deriveAnthropicPromptCacheKey(first)
+	if firstKey == "" || firstKey != deriveAnthropicPromptCacheKey(second) {
+		t.Fatalf("stable prefix keys = %q / %q", firstKey, deriveAnthropicPromptCacheKey(second))
+	}
+	if firstKey == deriveAnthropicPromptCacheKey(changed) {
+		t.Fatal("changed cache prefix reused the same key")
+	}
+	if key := deriveAnthropicPromptCacheKey([]byte(`{"model":"grok-4.5","max_tokens":64,"messages":[{"role":"user","content":"no cache marker"}]}`)); key != "" {
+		t.Fatalf("unmarked request cache key = %q", key)
+	}
+}
+
 func TestUsageInspectorHandlesFinalEventWithoutNewline(t *testing.T) {
 	inspector := &responseInspector{}
 	inspector.Inspect([]byte(`data: {"response":{"id":"resp_final","usage":{"input_tokens":7,"output_tokens":4}}}`))

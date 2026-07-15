@@ -167,6 +167,9 @@ func TestConvertAnthropicClaudeCodeRequestToResponses(t *testing.T) {
 	if !options.AnthropicThinking {
 		t.Fatal("thinking option 未保留")
 	}
+	if options.ResponseModel != "grok-4.5" {
+		t.Fatalf("response model = %q", options.ResponseModel)
+	}
 	var payload map[string]any
 	if err := json.Unmarshal(converted, &payload); err != nil {
 		t.Fatal(err)
@@ -327,6 +330,27 @@ func TestConvertResponsesJSONToMessagesThinkingAndStop(t *testing.T) {
 	}
 }
 
+func TestConvertResponsesJSONNormalizesConversationModel(t *testing.T) {
+	body := []byte(`{
+		"id":"resp_1","model":"grok-4.5-build-free","status":"completed",
+		"output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]}],
+		"usage":{"input_tokens":10,"output_tokens":5}
+	}`)
+	for _, operation := range []string{OperationChat, OperationMessages} {
+		data, err := ConvertResponseJSONWithOptions(body, operation, ResponseOptions{ResponseModel: "grok-4.5"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var response map[string]any
+		if err := json.Unmarshal(data, &response); err != nil {
+			t.Fatal(err)
+		}
+		if response["model"] != "grok-4.5" {
+			t.Fatalf("%s model = %#v", operation, response["model"])
+		}
+	}
+}
+
 func TestConvertResponsesJSONToMessagesStopSequence(t *testing.T) {
 	body := []byte(`{"id":"resp_1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ABCSTOPXYZ"}]}]}`)
 	data, err := ConvertResponseJSONWithOptions(body, OperationMessages, ResponseOptions{StopSequences: []string{"STOP"}})
@@ -395,6 +419,30 @@ func TestConvertResponsesStream(t *testing.T) {
 		if operation == OperationMessages && (!strings.Contains(value, "event: message_start") || !strings.Contains(value, "event: content_block_delta") || !strings.Contains(value, "event: message_stop")) {
 			t.Fatalf("messages stream = %s", value)
 		}
+	}
+}
+
+func TestConvertResponsesStreamMessagesEmitsFinalUsageAndPublicModel(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.5-build-free","status":"in_progress"}}`, "",
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"hi"}`, "",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.5-build-free","status":"completed","usage":{"input_tokens":120,"output_tokens":7,"input_tokens_details":{"cached_tokens":80}}}}`, "", "",
+	}, "\n")
+	converted, err := io.ReadAll(ConvertResponseStreamWithOptions(io.NopCloser(strings.NewReader(stream)), OperationMessages, ResponseOptions{ResponseModel: "grok-4.5"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := string(converted)
+	for _, expected := range []string{`"model":"grok-4.5"`, `"input_tokens":120`, `"output_tokens":7`, `"cache_read_input_tokens":80`} {
+		if !strings.Contains(value, expected) {
+			t.Fatalf("missing %s in stream:\n%s", expected, value)
+		}
+	}
+	if strings.Contains(value, `"model":"grok-4.5-build-free"`) {
+		t.Fatalf("raw upstream model leaked: %s", value)
 	}
 }
 

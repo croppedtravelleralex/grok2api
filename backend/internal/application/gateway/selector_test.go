@@ -232,6 +232,47 @@ func TestSelectorOnlyUsesAccountsSupportingRequestedModel(t *testing.T) {
 	}
 }
 
+func TestSelectorUsesOnlyVerifiedBuildAccountsWhenAvailable(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-verified-build.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	accounts := relational.NewAccountRepository(database)
+	unverified, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "unverified", SourceKey: "unverified", EncryptedAccessToken: "encrypted", AuthStatus: account.AuthStatusActive,
+		Priority: 500, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "verified", SourceKey: "verified", EncryptedAccessToken: "encrypted", AuthStatus: account.AuthStatusActive,
+		Priority: 1, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.UpdateObservedModel(ctx, verified.ID, "grok-4.5-build-free", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	lease, err := selector.Acquire(ctx, account.ProviderBuild, "grok-4.5", "", "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.Credential.ID != verified.ID || lease.Credential.ID == unverified.ID {
+		t.Fatalf("selected account = %d, want verified %d", lease.Credential.ID, verified.ID)
+	}
+}
+
 func TestSelectorKeepsWebQuotaModesIsolated(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-web-quota.db"))

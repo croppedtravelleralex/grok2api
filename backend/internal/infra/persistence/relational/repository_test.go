@@ -311,6 +311,30 @@ func TestAccountRepositoryPersistsObservedBuildBillingFields(t *testing.T) {
 	}
 }
 
+func TestUpdateTokensDoesNotReactivateBuildPermissionDeniedAccount(t *testing.T) {
+	ctx := context.Background()
+	repo := NewAccountRepository(openTestDatabase(t))
+	credential, _, err := repo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: "denied", SourceKey: "denied",
+		EncryptedAccessToken: testEncryptedToken, EncryptedRefreshToken: "refresh", AuthStatus: account.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential.AuthStatus = account.AuthStatusReauthRequired
+	credential.LastError = "grok_build chat endpoint access denied"
+	if _, err := repo.Update(ctx, credential); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := repo.UpdateTokens(ctx, credential.ID, "new-access", "new-refresh", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.AuthStatus != account.AuthStatusReauthRequired || updated.LastError != "grok_build chat endpoint access denied" {
+		t.Fatalf("permission denied account was reactivated: %#v", updated)
+	}
+}
+
 func TestForeignKeysCascadeRuntimeStateButPreserveAuditHistory(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)

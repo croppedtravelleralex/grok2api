@@ -146,9 +146,13 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 	modelCoolingCandidates := 0
 	quotaCandidates := 0
 	var earliestRetry time.Time
+	verifiedBuildPool := hasVerifiedBuildCandidate(provider, values, excluded)
 	for _, candidate := range values {
 		value := candidate.Credential
 		if excluded[value.ID] || value.AuthStatus != account.AuthStatusActive {
+			continue
+		}
+		if verifiedBuildPool && strings.TrimSpace(value.ObservedModel) == "" {
 			continue
 		}
 		consideredCandidates++
@@ -289,6 +293,19 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 			return nil, &SelectionUnavailableError{Reason: SelectionSaturated, RetryAfter: time.Second}
 		}
 	}
+}
+
+func hasVerifiedBuildCandidate(provider account.Provider, values []account.RoutingCandidate, excluded map[uint64]bool) bool {
+	if provider != account.ProviderBuild {
+		return false
+	}
+	for _, candidate := range values {
+		credential := candidate.Credential
+		if !excluded[credential.ID] && credential.AuthStatus == account.AuthStatusActive && strings.TrimSpace(credential.ObservedModel) != "" && (!candidate.ModelCapabilityKnown || candidate.SupportsModel) {
+			return true
+		}
+	}
+	return false
 }
 
 // promptCacheStickyKey 将调用方缓存键压缩为固定长度，仅用于本地账号粘滞索引。
@@ -691,6 +708,13 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 		}
 		if leftCandidate.ModelCapabilityKnown != rightCandidate.ModelCapabilityKnown {
 			return leftCandidate.ModelCapabilityKnown
+		}
+		if left.Provider == account.ProviderBuild && right.Provider == account.ProviderBuild {
+			leftVerified := strings.TrimSpace(left.ObservedModel) != ""
+			rightVerified := strings.TrimSpace(right.ObservedModel) != ""
+			if leftVerified != rightVerified {
+				return leftVerified
+			}
 		}
 		leftTier, rightTier := tierOrderRank(tierOrder, left.WebTier), tierOrderRank(tierOrder, right.WebTier)
 		if leftTier != rightTier {

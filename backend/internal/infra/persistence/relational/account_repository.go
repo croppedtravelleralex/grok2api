@@ -557,8 +557,15 @@ func (r *AccountRepository) UpdateTokens(ctx context.Context, id uint64, accessT
 		updates["encrypted_refresh"] = refreshToken
 	}
 	if err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var stored accountModel
+		if err := tx.Select("id", "auth_status", "last_error").First(&stored, id).Error; err != nil {
+			return err
+		}
 		if err := tx.Model(&accountCredentialModel{}).Where("account_id = ?", id).Updates(updates).Error; err != nil {
 			return err
+		}
+		if stored.AuthStatus == string(account.AuthStatusReauthRequired) && strings.Contains(strings.ToLower(stored.LastError), "chat endpoint access denied") {
+			return nil
 		}
 		return tx.Model(&accountModel{}).Where("id = ?", id).Updates(map[string]any{"auth_status": string(account.AuthStatusActive), "last_error": ""}).Error
 	}); err != nil {

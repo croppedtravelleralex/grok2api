@@ -25,7 +25,7 @@ func ConvertRequestWithOptions(body []byte, model, operation string) ([]byte, Re
 	switch operation {
 	case OperationChat:
 		converted, err := convertChatRequest(body, model)
-		return converted, ResponseOptions{}, err
+		return converted, ResponseOptions{ResponseModel: model}, err
 	case OperationMessages:
 		return convertMessagesRequest(body, model)
 	default:
@@ -361,6 +361,7 @@ func convertMessagesRequest(body []byte, model string) ([]byte, ResponseOptions,
 	return converted, ResponseOptions{
 		AnthropicThinking: thinkingEnabled,
 		StopSequences:     append([]string(nil), request.StopSequences...),
+		ResponseModel:     model,
 	}, err
 }
 

@@ -2,6 +2,8 @@ package inference
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -229,7 +231,7 @@ func (h *Handler) createMessage(c *gin.Context) {
 	requestIDValue, _ := requestID.(string)
 	result, err := h.gateway.CreateMessage(c.Request.Context(), gateway.Input{
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
-		Body: body, Streaming: request.Stream,
+		Body: body, Streaming: request.Stream, PromptCacheKey: deriveAnthropicPromptCacheKey(body),
 	})
 	if err != nil {
 		writeGatewayAnthropicError(c, err)
@@ -866,11 +868,11 @@ func (i *responseInspector) Inspect(chunk []byte) {
 			value := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
 			if !bytes.Equal(value, []byte("[DONE]")) {
 				metadata := extractMetadata(value)
-				if metadata.Usage.TotalTokens > 0 {
+				if metadata.Usage.TotalTokens > 0 || metadata.Usage.CachedInputTokens > 0 {
 					if metadata.Usage.ResponseModel == "" {
 						metadata.Usage.ResponseModel = i.metadata.Model
 					}
-					i.metadata.Usage = metadata.Usage
+					i.metadata.Usage = mergeGatewayUsage(i.metadata.Usage, metadata.Usage)
 				}
 				if metadata.ResponseID != "" {
 					i.metadata.ResponseID = metadata.ResponseID
@@ -912,6 +914,17 @@ func extractMetadata(data []byte) responseMetadata {
 			usage = root.Response.Usage
 		}
 	}
+	if root.Message != nil {
+		if metadata.ResponseID == "" {
+			metadata.ResponseID = root.Message.ID
+		}
+		if metadata.Model == "" {
+			metadata.Model = root.Message.Model
+		}
+		if usage == nil {
+			usage = root.Message.Usage
+		}
+	}
 	if usage == nil {
 		return metadata
 	}
@@ -924,6 +937,7 @@ type responsePayloadDTO struct {
 	Model    string              `json:"model"`
 	Usage    *responseUsageDTO   `json:"usage"`
 	Response *responsePayloadDTO `json:"response"`
+	Message  *responsePayloadDTO `json:"message"`
 }
 
 type responseUsageDTO struct {
@@ -941,6 +955,8 @@ type responseUsageDTO struct {
 	ContextDetails         responseContextDetailsDTO `json:"context_details"`
 	PromptTokens           int64                     `json:"prompt_tokens"`
 	CompletionTokens       int64                     `json:"completion_tokens"`
+	CacheCreationTokens    int64                     `json:"cache_creation_input_tokens"`
+	CacheReadTokens        int64                     `json:"cache_read_input_tokens"`
 }
 
 type responseInputDetailsDTO struct {
@@ -978,14 +994,107 @@ func (value responseUsageDTO) toGatewayUsage(responseModel string) gateway.Usage
 	if total == 0 {
 		total = input + output
 	}
+	cached := max(value.InputTokensDetails.CachedTokens, value.CacheReadTokens)
 	return gateway.Usage{
-		InputTokens: input, CachedInputTokens: value.InputTokensDetails.CachedTokens,
+		InputTokens: input, CachedInputTokens: cached,
 		OutputTokens: output, ReasoningTokens: value.OutputTokensDetails.ReasoningTokens,
 		TotalTokens: total, CostInUSDTicks: value.CostInUSDTicks,
 		NumSourcesUsed: value.NumSourcesUsed, NumServerSideToolsUsed: value.NumServerSideToolsUsed,
 		ContextInputTokens: value.ContextDetails.InputTokens, ContextOutputTokens: value.ContextDetails.OutputTokens,
 		ResponseModel: responseModel,
 	}
+}
+
+func mergeGatewayUsage(current, incoming gateway.Usage) gateway.Usage {
+	current.InputTokens = max(current.InputTokens, incoming.InputTokens)
+	current.CachedInputTokens = max(current.CachedInputTokens, incoming.CachedInputTokens)
+	current.OutputTokens = max(current.OutputTokens, incoming.OutputTokens)
+	current.ReasoningTokens = max(current.ReasoningTokens, incoming.ReasoningTokens)
+	current.TotalTokens = max(current.TotalTokens, incoming.TotalTokens)
+	current.CostInUSDTicks = max(current.CostInUSDTicks, incoming.CostInUSDTicks)
+	current.NumSourcesUsed = max(current.NumSourcesUsed, incoming.NumSourcesUsed)
+	current.NumServerSideToolsUsed = max(current.NumServerSideToolsUsed, incoming.NumServerSideToolsUsed)
+	current.ContextInputTokens = max(current.ContextInputTokens, incoming.ContextInputTokens)
+	current.ContextOutputTokens = max(current.ContextOutputTokens, incoming.ContextOutputTokens)
+	if incoming.ResponseModel != "" {
+		current.ResponseModel = incoming.ResponseModel
+	}
+	return current
+}
+
+// deriveAnthropicPromptCacheKey 仅哈希调用方明确标记 cache_control 的稳定前缀，
+// 避免 Claude Code 每轮变化的用户尾部破坏账号粘滞和上游提示缓存。
+func deriveAnthropicPromptCacheKey(body []byte) string {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(body, &root) != nil {
+		return ""
+	}
+	prefix := make(map[string]json.RawMessage, 3)
+	marked := false
+	for _, field := range []string{"system", "tools"} {
+		if rawHasCacheControl(root[field]) {
+			prefix[field] = root[field]
+			marked = true
+		}
+	}
+	var messages []json.RawMessage
+	if json.Unmarshal(root["messages"], &messages) == nil {
+		lastMarked := -1
+		for index, message := range messages {
+			if rawHasCacheControl(message) {
+				lastMarked = index
+			}
+		}
+		if lastMarked >= 0 {
+			encoded, err := json.Marshal(messages[:lastMarked+1])
+			if err != nil {
+				return ""
+			}
+			prefix["messages"] = encoded
+			marked = true
+		}
+	}
+	if !marked {
+		return ""
+	}
+	canonical, err := json.Marshal(prefix)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(canonical)
+	return "anthropic-" + hex.EncodeToString(digest[:])
+}
+
+func rawHasCacheControl(raw json.RawMessage) bool {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return false
+	}
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	return hasCacheControl(value)
+}
+
+func hasCacheControl(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if _, ok := typed["cache_control"]; ok {
+			return true
+		}
+		for _, child := range typed {
+			if hasCacheControl(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if hasCacheControl(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func copyHeaders(destination, source http.Header) {
@@ -1045,7 +1154,11 @@ func writeGatewayError(c *gin.Context, err error) {
 		status, code = http.StatusBadRequest, "unsupported_parameter"
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
-		status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
+		if upstreamFailure.PermanentAccountDenial {
+			status, code, message = http.StatusServiceUnavailable, "upstream_account_unavailable", "上游 Build 账号缺少模型权限，已移出号池"
+		} else {
+			status, code, message = upstreamFailure.HTTPStatus, upstreamFailure.Code, upstreamFailure.PublicMessage
+		}
 	case errors.As(err, &selectionFailure):
 		status, code, message = selectionErrorResponse(c, selectionFailure)
 	case errors.Is(err, gateway.ErrResponseAccountUnavailable), errors.Is(err, gateway.ErrNoAvailableAccount):
@@ -1071,7 +1184,11 @@ func writeGatewayAnthropicError(c *gin.Context, err error) {
 		status, errorType = http.StatusBadRequest, "invalid_request_error"
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
-		status, message = upstreamFailure.HTTPStatus, upstreamFailure.PublicMessage
+		if upstreamFailure.PermanentAccountDenial {
+			status, errorType, message = http.StatusServiceUnavailable, "overloaded_error", "上游 Build 账号缺少模型权限，已移出号池"
+		} else {
+			status, message = upstreamFailure.HTTPStatus, upstreamFailure.PublicMessage
+		}
 		if status == http.StatusTooManyRequests {
 			errorType = "rate_limit_error"
 		}

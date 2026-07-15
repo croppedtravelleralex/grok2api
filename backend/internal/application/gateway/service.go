@@ -466,7 +466,7 @@ attemptLoop:
 				continue
 			}
 			lastFailure = newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
-			if s.providers.SupportsCredentialRefresh(credential.Provider) && !authRecoveryAttempted[credential.ID] && credential.EncryptedRefreshToken != "" && (lastFailure.PermanentAccountDenial || lastFailure.CredentialRejected) {
+			if s.providers.SupportsCredentialRefresh(credential.Provider) && !authRecoveryAttempted[credential.ID] && credential.EncryptedRefreshToken != "" && lastFailure.CredentialRejected {
 				authRecoveryAttempted[credential.ID] = true
 				refreshed, refreshErr := ensureCredential(credential, true)
 				if refreshErr != nil {
@@ -574,8 +574,12 @@ attemptLoop:
 				if err := s.audits.Create(persistCtx, record); err != nil {
 					s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", input.RequestID, "error", err)
 				}
-				if usage.ResponseModel != "" {
-					_ = s.accounts.ObserveResponseModel(persistCtx, accountID, usage.ResponseModel)
+				observedResponseModel := strings.TrimSpace(usage.ResponseModel)
+				if credential.Provider == accountdomain.ProviderBuild && strings.TrimSpace(credential.ObservedModel) != "" && observedResponseModel == route.UpstreamModel {
+					observedResponseModel = strings.TrimSpace(credential.ObservedModel)
+				}
+				if observedResponseModel != "" {
+					_ = s.accounts.ObserveResponseModel(persistCtx, accountID, observedResponseModel)
 				}
 				if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" && lease.QuotaMode != "" {
 					if lease.QuotaMode != "weekly" {

@@ -67,7 +67,7 @@ type streamTool struct {
 
 func newStreamConverter(writer io.Writer, operation string, options ResponseOptions) *streamConverter {
 	return &streamConverter{
-		writer: writer, operation: operation, created: time.Now().Unix(), tools: make(map[string]streamTool),
+		writer: writer, operation: operation, model: strings.TrimSpace(options.ResponseModel), created: time.Now().Unix(), tools: make(map[string]streamTool),
 		options: options, stopFilter: newAnthropicStreamStopFilter(options.StopSequences),
 	}
 }
@@ -164,15 +164,24 @@ func (c *streamConverter) setResponse(value responseEnvelope) {
 	if value.ID != "" {
 		c.id = value.ID
 	}
-	if value.Model != "" {
+	if value.Model != "" && strings.TrimSpace(c.options.ResponseModel) == "" {
 		c.model = value.Model
 	}
 	if value.CreatedAt != 0 {
 		c.created = value.CreatedAt
 	}
-	if value.Usage.InputTokens != 0 || value.Usage.OutputTokens != 0 {
-		c.usage = value.Usage
+	if value.Usage.InputTokens != 0 || value.Usage.OutputTokens != 0 || value.Usage.InputTokensDetails.CachedTokens != 0 {
+		c.usage = mergeResponseUsage(c.usage, value.Usage)
 	}
+}
+
+func mergeResponseUsage(current, incoming responseUsage) responseUsage {
+	current.InputTokens = max(current.InputTokens, incoming.InputTokens)
+	current.OutputTokens = max(current.OutputTokens, incoming.OutputTokens)
+	current.TotalTokens = max(current.TotalTokens, incoming.TotalTokens)
+	current.InputTokensDetails.CachedTokens = max(current.InputTokensDetails.CachedTokens, incoming.InputTokensDetails.CachedTokens)
+	current.OutputTokensDetails.ReasoningTokens = max(current.OutputTokensDetails.ReasoningTokens, incoming.OutputTokensDetails.ReasoningTokens)
+	return current
 }
 
 func (c *streamConverter) start() error {
@@ -413,7 +422,7 @@ func (c *streamConverter) done(status string) error {
 	}
 	if err := c.writeEvent("message_delta", map[string]any{
 		"type": "message_delta", "delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nullableAnthropicString(c.stopSequence)},
-		"usage": map[string]any{"output_tokens": c.usage.OutputTokens},
+		"usage": anthropicUsage(c.usage),
 	}); err != nil {
 		return err
 	}

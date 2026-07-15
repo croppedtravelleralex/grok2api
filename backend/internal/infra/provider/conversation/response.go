@@ -11,6 +11,7 @@ import (
 type ResponseOptions struct {
 	AnthropicThinking bool
 	StopSequences     []string
+	ResponseModel     string
 }
 
 type responseEnvelope struct {
@@ -89,6 +90,9 @@ func ConvertResponseJSONWithOptions(body []byte, operation string, options Respo
 		return body, nil
 	}
 	parsed := parseResponse(envelope)
+	if strings.TrimSpace(options.ResponseModel) != "" {
+		parsed.Model = strings.TrimSpace(options.ResponseModel)
+	}
 	if operation == OperationMessages {
 		parsed.Text, parsed.StopSequence = applyAnthropicStopSequences(parsed.Text, options.StopSequences)
 	}
