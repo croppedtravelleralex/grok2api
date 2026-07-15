@@ -701,7 +701,7 @@ type ImageEditInput struct {
 func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput) (*Result, error) {
 	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImage, func(adapter provider.ImageAdapter, credential accountdomain.Credential, upstream string) (*provider.Response, error) {
 		return adapter.GenerateImage(ctx, provider.ImageGenerationRequest{
-			Credential: credential, Model: upstream, Prompt: input.Prompt, Count: input.Count,
+			Credential: credential, RequestID: input.RequestID, Model: upstream, Prompt: input.Prompt, Count: input.Count,
 			Size: input.Size, AspectRatio: input.AspectRatio, Resolution: input.Resolution,
 			ResponseFormat: input.ResponseFormat, Streaming: input.Streaming,
 		})
@@ -711,7 +711,7 @@ func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput)
 func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result, error) {
 	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImageEdit, func(adapter provider.ImageAdapter, credential accountdomain.Credential, upstream string) (*provider.Response, error) {
 		return adapter.EditImage(ctx, provider.ImageEditRequest{
-			Credential: credential, Model: upstream, Prompt: input.Prompt,
+			Credential: credential, RequestID: input.RequestID, Model: upstream, Prompt: input.Prompt,
 			ImageURLs: input.ImageURLs, Count: input.Count, Resolution: input.Resolution, ResponseFormat: input.ResponseFormat,
 		})
 	}, false, input.Resolution, input.Count, len(input.ImageURLs))

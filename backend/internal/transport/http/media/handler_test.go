@@ -93,7 +93,7 @@ func TestAdminImageManagementListsStatsAndDeletes(t *testing.T) {
 
 	list := httptest.NewRecorder()
 	router.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/admin/v1/media/images?page=1&pageSize=20", nil))
-	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), asset.ID) || !strings.Contains(list.Body.String(), "https://api.example/v1/media/images/") {
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), asset.ID) || !strings.Contains(list.Body.String(), "https://api.example/v1/media/images/") || !strings.Contains(list.Body.String(), `"width":1`) {
 		t.Fatalf("list status=%d body=%s", list.Code, list.Body.String())
 	}
 	stats := httptest.NewRecorder()
@@ -105,5 +105,18 @@ func TestAdminImageManagementListsStatsAndDeletes(t *testing.T) {
 	router.ServeHTTP(deleted, httptest.NewRequest(http.MethodDelete, "/api/admin/v1/media/images/"+asset.ID, nil))
 	if deleted.Code != http.StatusOK {
 		t.Fatalf("delete status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+	if _, err := service.SaveImage(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+	bulkDeleted := httptest.NewRecorder()
+	router.ServeHTTP(bulkDeleted, httptest.NewRequest(http.MethodDelete, "/api/admin/v1/media/images", nil))
+	if bulkDeleted.Code != http.StatusOK || !strings.Contains(bulkDeleted.Body.String(), `"deleted":1`) {
+		t.Fatalf("bulk delete status=%d body=%s", bulkDeleted.Code, bulkDeleted.Body.String())
+	}
+	invalidRange := httptest.NewRecorder()
+	router.ServeHTTP(invalidRange, httptest.NewRequest(http.MethodGet, "/api/admin/v1/media/images?from=bad", nil))
+	if invalidRange.Code != http.StatusBadRequest {
+		t.Fatalf("invalid range status=%d body=%s", invalidRange.Code, invalidRange.Body.String())
 	}
 }

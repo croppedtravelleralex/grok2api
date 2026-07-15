@@ -1001,6 +1001,11 @@ function AccountStatus({ account }: { account: AccountDTO }) {
     return <Badge variant="outline" className="text-muted-foreground">{t("accounts.statusDisabled")}</Badge>;
   }
   if (account.authStatus === "reauthRequired") {
+    const issue = account.lastError || account.lastRefreshErrorCode;
+    const detail = issue?.includes("invalid_grant") ? t("accounts.invalidGrantAction") : issue?.includes("access denied") ? t("accounts.accessDeniedAction") : issue;
+    if (detail) {
+      return <Tooltip><TooltipTrigger asChild><Badge variant="destructive" className="cursor-help">{t("accounts.statusReauthRequired")}</Badge></TooltipTrigger><TooltipContent className="max-w-80">{detail}</TooltipContent></Tooltip>;
+    }
     return <Badge variant="destructive">{t("accounts.statusReauthRequired")}</Badge>;
   }
   if (account.provider === "grok_console" && account.quotaWindows?.some((window) => window.mode === "console" && window.remaining <= 0)) {

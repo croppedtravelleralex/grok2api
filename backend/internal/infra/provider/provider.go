@@ -107,6 +107,7 @@ type QuotaSnapshot struct {
 
 type ImageGenerationRequest struct {
 	Credential     account.Credential
+	RequestID      string
 	Model          string
 	Prompt         string
 	Count          int
@@ -125,6 +126,7 @@ type ImageInput struct {
 
 type ImageEditRequest struct {
 	Credential     account.Credential
+	RequestID      string
 	Model          string
 	Prompt         string
 	ImageURLs      []string
@@ -213,6 +215,22 @@ type ImageAdapter interface {
 type ImageAssetStore interface {
 	SaveImage(ctx context.Context, data []byte) (media.Asset, error)
 	PublicImageURL(id string) string
+}
+
+// ImageAssetMetadataStore 是可选的图片元数据扩展，不破坏旧的图片存储实现。
+type ImageAssetMetadataStore interface {
+	SaveImageWithMetadata(ctx context.Context, data []byte, metadata media.AssetMetadata) (media.Asset, error)
+}
+
+type imageAssetMetadataContextKey struct{}
+
+func WithImageAssetMetadata(ctx context.Context, metadata media.AssetMetadata) context.Context {
+	return context.WithValue(ctx, imageAssetMetadataContextKey{}, metadata)
+}
+
+func ImageAssetMetadataFromContext(ctx context.Context) (media.AssetMetadata, bool) {
+	value, ok := ctx.Value(imageAssetMetadataContextKey{}).(media.AssetMetadata)
+	return value, ok
 }
 
 type VideoAdapter interface {

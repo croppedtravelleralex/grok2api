@@ -113,6 +113,63 @@ func TestConfiguredWebNodeKeepsChromeBrowserTransport(t *testing.T) {
 	}
 }
 
+func TestWebRequestsAreSerializedGlobally(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1}}}, cipher)
+	first, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	acquired := make(chan *Lease, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		lease, acquireErr := manager.Acquire(context.Background(), domain.ScopeWeb, "account-2")
+		if acquireErr != nil {
+			errCh <- acquireErr
+			return
+		}
+		acquired <- lease
+	}()
+	select {
+	case lease := <-acquired:
+		lease.Release()
+		t.Fatal("second Web request bypassed the single-concurrency gate")
+	case err := <-errCh:
+		t.Fatal(err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	first.Release()
+	select {
+	case lease := <-acquired:
+		lease.Release()
+	case err := <-errCh:
+		t.Fatal(err)
+	case <-time.After(time.Second):
+		t.Fatal("second Web request did not resume after release")
+	}
+}
+
+func TestWebGateWaitRespectsContextCancellation(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1}}}, cipher)
+	first, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := manager.Acquire(ctx, domain.ScopeWeb, "account-2"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiting acquire error = %v, want deadline exceeded", err)
+	}
+}
+
 func TestAffinityKeepsSelectedNodeWhenItsHealthDrops(t *testing.T) {
 	manager := &Manager{}
 	selected := manager.selectNode([]domain.Node{

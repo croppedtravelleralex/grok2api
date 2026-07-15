@@ -59,6 +59,8 @@ type Manager struct {
 	inflight   map[uint64]int
 	nodes      map[domain.Scope]cachedNodeSnapshot
 	nodeLoads  singleflight.Group
+	webGate    chan struct{}
+	assetGate  chan struct{}
 }
 
 type cachedClient struct {
@@ -73,7 +75,10 @@ type cachedNodeSnapshot struct {
 }
 
 func NewManager(repository repository.EgressRepository, cipher *security.Cipher) *Manager {
-	return &Manager{repository: repository, cipher: cipher, clients: make(map[uint64]cachedClient), inflight: make(map[uint64]int), nodes: make(map[domain.Scope]cachedNodeSnapshot)}
+	return &Manager{
+		repository: repository, cipher: cipher, clients: make(map[uint64]cachedClient), inflight: make(map[uint64]int), nodes: make(map[domain.Scope]cachedNodeSnapshot),
+		webGate: make(chan struct{}, 1), assetGate: make(chan struct{}, 1),
+	}
 }
 
 func (m *Manager) Acquire(ctx context.Context, scope domain.Scope, affinity string) (*Lease, error) {
@@ -86,6 +91,16 @@ func (m *Manager) AcquireIfConfigured(ctx context.Context, scope domain.Scope, a
 }
 
 func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool) (*Lease, bool, error) {
+	releaseScope, err := m.acquireScope(ctx, scope)
+	if err != nil {
+		return nil, false, err
+	}
+	releaseOnReturn := true
+	defer func() {
+		if releaseOnReturn {
+			releaseScope()
+		}
+	}()
 	now := time.Now().UTC()
 	configured := false
 	var available []domain.Node
@@ -148,6 +163,7 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	m.inflight[selected.ID]++
 	m.mu.Unlock()
 	var once sync.Once
+	releaseOnReturn = false
 	return &Lease{NodeID: selected.ID, Scope: scope, ProxyURL: proxyURL, UserAgent: userAgent, CFCookies: cookies, client: client.client, browser: client.browser, release: func() {
 		once.Do(func() {
 			m.mu.Lock()
@@ -156,8 +172,30 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 				delete(m.inflight, selected.ID)
 			}
 			m.mu.Unlock()
+			releaseScope()
 		})
 	}}, true, nil
+}
+
+// acquireScope 将 Grok Web 主请求和图片下载分别限制为单并发。
+// 两个作用域分离，避免生图持有 WebSocket 时下载结果图片发生自锁。
+func (m *Manager) acquireScope(ctx context.Context, scope domain.Scope) (func(), error) {
+	var gate chan struct{}
+	switch scope {
+	case domain.ScopeWeb:
+		gate = m.webGate
+	case domain.ScopeWebAsset:
+		gate = m.assetGate
+	default:
+		return func() {}, nil
+	}
+	select {
+	case gate <- struct{}{}:
+		var once sync.Once
+		return func() { once.Do(func() { <-gate }) }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (m *Manager) listNodes(ctx context.Context, scope domain.Scope, now time.Time) ([]domain.Node, error) {

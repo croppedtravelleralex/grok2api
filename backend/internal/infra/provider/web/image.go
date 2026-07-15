@@ -19,6 +19,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
@@ -202,6 +203,7 @@ func numberAsInt(value any) (int, bool) {
 }
 
 func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGenerationRequest) (*provider.Response, error) {
+	ctx = provider.WithImageAssetMetadata(ctx, mediadomain.AssetMetadata{RequestID: request.RequestID, Model: request.Model, Resolution: request.Resolution, StartedAt: time.Now().UTC()})
 	count := request.Count
 	if count <= 0 {
 		count = 1
@@ -718,6 +720,7 @@ func (a *Adapter) streamBufferedImagineImages(ctx context.Context, writer *io.Pi
 }
 
 func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditRequest) (*provider.Response, error) {
+	ctx = provider.WithImageAssetMetadata(ctx, mediadomain.AssetMetadata{RequestID: request.RequestID, Model: request.Model, Resolution: request.Resolution, StartedAt: time.Now().UTC()})
 	if len(request.ImageURLs) == 0 || len(request.ImageURLs) > 8 {
 		return jsonProviderResponse(http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "image 数量必须在 1 到 8 之间", "type": "invalid_request_error"}}), nil
 	}
@@ -1086,9 +1089,16 @@ func (a *Adapter) imageDataItem(ctx context.Context, credential account.Credenti
 	if err != nil {
 		return nil, err
 	}
-	asset, err := a.assets.SaveImage(ctx, raw)
-	if err != nil {
-		return nil, err
+	var asset mediadomain.Asset
+	var assetErr error
+	if metadataStore, ok := a.assets.(provider.ImageAssetMetadataStore); ok {
+		metadata, _ := provider.ImageAssetMetadataFromContext(ctx)
+		asset, assetErr = metadataStore.SaveImageWithMetadata(ctx, raw, metadata)
+	} else {
+		asset, assetErr = a.assets.SaveImage(ctx, raw)
+	}
+	if assetErr != nil {
+		return nil, assetErr
 	}
 	if format != "b64_json" {
 		return map[string]any{"url": a.assets.PublicImageURL(asset.ID), "mime_type": asset.MIMEType, "revised_prompt": ""}, nil

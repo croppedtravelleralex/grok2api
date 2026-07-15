@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -8,6 +9,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
 	"os"
@@ -66,6 +71,11 @@ type ImageStatistics struct {
 	TotalBytes int64
 }
 
+type ImageDeleteResult struct {
+	Deleted    int64
+	TotalBytes int64
+}
+
 func NewService(assets repository.MediaAssetRepository, objects repository.MediaObjectStorage, cleanupLock repository.DistributedLock, cfg Config) *Service {
 	return &Service{
 		assets: assets, objects: objects, cleanupLock: cleanupLock,
@@ -91,6 +101,11 @@ func (s *Service) UpdateConfig(cfg Config) {
 
 // SaveImage 校验并保存一份不可变图片，文件写入失败或元数据落库失败时不会留下半成品。
 func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset, error) {
+	return s.SaveImageWithMetadata(ctx, data, mediadomain.AssetMetadata{})
+}
+
+// SaveImageWithMetadata 保存图片并记录来源请求、模型、分辨率和生成耗时。
+func (s *Service) SaveImageWithMetadata(ctx context.Context, data []byte, metadata mediadomain.AssetMetadata) (mediadomain.Asset, error) {
 	cfg := s.runtimeConfig()
 	if len(data) == 0 || int64(len(data)) > cfg.MaxImageBytes {
 		return mediadomain.Asset{}, ErrInvalidImage
@@ -98,6 +113,10 @@ func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset
 	mimeType := http.DetectContentType(data)
 	if !supportedImageMIME(mimeType) {
 		return mediadomain.Asset{}, ErrInvalidImage
+	}
+	width, height := 0, 0
+	if config, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
+		width, height = config.Width, config.Height
 	}
 	id, err := newAssetID()
 	if err != nil {
@@ -111,7 +130,9 @@ func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset
 	}
 	asset := mediadomain.Asset{
 		ID: id, Kind: "image", StorageKey: storageKey, MIMEType: mimeType,
-		SizeBytes: int64(len(data)), SHA256: hex.EncodeToString(digest[:]), CreatedAt: createdAt,
+		SizeBytes: int64(len(data)), SHA256: hex.EncodeToString(digest[:]), RequestID: metadata.RequestID,
+		Model: metadata.Model, Resolution: metadata.Resolution, Width: width, Height: height,
+		GenerationDurationMS: generationDurationMS(metadata.StartedAt, createdAt), CreatedAt: createdAt,
 	}
 	if err := s.assets.CreateMediaAsset(ctx, asset); err != nil {
 		_ = s.objects.Delete(context.WithoutCancel(ctx), storageKey)
@@ -126,24 +147,43 @@ func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset
 	return asset, nil
 }
 
+func generationDurationMS(startedAt, completedAt time.Time) int64 {
+	if startedAt.IsZero() || completedAt.Before(startedAt) {
+		return 0
+	}
+	return completedAt.Sub(startedAt).Milliseconds()
+}
+
 // PublicImageURL 返回可直接用于图片展示的公开资源地址。
 func (s *Service) PublicImageURL(id string) string {
 	return s.publicBaseURL + "/v1/media/images/" + id
 }
 
 func (s *Service) ListImages(ctx context.Context, page, pageSize int) (ImagePage, error) {
+	return s.ListImagesInRange(ctx, page, pageSize, nil, nil)
+}
+
+func (s *Service) ListImagesInRange(ctx context.Context, page, pageSize int, from, to *time.Time) (ImagePage, error) {
 	if page < 1 {
 		page = 1
 	}
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 20
 	}
-	assets, total, err := s.assets.ListMediaAssets(ctx, (page-1)*pageSize, pageSize)
+	assets, total, err := s.assets.ListMediaAssetsInRange(ctx, (page-1)*pageSize, pageSize, from, to)
 	if err != nil {
 		return ImagePage{}, err
 	}
 	items := make([]ImageItem, 0, len(assets))
 	for _, asset := range assets {
+		if asset.Width == 0 || asset.Height == 0 {
+			if body, openErr := s.objects.Open(ctx, asset.StorageKey); openErr == nil {
+				if config, _, decodeErr := image.DecodeConfig(body); decodeErr == nil {
+					asset.Width, asset.Height = config.Width, config.Height
+				}
+				_ = body.Close()
+			}
+		}
 		items = append(items, ImageItem{Asset: asset, URL: s.PublicImageURL(asset.ID)})
 	}
 	return ImagePage{Items: items, Page: page, PageSize: pageSize, Total: total}, nil
@@ -182,6 +222,31 @@ func (s *Service) DeleteImage(ctx context.Context, id string) error {
 	}
 	s.totalBytes.Add(-asset.SizeBytes)
 	return nil
+}
+
+// DeleteImages 按创建时间范围批量删除图片；from 含、to 不含，均为空时表示全部图片。
+func (s *Service) DeleteImages(ctx context.Context, from, to *time.Time) (ImageDeleteResult, error) {
+	var result ImageDeleteResult
+	for {
+		values, _, err := s.assets.ListMediaAssetsInRange(ctx, 0, 200, from, to)
+		if err != nil {
+			return result, err
+		}
+		if len(values) == 0 {
+			return result, nil
+		}
+		for _, asset := range values {
+			if err := s.objects.Delete(ctx, asset.StorageKey); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return result, err
+			}
+			if err := s.assets.DeleteMediaAsset(ctx, asset.ID); err != nil && !errors.Is(err, repository.ErrNotFound) {
+				return result, err
+			}
+			result.Deleted++
+			result.TotalBytes += asset.SizeBytes
+			s.totalBytes.Add(-asset.SizeBytes)
+		}
+	}
 }
 
 // OpenImage 读取图片元数据和正文，不向调用方暴露实际文件路径。

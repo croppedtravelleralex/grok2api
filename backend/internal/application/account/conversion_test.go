@@ -129,6 +129,53 @@ func TestConvertAllWebAccountsToBuildUsesUnlinkedPool(t *testing.T) {
 	}
 }
 
+func TestConvertLinkedWebAccountRepairsReauthRequiredBuild(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "conversion-repair.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedSSO, _ := cipher.Encrypt("test-sso")
+	encryptedRefresh, _ := cipher.Encrypt("revoked-refresh")
+	repository := relational.NewAccountRepository(database)
+	webAccount, _, err := repository.UpsertByIdentity(ctx, accountdomain.Credential{Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO, Name: "web", SourceKey: "web-source", EncryptedAccessToken: encryptedSSO, Enabled: true, AuthStatus: accountdomain.AuthStatusActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildAccount, _, err := repository.UpsertByIdentity(ctx, accountdomain.Credential{Provider: accountdomain.ProviderBuild, AuthType: accountdomain.AuthTypeOAuth, Name: "build", SourceKey: "build-source", EncryptedRefreshToken: encryptedRefresh, Enabled: true, AuthStatus: accountdomain.AuthStatusReauthRequired})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.LinkWebToBuild(ctx, webAccount.ID, buildAccount.ID); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &buildConversionAdapter{}
+	service := NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), cipher, memory.NewLockStore())
+	result, err := service.ConvertWebAccountsToBuild(ctx, []uint64{webAccount.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Created != 0 || result.Linked != 1 || result.Skipped != 0 || result.Failed != 0 || adapter.calls.Load() != 1 {
+		t.Fatalf("repair conversion=%#v calls=%d", result, adapter.calls.Load())
+	}
+	repaired, err := repository.Get(ctx, buildAccount.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refresh, err := cipher.Decrypt(repaired.EncryptedRefreshToken)
+	if err != nil || repaired.AuthStatus != accountdomain.AuthStatusActive || refresh != "refresh" {
+		t.Fatalf("repaired=%#v refresh=%q err=%v", repaired, refresh, err)
+	}
+}
+
 type buildConversionAdapter struct{ calls atomic.Int64 }
 
 func (a *buildConversionAdapter) Provider() accountdomain.Provider { return accountdomain.ProviderWeb }

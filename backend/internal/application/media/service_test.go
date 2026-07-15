@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -59,6 +60,74 @@ func TestServicePersistsAndReopensImage(t *testing.T) {
 	}
 	if _, err := service.SaveImage(ctx, []byte("not an image")); err == nil {
 		t.Fatal("invalid image content was accepted")
+	}
+}
+
+func TestServicePersistsImageMetadataAndDimensions(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-metadata.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := localmedia.NewLocalStore(filepath.Join(t.TempDir(), "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(relational.NewMediaAssetRepository(database), objects, nil, Config{PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30, CleanupThresholdPercent: 80, CleanupInterval: 10 * time.Minute})
+	raw, _ := base64.StdEncoding.DecodeString(onePixelPNG)
+	asset, err := service.SaveImageWithMetadata(ctx, raw, mediadomain.AssetMetadata{RequestID: "req-image", Model: "grok-imagine-image", Resolution: "1k", StartedAt: time.Now().Add(-1500 * time.Millisecond)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asset.RequestID != "req-image" || asset.Model != "grok-imagine-image" || asset.Resolution != "1k" || asset.Width != 1 || asset.Height != 1 || asset.GenerationDurationMS < 1000 {
+		t.Fatalf("asset metadata = %#v", asset)
+	}
+	page, err := service.ListImages(ctx, 1, 20)
+	if err != nil || len(page.Items) != 1 || page.Items[0].Width != 1 || page.Items[0].GenerationDurationMS == 0 {
+		t.Fatalf("page=%#v err=%v", page, err)
+	}
+}
+
+func TestServiceDeletesImagesByDateRange(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-range.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := localmedia.NewLocalStore(filepath.Join(t.TempDir(), "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewMediaAssetRepository(database)
+	raw, _ := base64.StdEncoding.DecodeString(onePixelPNG)
+	day := time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC)
+	for index, createdAt := range []time.Time{day.Add(-time.Hour), day.Add(time.Hour), day.Add(25 * time.Hour)} {
+		id := fmt.Sprintf("img_range_%016d", index)
+		key, saveErr := objects.SaveImage(ctx, id, "image/png", raw)
+		if saveErr != nil {
+			t.Fatal(saveErr)
+		}
+		if createErr := repository.CreateMediaAsset(ctx, mediadomain.Asset{ID: id, Kind: "image", StorageKey: key, MIMEType: "image/png", SizeBytes: int64(len(raw)), SHA256: strings.Repeat("a", 64), CreatedAt: createdAt}); createErr != nil {
+			t.Fatal(createErr)
+		}
+	}
+	service := NewService(repository, objects, nil, Config{PublicBaseURL: "https://api.example", MaxImageBytes: 32 << 20, MaxTotalBytes: 1 << 30, CleanupThresholdPercent: 80, CleanupInterval: 10 * time.Minute})
+	to := day.Add(24 * time.Hour)
+	deleted, err := service.DeleteImages(ctx, &day, &to)
+	if err != nil || deleted.Deleted != 1 {
+		t.Fatalf("deleted=%#v err=%v", deleted, err)
+	}
+	page, err := service.ListImages(ctx, 1, 20)
+	if err != nil || page.Total != 2 {
+		t.Fatalf("page=%#v err=%v", page, err)
 	}
 }
 

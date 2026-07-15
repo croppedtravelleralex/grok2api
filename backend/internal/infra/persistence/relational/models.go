@@ -376,13 +376,19 @@ type mediaJobModel struct {
 func (mediaJobModel) TableName() string { return "media_jobs" }
 
 type mediaAssetModel struct {
-	ID         string    `gorm:"size:64;primaryKey;check:chk_media_assets_id,length(trim(id)) BETWEEN 16 AND 64"`
-	Kind       string    `gorm:"size:16;not null;check:chk_media_assets_kind,kind IN ('image')"`
-	StorageKey string    `gorm:"size:512;not null;uniqueIndex;check:chk_media_assets_storage_key,length(trim(storage_key)) BETWEEN 1 AND 512"`
-	MIMEType   string    `gorm:"size:64;not null;check:chk_media_assets_mime,mime_type IN ('image/jpeg','image/png','image/webp','image/gif')"`
-	SizeBytes  int64     `gorm:"not null;check:chk_media_assets_size,size_bytes > 0 AND size_bytes <= 33554432"`
-	SHA256     string    `gorm:"size:64;not null;check:chk_media_assets_sha,length(sha256) = 64"`
-	CreatedAt  time.Time `gorm:"not null"`
+	ID                   string    `gorm:"size:64;primaryKey;check:chk_media_assets_id,length(trim(id)) BETWEEN 16 AND 64"`
+	Kind                 string    `gorm:"size:16;not null;check:chk_media_assets_kind,kind IN ('image')"`
+	StorageKey           string    `gorm:"size:512;not null;uniqueIndex;check:chk_media_assets_storage_key,length(trim(storage_key)) BETWEEN 1 AND 512"`
+	MIMEType             string    `gorm:"size:64;not null;check:chk_media_assets_mime,mime_type IN ('image/jpeg','image/png','image/webp','image/gif')"`
+	SizeBytes            int64     `gorm:"not null;check:chk_media_assets_size,size_bytes > 0 AND size_bytes <= 33554432"`
+	SHA256               string    `gorm:"size:64;not null;check:chk_media_assets_sha,length(sha256) = 64"`
+	RequestID            string    `gorm:"size:64;not null;default:''"`
+	Model                string    `gorm:"size:255;not null;default:''"`
+	Resolution           string    `gorm:"size:32;not null;default:''"`
+	Width                int       `gorm:"not null;default:0;check:chk_media_assets_width,width >= 0 AND width <= 100000"`
+	Height               int       `gorm:"not null;default:0;check:chk_media_assets_height,height >= 0 AND height <= 100000"`
+	GenerationDurationMS int64     `gorm:"not null;default:0;check:chk_media_assets_generation_duration,generation_duration_ms >= 0"`
+	CreatedAt            time.Time `gorm:"not null"`
 }
 
 func (mediaAssetModel) TableName() string { return "media_assets" }

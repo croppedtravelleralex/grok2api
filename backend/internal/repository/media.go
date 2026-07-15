@@ -23,6 +23,7 @@ type MediaAssetRepository interface {
 	CreateMediaAsset(ctx context.Context, value media.Asset) error
 	GetMediaAsset(ctx context.Context, id string) (media.Asset, error)
 	ListMediaAssets(ctx context.Context, offset, limit int) ([]media.Asset, int64, error)
+	ListMediaAssetsInRange(ctx context.Context, offset, limit int, from, to *time.Time) ([]media.Asset, int64, error)
 	CountMediaAssets(ctx context.Context) (int64, error)
 	TotalMediaAssetBytes(ctx context.Context) (int64, error)
 	ListOldestMediaAssets(ctx context.Context, limit int) ([]media.Asset, error)

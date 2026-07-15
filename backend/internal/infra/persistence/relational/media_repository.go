@@ -21,7 +21,9 @@ func NewMediaAssetRepository(db *Database) *MediaAssetRepository {
 func (r *MediaAssetRepository) CreateMediaAsset(ctx context.Context, value media.Asset) error {
 	row := mediaAssetModel{
 		ID: value.ID, Kind: value.Kind, StorageKey: value.StorageKey, MIMEType: value.MIMEType,
-		SizeBytes: value.SizeBytes, SHA256: value.SHA256, CreatedAt: value.CreatedAt,
+		SizeBytes: value.SizeBytes, SHA256: value.SHA256, RequestID: value.RequestID, Model: value.Model,
+		Resolution: value.Resolution, Width: value.Width, Height: value.Height,
+		GenerationDurationMS: value.GenerationDurationMS, CreatedAt: value.CreatedAt,
 	}
 	return r.db.db.WithContext(ctx).Create(&row).Error
 }
@@ -33,11 +35,17 @@ func (r *MediaAssetRepository) GetMediaAsset(ctx context.Context, id string) (me
 	}
 	return media.Asset{
 		ID: row.ID, Kind: row.Kind, StorageKey: row.StorageKey, MIMEType: row.MIMEType,
-		SizeBytes: row.SizeBytes, SHA256: row.SHA256, CreatedAt: row.CreatedAt,
+		SizeBytes: row.SizeBytes, SHA256: row.SHA256, RequestID: row.RequestID, Model: row.Model,
+		Resolution: row.Resolution, Width: row.Width, Height: row.Height,
+		GenerationDurationMS: row.GenerationDurationMS, CreatedAt: row.CreatedAt,
 	}, nil
 }
 
 func (r *MediaAssetRepository) ListMediaAssets(ctx context.Context, offset, limit int) ([]media.Asset, int64, error) {
+	return r.ListMediaAssetsInRange(ctx, offset, limit, nil, nil)
+}
+
+func (r *MediaAssetRepository) ListMediaAssetsInRange(ctx context.Context, offset, limit int, from, to *time.Time) ([]media.Asset, int64, error) {
 	if offset < 0 {
 		offset = 0
 	}
@@ -45,6 +53,12 @@ func (r *MediaAssetRepository) ListMediaAssets(ctx context.Context, offset, limi
 		limit = 20
 	}
 	query := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).Where("kind = ?", "image")
+	if from != nil {
+		query = query.Where("created_at >= ?", from.UTC())
+	}
+	if to != nil {
+		query = query.Where("created_at < ?", to.UTC())
+	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -68,7 +82,7 @@ func (r *MediaAssetRepository) CountMediaAssets(ctx context.Context) (int64, err
 
 func (r *MediaAssetRepository) TotalMediaAssetBytes(ctx context.Context) (int64, error) {
 	var total int64
-	err := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).Select("COALESCE(SUM(size_bytes), 0)").Scan(&total).Error
+	err := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).Where("kind = ?", "image").Select("COALESCE(SUM(size_bytes), 0)").Scan(&total).Error
 	return total, err
 }
 
@@ -90,7 +104,9 @@ func (r *MediaAssetRepository) ListOldestMediaAssets(ctx context.Context, limit 
 func mediaAssetToDomain(row mediaAssetModel) media.Asset {
 	return media.Asset{
 		ID: row.ID, Kind: row.Kind, StorageKey: row.StorageKey, MIMEType: row.MIMEType,
-		SizeBytes: row.SizeBytes, SHA256: row.SHA256, CreatedAt: row.CreatedAt,
+		SizeBytes: row.SizeBytes, SHA256: row.SHA256, RequestID: row.RequestID, Model: row.Model,
+		Resolution: row.Resolution, Width: row.Width, Height: row.Height,
+		GenerationDurationMS: row.GenerationDurationMS, CreatedAt: row.CreatedAt,
 	}
 }
 

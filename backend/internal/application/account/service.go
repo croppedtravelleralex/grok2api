@@ -954,7 +954,13 @@ func (s *Service) convertWebAccountToBuild(ctx context.Context, id uint64) (uint
 		return 0, false, false, ErrUnsupported
 	}
 	if value.LinkedAccountID != 0 {
-		return value.LinkedAccountID, false, true, nil
+		linked, getErr := s.accounts.Get(ctx, value.LinkedAccountID)
+		if getErr != nil {
+			return 0, false, false, mapRepositoryError(getErr)
+		}
+		if linked.AuthStatus == accountdomain.AuthStatusActive {
+			return value.LinkedAccountID, false, true, nil
+		}
 	}
 	release, acquired, err := s.refreshLock.Acquire(ctx, "web-build-conversion:"+strconv.FormatUint(id, 10), 2*time.Minute)
 	if err != nil {
@@ -969,7 +975,13 @@ func (s *Service) convertWebAccountToBuild(ctx context.Context, id uint64) (uint
 		return 0, false, false, mapRepositoryError(err)
 	}
 	if value.LinkedAccountID != 0 {
-		return value.LinkedAccountID, false, true, nil
+		linked, getErr := s.accounts.Get(ctx, value.LinkedAccountID)
+		if getErr != nil {
+			return 0, false, false, mapRepositoryError(getErr)
+		}
+		if linked.AuthStatus == accountdomain.AuthStatusActive {
+			return value.LinkedAccountID, false, true, nil
+		}
 	}
 	converter, ok := s.providers.BuildConverter(accountdomain.ProviderWeb)
 	if !ok {
@@ -984,6 +996,15 @@ func (s *Service) convertWebAccountToBuild(ctx context.Context, id uint64) (uint
 	}
 	seed.Provider = accountdomain.ProviderBuild
 	seed.AuthType = accountdomain.AuthTypeOAuth
+	if value.LinkedAccountID != 0 {
+		updated, updateErr := s.Reauthenticate(ctx, value.LinkedAccountID, ReauthenticateInput{
+			AccessToken: seed.AccessToken, RefreshToken: seed.RefreshToken, OIDCClientID: seed.OIDCClientID, ExpiresAt: seed.ExpiresAt,
+		})
+		if updateErr != nil {
+			return 0, false, false, updateErr
+		}
+		return updated.ID, false, false, nil
+	}
 	buildAccount, created, err := s.persistSeed(ctx, seed)
 	if err != nil {
 		return 0, false, false, err
