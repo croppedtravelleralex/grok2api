@@ -8,7 +8,7 @@
 ## 整体状态摘要
 
 - 后端为 Go 网关，前端为 React/Vite 管理端，支持 Grok Build、Web、Console 三个账号池。
-- 本地工作分支为 `codex/panda-safe-completion`；Panda 已运行本轮镜像摘要 `sha256:7901d845009c...`。
+- 本地工作分支为 `codex/panda-safe-completion`；Panda 已运行本轮镜像摘要 `sha256:4ce09f388c12...`（提交 `ff3f8da`）。
 - Panda 为低资源生产机，部署采用本地提交、GitHub Actions/GHCR 构建、Panda 拉取镜像的方式。
 - NewAPI 已按 Chat Completions、Responses、Messages、Images 和 Videos 拆分接入；本轮不改其渠道结构。
 - NewAPI 图片渠道已移除人为的 `gpt-image-*` 名称，统一为 `grok-imagine-image`、`grok-imagine-image-quality` 和 `grok-imagine-image-edit`；由于 Web/Cloudflare 仍不可用，generations/edits 暂时 disabled，模型列表不再暴露旧别名或不可用入口。
@@ -43,8 +43,8 @@
 
 ## 账号池诊断事实
 
-- 完成能力探测后，Panda 上 Build 账号为 80 个 `active`、115 个 `reauthRequired`；195 个账号均保持启用，但异常账号不会进入调度池。
-- 当前 115 个异常账号中：85 个为 OAuth `invalid_grant`，30 个为 Build Chat `access denied`。
+- 2026-07-16 部署循环探针后的最新 Build 快照：生产可信池 18、待验证可运行 82、待验证冷却 6、隔离/恢复 205、退役/禁用 0；总并发始终为 1。
+- 2026-07-15 的历史异常分类为 85 个 OAuth `invalid_grant`、30 个 Build Chat `access denied`；后续大量新号导入后，当前 205 个隔离/恢复账号需按新探针结果重新统计错误分布，不能沿用旧比例。
 - 2 个已有 Web 关联的 `invalid_grant` Build 账号已通过 Web→Build 转换换取并保存新凭据，账号 ID 与关联关系得到保留；随后能力探测确认两者仍缺少 Build Chat 权限，因此没有将其伪装为可用账号。
 - 剩余 85 个 `invalid_grant` 必须导入新的有效 RT；30 个 `access denied` 账号继续隔离在调度池外，同 Token 刷新不会产生 Build 权限。
 - 已修复 Token 刷新无条件把 `access denied` 账号恢复为 active 的缺陷；权限拒绝后不再强制刷新 RT。
@@ -53,6 +53,7 @@
 - 重新导入处于 `reauthRequired` 的 Build 账号时会清除旧 `observed_model`，防止旧权限结论污染新凭据；新凭据必须重新通过能力探测。
 - 生产 Messages canary 已通过：NewAPI `/v1/messages` 返回 200，对外及 NewAPI 记录的上游模型均为 `grok-4.5`；最终 usage 正确记录输入和输出 Token。
 - 首个后台 Build 能力探测已按计划只处理 1 个账号，并把确认无权限的账号转为 `reauthRequired`；探测后 grok2api 约 34–40 MiB，服务持续 healthy。
+- 2026-07-16 新循环探针生产 canary 按约 30 秒严格串行执行：恢复池 156 → 待验证 127 → 恢复池 157 → 待验证 129/130；Panda 主服务约 54 MiB、CPU 0.07%、load1 0.03，公网与本机健康检查均为 200。
 - Web 额度刷新应用层原本已有独立单并发池；Panda 单节点代理测试显示 Webshare 连接正常，但直接访问 Grok 返回 Cloudflare 403。
 - 单浏览器、单账号额度 canary 在加载 Grok 页面阶段超时并返回 502；桥接容器已停止，未执行全量刷新。当前根因是所选代理上的 Cloudflare 浏览器会话无法建立，不是代理白名单或并发连接失败。
 - 2026-07-15 复核发现 33 个 Web 出口曾全部显示 `transport error` 并进入冷却：桥接停止时，本机到桥接的连接失败被错误反馈成代理故障，导致 Web 请求在取得出口租约阶段即 502，根本没有到达 Chromium。后端现已把“桥接不可达”分类为控制面故障，不再扣减代理健康度；真实代理错误和上游 403 仍会正常降级。
@@ -84,6 +85,7 @@
 - 生产曾出现宿主机新版 `app.py` 与 `chrome146` 镜像内旧版不一致，导致 UA/CDP 和会话连续性修复没有实际运行。Compose 现将项目目录 `browser-bridge/app.py` 只读挂载到 `/bridge/app.py`，Chrome 镜像仅作为运行时。
 - 另一处直接故障是桥接密钥 bind 源缺失后被 Docker 静默创建为目录，主服务和桥接都无法读取密钥，所有请求在 17ms 内返回 401/502。Panda 已恢复 `/root/.secrets/grok2api-browser-bridge-key-main`，三侧 SHA-256 一致；Compose 使用 `create_host_path: false`，缺失密钥时直接拒绝启动。
 - 密钥修复后真实 Chromium canary 已进入浏览器启动阶段，但 12.32 秒时 Panda load1 升至 2.10，命中 2 核主机硬门槛并被自动停止。当前 Web 阻塞已从“配置/鉴权错误”收敛为“Panda 无法在资源门槛内承载 Chromium”；应把桥接迁移到独立浏览器 worker，而不是放宽 Panda 门槛。
+- 2026-07-16 部署预检发现浏览器桥接被重新启动并占用约 30% CPU / 652.6 MiB，超过其 80% 内存停止线；已先停止桥接，主 API 未中断，停止后可用内存恢复到约 2.2 GiB。后续部署仍禁止隐式拉起桥接。
 - Compose 数据目录固定为 `${GROK2API_DATA:-./data}:/app/data`，禁止因 compose 项目名变化切换到空命名卷；Panda 原库已验证完整，包含管理员、账号、出口和模型路由。
 - Panda 默认调度改为 Web 启动补偿 0 个、每 30 分钟补偿 1 个；Build 能力探针保持总并发 1，有候选时每 30 秒顺序处理 1 个、扫空后每 5 分钟巡检、启动延迟 2 分钟。关闭的 Build worker 会等待应用退出，不再被 supervisor 当成崩溃循环重启。
 - 当前 Webshare 节点不适合继续做全量 Grok 会话尝试；需要可粘滞的住宅/ISP 出口，并让登录与后续请求复用同一 IP、UA 和持久化浏览器 profile。
