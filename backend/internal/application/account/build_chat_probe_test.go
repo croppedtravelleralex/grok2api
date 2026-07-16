@@ -155,6 +155,29 @@ func TestReimportRevivesSoftRetiredAccount(t *testing.T) {
 	_ = service
 }
 
+func TestMarkReauthRequiredPreservesSoftRetiredState(t *testing.T) {
+	service, repository := newBuildChatProbeService(t, http.StatusOK, `{"model":"grok-4.5-build-free"}`)
+	credential := createBuildProbeAccount(t, repository, "preserve-retired")
+	credential.Enabled = false
+	credential.AuthStatus = accountdomain.AuthStatusReauthRequired
+	credential.LastError = "retired: recovery attempts exhausted"
+	credential.FailureCount = buildRecoveryMaxAttempts
+	if _, err := repository.Update(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.MarkReauthRequired(context.Background(), credential.ID, "OAuth refresh failed: invalid_grant"); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := repository.Get(context.Background(), credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Enabled || updated.FailureCount != buildRecoveryMaxAttempts || updated.LastError != credential.LastError {
+		t.Fatalf("updated=%#v", updated)
+	}
+}
+
 func newBuildChatProbeService(t *testing.T, status int, body string) (*Service, *relational.AccountRepository) {
 	t.Helper()
 	database, err := relational.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "build-probe.db"))

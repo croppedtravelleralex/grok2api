@@ -1333,6 +1333,12 @@ func (s *Service) MarkReauthRequired(ctx context.Context, id uint64, reason stri
 	if err != nil {
 		return mapRepositoryError(err)
 	}
+	// 软退役是恢复状态机的终态。凭据刷新任务可能在账号退役前已经入队，
+	// 它的延迟失败不能覆盖 retired 标记，否则账号会退化为普通禁用，
+	// 既污染分池统计，也会阻断“重新导入新凭据后自动复活”。
+	if !value.Enabled && strings.HasPrefix(strings.ToLower(strings.TrimSpace(value.LastError)), "retired:") {
+		return nil
+	}
 	wasActive := value.AuthStatus == accountdomain.AuthStatusActive
 	value.AuthStatus = accountdomain.AuthStatusReauthRequired
 	if wasActive {
