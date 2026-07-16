@@ -178,6 +178,44 @@ func TestMarkReauthRequiredPreservesSoftRetiredState(t *testing.T) {
 	}
 }
 
+func TestRefreshTokenImmediatelyVerifiesBuildCapability(t *testing.T) {
+	service, repository, adapter := newBuildChatRecoveryService(t)
+	credential := createBuildProbeAccount(t, repository, "manual-refresh-verification")
+	credential.EncryptedRefreshToken = "refresh-old"
+	if _, err := repository.Update(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := service.RefreshToken(context.Background(), credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.refreshCount != 1 || view.Credential.ObservedModel != "grok-4.5-build-free" || view.Credential.AuthStatus != accountdomain.AuthStatusActive {
+		t.Fatalf("refreshes=%d view=%#v", adapter.refreshCount, view)
+	}
+}
+
+func TestRefreshAllTokensImmediatelyVerifiesBuildCapability(t *testing.T) {
+	service, repository, adapter := newBuildChatRecoveryService(t)
+	credential := createBuildProbeAccount(t, repository, "bulk-refresh-verification")
+	credential.EncryptedRefreshToken = "refresh-old"
+	if _, err := repository.Update(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+
+	succeeded, failed, skipped, err := service.RefreshAllTokens(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, getErr := repository.Get(context.Background(), credential.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if succeeded != 1 || failed != 0 || skipped != 0 || adapter.refreshCount != 1 || updated.ObservedModel != "grok-4.5-build-free" {
+		t.Fatalf("result=%d/%d/%d refreshes=%d updated=%#v", succeeded, failed, skipped, adapter.refreshCount, updated)
+	}
+}
+
 func newBuildChatProbeService(t *testing.T, status int, body string) (*Service, *relational.AccountRepository) {
 	t.Helper()
 	database, err := relational.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "build-probe.db"))
@@ -205,7 +243,7 @@ func newBuildChatRecoveryService(t *testing.T) (*Service, *relational.AccountRep
 	}
 	repository := relational.NewAccountRepository(database)
 	adapter := &buildChatRecoveryAdapter{}
-	return NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), nil, nil), repository, adapter
+	return NewService(repository, relational.NewAuditRepository(database), nil, nil, provider.NewRegistry(adapter), nil, nil), repository, adapter
 }
 
 func createBuildProbeAccount(t *testing.T, repository *relational.AccountRepository, source string) accountdomain.Credential {

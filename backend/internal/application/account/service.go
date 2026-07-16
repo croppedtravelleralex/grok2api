@@ -253,7 +253,7 @@ func NewService(accounts repository.AccountRepository, audits repository.AuditRe
 		credentialRefreshWake: make(chan struct{}, 1),
 		buildRecoveryTurn:     true,
 		buildProbe:            &buildProbeMonitor{},
-		conversionPool:        batch.NewPool(25), syncPool: batch.NewPool(25), webQuotaPool: batch.NewPool(1), refreshPool: batch.NewPool(25), logger: slog.Default(),
+		conversionPool:        batch.NewPool(25), syncPool: batch.NewPool(25), webQuotaPool: batch.NewPool(1), refreshPool: batch.NewPool(1), logger: slog.Default(),
 		now: func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -1481,10 +1481,22 @@ func (s *Service) RefreshToken(ctx context.Context, id uint64) (View, error) {
 	if err != nil {
 		return View{}, mapRepositoryError(err)
 	}
-	if _, err := s.ensureCredential(ctx, value, true, true, false); err != nil {
+	refreshed, err := s.ensureCredential(ctx, value, true, true, false)
+	if err != nil {
+		return View{}, err
+	}
+	if err := s.verifyBuildCapabilityAfterManualRefresh(ctx, refreshed); err != nil {
 		return View{}, err
 	}
 	return s.Get(ctx, id)
+}
+
+func (s *Service) verifyBuildCapabilityAfterManualRefresh(ctx context.Context, credential accountdomain.Credential) error {
+	if credential.Provider != accountdomain.ProviderBuild || s.providers == nil || !s.providers.SupportsConversation(accountdomain.ProviderBuild, "responses") {
+		return nil
+	}
+	_, _, err := s.probeBuildChatCredential(ctx, credential, false)
+	return err
 }
 
 func (s *Service) refreshCoolingDown(accountID uint64, now time.Time) bool {
@@ -2130,7 +2142,11 @@ func (s *Service) refreshTokens(ctx context.Context, ids []uint64, progress Batc
 	return s.runAccountBatch(ctx, "credential_refresh", ids, s.refreshPool, progress, func(workCtx context.Context, id uint64) error {
 		value, err := s.accounts.Get(workCtx, id)
 		if err == nil {
-			_, err = s.ensureCredential(workCtx, value, true, true, false)
+			var refreshed accountdomain.Credential
+			refreshed, err = s.ensureCredential(workCtx, value, true, true, false)
+			if err == nil {
+				err = s.verifyBuildCapabilityAfterManualRefresh(workCtx, refreshed)
+			}
 		}
 		return err
 	})
