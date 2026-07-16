@@ -21,6 +21,7 @@
 | [03-roadmap.md](./03-roadmap.md) | 阶段性路线图和里程碑 | 优先级或阶段目标变化时 |
 | [04-improvement-backlog.md](./04-improvement-backlog.md) | 长期改进池 | 出现新问题、新想法或新风险时 |
 | [05-ai-maintenance-playbook.md](./05-ai-maintenance-playbook.md) | AI 接手与回写规则 | 维护流程变化时 |
+| [06-open-todos-2026-07-16.md](./06-open-todos-2026-07-16.md) | 2026-07-16 现场确认的开放待办（探活可视化 / CF403 / HTTP逆向） | 执行或关闭这些待办时 |
 | [logs/](./logs/) | 月度历史记录 | 每轮工作结束时追加 |
 
 ## 真相来源优先级

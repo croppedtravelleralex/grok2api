@@ -2,8 +2,8 @@
 
 ## 最后更新时间
 
-- 日期：2026-07-15
-- 维护目的：记录 Messages 协议修复、Web 出口诊断和 Build 异常账号治理的真实状态。
+- 日期：2026-07-16
+- 维护目的：记录号池探活可视化需求、Cloudflare 403（直连 vs Webshare）对照证据，以及 Grok Web HTTP 逆向待办。
 
 ## 整体状态摘要
 
@@ -49,7 +49,7 @@
 - 剩余 85 个 `invalid_grant` 必须导入新的有效 RT；30 个 `access denied` 账号继续隔离在调度池外，同 Token 刷新不会产生 Build 权限。
 - 已修复 Token 刷新无条件把 `access denied` 账号恢复为 active 的缺陷；权限拒绝后不再强制刷新 RT。
 - Build 在线请求优先且仅使用已有成功响应型号记录的账号；未验证账号不再借真实用户请求试错。诊断快照中 active 账号只有少量已有成功响应记录，因此后续必须使用单并发能力探测逐步扩大可信池。
-- Panda 的 Build 能力探测配置为延迟 2 分钟启动、每 5 分钟只处理 1 个未验证账号；成功才进入可信池，权限拒绝转为 `reauthRequired`，临时错误冷却 15 分钟。
+- Panda 的 Build 能力探测配置为延迟 2 分钟启动、单并发按 `priority DESC, id ASC` 顺序循环；有候选时每 30 秒处理 1 个，扫空后每 5 分钟巡检。成功才进入可信池，权限拒绝转为 `reauthRequired`，临时错误冷却 15 分钟。
 - 重新导入处于 `reauthRequired` 的 Build 账号时会清除旧 `observed_model`，防止旧权限结论污染新凭据；新凭据必须重新通过能力探测。
 - 生产 Messages canary 已通过：NewAPI `/v1/messages` 返回 200，对外及 NewAPI 记录的上游模型均为 `grok-4.5`；最终 usage 正确记录输入和输出 Token。
 - 首个后台 Build 能力探测已按计划只处理 1 个账号，并把确认无权限的账号转为 `reauthRequired`；探测后 grok2api 约 34–40 MiB，服务持续 healthy。
@@ -63,16 +63,29 @@
 ## 进行中事项
 
 - 浏览器桥接的 30 秒启动上限、阶段化错误和结构化 502 已部署；会话复用与 UA/平台一致性修复已完成本地测试，等待低资源生产 canary。
+- **P0 待办（2026-07-16，详见 [06-open-todos-2026-07-16.md](./06-open-todos-2026-07-16.md)）**
+  1. 账号页循环探活可视化（进度 / 当前账号 / 成功失败数）— FE-003 + BE-007
+  2. Cloudflare 403：直连与 Webshare 对照证据已完成；换住宅/ISP 出口仍待做 — MTN-007 / MTN-005
+  3. Grok Web/生图 HTTP 逆向（对齐 gptimage，去掉每请求 Chrome）— BE-008
+
+## 2026-07-16 新增事实
+
+- 管理端 Accounts 页大量「待验证」；主机探针已能登录跑通，但进度只在 journal，前端不可见。
+- 空代理 egress 生图仍 502（bootstrap ~103s）；有请求时 bridge 峰值约 CPU 76% / 内存 ~487MB。
+- Cloudflare plain HTTP 对照：panda 直连与 Webshare 抽样 5 节点对 `grok.com` **全部 403 + Just a moment**（`plain_200_no_cf=0`）。
+- **拒因深挖（2026-07-16）**：被拒页为 CF **Managed Challenge**（`cf-mitigated=challenge`，`cType=managed`），不是硬封文案；本机 GSL 机房段可 plain 200；udeal 偶发 `pass_app` 但 session 会漂（原 QmFKV 等已失效；新样本 `6XIJ`/Webgist GB 可过）。
+- gptimage 生图走 `curl_cffi` HTTP，浏览器仅清障；grok2api 仍强制 browser-bridge。
 
 ## 已知阻塞与风险
 
 - Grok Web 当前被 Cloudflare 浏览器会话建立失败阻塞；桥接停止是失败后的资源保护状态，不是 Cloudflare 403 的根因。
+- **2026-07-16：** panda 直连与当前 Webshare 在 plain HTTP 层均返回 CF 403；空代理生图仍失败。换粘滞住宅/ISP +（长期）HTTP 逆向是主路径。
 - 浏览器桥接资源上限已收紧到 0.75 CPU / 768 MiB，生产验证继续坚持单浏览器、单账号、单代理；桥接不可达不得再污染 Web 出口池。
 - 生产曾出现宿主机新版 `app.py` 与 `chrome146` 镜像内旧版不一致，导致 UA/CDP 和会话连续性修复没有实际运行。Compose 现将项目目录 `browser-bridge/app.py` 只读挂载到 `/bridge/app.py`，Chrome 镜像仅作为运行时。
 - 另一处直接故障是桥接密钥 bind 源缺失后被 Docker 静默创建为目录，主服务和桥接都无法读取密钥，所有请求在 17ms 内返回 401/502。Panda 已恢复 `/root/.secrets/grok2api-browser-bridge-key-main`，三侧 SHA-256 一致；Compose 使用 `create_host_path: false`，缺失密钥时直接拒绝启动。
 - 密钥修复后真实 Chromium canary 已进入浏览器启动阶段，但 12.32 秒时 Panda load1 升至 2.10，命中 2 核主机硬门槛并被自动停止。当前 Web 阻塞已从“配置/鉴权错误”收敛为“Panda 无法在资源门槛内承载 Chromium”；应把桥接迁移到独立浏览器 worker，而不是放宽 Panda 门槛。
 - Compose 数据目录固定为 `${GROK2API_DATA:-./data}:/app/data`，禁止因 compose 项目名变化切换到空命名卷；Panda 原库已验证完整，包含管理员、账号、出口和模型路由。
-- Panda 默认调度改为 Web 启动补偿 0 个、每 30 分钟补偿 1 个；Build 能力恢复每 5 分钟 1 个、启动延迟 2 分钟。关闭的 Build worker 会等待应用退出，不再被 supervisor 当成崩溃循环重启。
+- Panda 默认调度改为 Web 启动补偿 0 个、每 30 分钟补偿 1 个；Build 能力探针保持总并发 1，有候选时每 30 秒顺序处理 1 个、扫空后每 5 分钟巡检、启动延迟 2 分钟。关闭的 Build worker 会等待应用退出，不再被 supervisor 当成崩溃循环重启。
 - 当前 Webshare 节点不适合继续做全量 Grok 会话尝试；需要可粘滞的住宅/ISP 出口，并让登录与后续请求复用同一 IP、UA 和持久化浏览器 profile。
 - 85 个未关联 Web 的 `invalid_grant` Build 账号没有可用的新 RT，无法自动恢复。
 - 30 个 Build `access denied` 账号没有已确认的 Build Chat 权限。
@@ -81,10 +94,11 @@
 
 ## 下一步 3-5 项
 
-1. 部署会话复用与 UA/平台一致性修复后，只启动一个浏览器、一个代理、一个 Web 账号 canary；失败立即停止桥接。
-2. 若当前机房节点仍返回 Cloudflare 403，更换可粘滞住宅/ISP 出口，不扩大全量刷新。
-3. 观察 Build 恢复池的单并发退避和软退役结果；为 `invalid_grant` 导入新 RT，为 `access denied` 更换具备 Build Chat 权限的授权。
-4. 新生图片验证生成耗时、模型和请求分辨率字段；旧图片只展示可解析的实际尺寸。
+1. 实现账号探活可视化（FE-003/BE-007），让 Accounts 页能看见进度与成败计数。
+2. 更换可粘滞住宅/ISP 出口后做单浏览器 canary；当前机房 Webshare plain HTTP 已证实同样 CF 403。
+3. 启动 Grok Web HTTP 逆向 PoC（BE-008），对照 gptimage，目标去掉每请求 Chromium。
+4. 观察 Build 恢复池；为 `invalid_grant` 导入新 RT，为 `access denied` 更换具备 Build Chat 权限的授权。
+5. 新生图片验证生成耗时、模型和请求分辨率字段（依赖 Web 出口恢复）。
 
 ## 与 README 或旧文档的不一致处
 

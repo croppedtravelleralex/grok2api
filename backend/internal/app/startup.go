@@ -30,6 +30,7 @@ const (
 	defaultWebQuotaCatchupInitialDelay = 5 * time.Second
 	defaultWebQuotaCatchupInterval     = 30 * time.Minute
 	defaultBuildChatProbeInitialDelay  = 2 * time.Minute
+	defaultBuildChatProbeIdleInterval  = 5 * time.Minute
 )
 
 func boundedEnvInt(name string, fallback, minimum, maximum int) int {
@@ -78,7 +79,7 @@ func buildChatProbeInterval() time.Duration {
 		return 0
 	}
 	parsed, err := time.ParseDuration(value)
-	if err != nil || parsed < 5*time.Minute || parsed > 24*time.Hour {
+	if err != nil || parsed < 15*time.Second || parsed > 24*time.Hour {
 		return 0
 	}
 	return parsed
@@ -86,6 +87,10 @@ func buildChatProbeInterval() time.Duration {
 
 func buildChatProbeInitialDelay() time.Duration {
 	return boundedEnvDuration("GROK2API_BUILD_CHAT_PROBE_INITIAL_DELAY", defaultBuildChatProbeInitialDelay, 10*time.Second, 24*time.Hour)
+}
+
+func buildChatProbeIdleInterval() time.Duration {
+	return boundedEnvDuration("GROK2API_BUILD_CHAT_PROBE_IDLE_EVERY", defaultBuildChatProbeIdleInterval, time.Minute, 24*time.Hour)
 }
 
 type startupReport struct {
@@ -487,7 +492,8 @@ func (a *Application) runModelCatalogCatchup(ctx context.Context) {
 	}
 }
 
-// runBuildChatProbe 每个周期只验证一个未确认 Build 账号，避免用生产请求试错或形成刷新风暴。
+// runBuildChatProbe 按稳定顺序循环验证 Build 账号。每次只处理一个账号，
+// 候选池扫空后自动降频，避免空转查询或形成刷新风暴。
 func (a *Application) runBuildChatProbe(ctx context.Context) {
 	interval := buildChatProbeInterval()
 	if interval <= 0 {
@@ -496,6 +502,7 @@ func (a *Application) runBuildChatProbe(ctx context.Context) {
 		<-ctx.Done()
 		return
 	}
+	idleInterval := buildChatProbeIdleInterval()
 	timer := time.NewTimer(buildChatProbeInitialDelay())
 	defer timer.Stop()
 	for {
@@ -512,6 +519,10 @@ func (a *Application) runBuildChatProbe(ctx context.Context) {
 		} else if found {
 			a.logger.Info("build_chat_capability_probe_succeeded", "account_id", accountID)
 		}
-		resetTimer(timer, interval)
+		nextInterval := interval
+		if !found {
+			nextInterval = idleInterval
+		}
+		resetTimer(timer, nextInterval)
 	}
 }

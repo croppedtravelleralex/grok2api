@@ -14,6 +14,13 @@
 
 ## Next
 
+### 0. 账号探活可视化 + 控制面（P0，2026-07-16）
+
+- 目标：在 `accounts` 页看见循环探活进度（总数、当前、成功/失败、阶段），可启动/取消，并发 1–5。
+- 预期产出：admin probe-cycle API + 前端进度面板（复用 `AccountTaskProgressDTO` 流式模式）。
+- 完成标准：网页可实时看到探活走到哪、成功失败计数；无需 SSH 读 journal。
+- 依赖关系：现有账号任务流式进度基础设施。
+
 ### 1. 凭据恢复和浏览器会话稳定化
 
 - 目标：把“代理可用、Cloudflare 403、SSO 失效、无 Build 权限”分成可操作状态。
@@ -34,6 +41,13 @@
 - 目标：验证同代理、同 SSO/clearance、同 UA/平台和同浏览器会话复用后能否建立 Grok Cloudflare 会话。
 - 完成标准：只用一个浏览器和一个账号得到明确 2xx 或阶段化失败；失败时桥接被停止且主服务资源无明显波动。
 - 依赖关系：当前 Webshare 节点信誉；若仍被拒绝则需要粘滞住宅/ISP 出口。
+
+### 4. Grok Web HTTP 逆向（类 gptimage，P0）
+
+- 目标：用 HTTP（`curl_cffi`/等价 TLS 伪装）完成 chat/imagine，浏览器仅清障。
+- 预期产出：抓包清单、最小 PoC（登录态请求生图或 chat）、与现有 browser-bridge 的切换开关。
+- 完成标准：至少一条 Web 路径不经每请求 Chromium 成功返回；Panda 资源占用显著低于 bridge。
+- 依赖关系：能过 CF 的出口（住宅/ISP 或 clearance）；对照 `/root/gptimage` 实现模式，接口需 grok 专用。
 
 ## Later
 

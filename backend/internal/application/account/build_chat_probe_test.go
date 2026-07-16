@@ -48,6 +48,34 @@ func TestProbeNextBuildChatQuarantinesPermissionDeniedAccount(t *testing.T) {
 	}
 }
 
+func TestProbeNextBuildChatSweepsVerificationPoolInIDOrder(t *testing.T) {
+	database, err := relational.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "build-probe-order.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewAccountRepository(database)
+	adapter := &buildChatOrderedProbeAdapter{}
+	service := NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+	first := createBuildProbeAccount(t, repository, "first")
+	second := createBuildProbeAccount(t, repository, "second")
+
+	accountID, found, err := service.ProbeNextBuildChat(context.Background())
+	if err == nil || !found || accountID != first.ID {
+		t.Fatalf("first probe account=%d found=%v err=%v", accountID, found, err)
+	}
+	accountID, found, err = service.ProbeNextBuildChat(context.Background())
+	if err != nil || !found || accountID != second.ID {
+		t.Fatalf("second probe account=%d found=%v err=%v", accountID, found, err)
+	}
+	if got := strings.Join(adapter.seen, ","); got != "first,second" {
+		t.Fatalf("probe order = %s", got)
+	}
+}
+
 func TestProbeNextBuildChatRecoversQuarantinedAccountByRefreshingRT(t *testing.T) {
 	service, repository, adapter := newBuildChatRecoveryService(t)
 	credential := createBuildProbeAccount(t, repository, "recover-with-rt")
@@ -176,6 +204,8 @@ type buildChatProbeAdapter struct {
 
 type buildChatRecoveryAdapter struct{ refreshCount int }
 
+type buildChatOrderedProbeAdapter struct{ seen []string }
+
 func (a *buildChatRecoveryAdapter) Provider() accountdomain.Provider {
 	return accountdomain.ProviderBuild
 }
@@ -188,6 +218,23 @@ func (a *buildChatRecoveryAdapter) RefreshCredential(context.Context, accountdom
 }
 func (a *buildChatRecoveryAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {
 	return &provider.Response{StatusCode: http.StatusOK, Status: http.StatusText(http.StatusOK), Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"model":"grok-4.5-build-free"}`))}, nil
+}
+
+func (a *buildChatOrderedProbeAdapter) Provider() accountdomain.Provider {
+	return accountdomain.ProviderBuild
+}
+func (a *buildChatOrderedProbeAdapter) Definition() provider.Definition {
+	return provider.Definition{Provider: accountdomain.ProviderBuild, Conversation: provider.ConversationSurface{Responses: true}}
+}
+func (a *buildChatOrderedProbeAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	a.seen = append(a.seen, request.Credential.Name)
+	status := http.StatusOK
+	body := `{"model":"grok-4.5-build-free"}`
+	if request.Credential.Name == "first" {
+		status = http.StatusServiceUnavailable
+		body = `{"error":{"message":"temporary unavailable"}}`
+	}
+	return &provider.Response{StatusCode: status, Status: http.StatusText(status), Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 }
 
 func (a buildChatProbeAdapter) Provider() accountdomain.Provider { return accountdomain.ProviderBuild }
