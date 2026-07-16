@@ -497,13 +497,18 @@ func (a *Application) runModelCatalogCatchup(ctx context.Context) {
 func (a *Application) runBuildChatProbe(ctx context.Context) {
 	interval := buildChatProbeInterval()
 	if interval <= 0 {
+		if a.accounts != nil {
+			a.accounts.ConfigureBuildProbe(0, 0, 0)
+		}
 		// Supervisor 把后台任务正常返回视为异常退出。关闭探测时保持任务存活，
 		// 直到应用关闭，避免每 30 秒重启并刷 error 日志。
 		<-ctx.Done()
 		return
 	}
 	idleInterval := buildChatProbeIdleInterval()
-	timer := time.NewTimer(buildChatProbeInitialDelay())
+	initialDelay := buildChatProbeInitialDelay()
+	a.accounts.ConfigureBuildProbe(interval, idleInterval, initialDelay)
+	timer := time.NewTimer(initialDelay)
 	defer timer.Stop()
 	for {
 		select {
@@ -523,6 +528,7 @@ func (a *Application) runBuildChatProbe(ctx context.Context) {
 		if !found {
 			nextInterval = idleInterval
 		}
+		a.accounts.ScheduleBuildProbe(time.Now().UTC().Add(nextInterval))
 		resetTimer(timer, nextInterval)
 	}
 }

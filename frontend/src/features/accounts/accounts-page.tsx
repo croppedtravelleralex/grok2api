@@ -68,6 +68,7 @@ import {
 } from "@/features/accounts/accounts-api";
 import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/account-quota";
 import { AccountTrends } from "@/features/accounts/account-trends";
+import { BuildProbePanel } from "@/features/accounts/build-probe-panel";
 
 function isAbortError(error: unknown): boolean {
   return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
@@ -582,6 +583,7 @@ export function AccountsPage() {
             <TabsTrigger value="grok_console">Grok Console</TabsTrigger>
           </TabsList>
         </Tabs>
+        {provider === "grok_build" ? <BuildProbePanel onCompleted={() => { void accountsQuery.refetch(); void summaryQuery.refetch(); }} /> : null}
         <input
           ref={fileInputRef}
           type="file"

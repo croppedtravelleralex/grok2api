@@ -15,7 +15,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | FE-001 | 图片详情扩展 | 旧页面只有时间、大小和 MIME | 展示耗时、实际/请求分辨率、模型 | P0 | Done | 旧图片耗时显示未知 |
 | FE-002 | 图片详情抽屉 | 卡片信息继续增加后空间有限 | 后续增加单图详情抽屉和 Request Audit 跳转 | P2 | Idea | 依赖 requestId |
-| FE-003 | 号池循环探活可视化 | `https://grokimage.relai.asia/accounts` 上大量「待验证」，systemd/脚本探活只在 journal，前端看不见进度 | 账号页增加探活任务面板：总数/已完成/成功/失败、当前账号、并发、阶段（refresh_token/billing/web_quota）、可取消；复用现有 `AccountTaskProgressDTO` SSE/流式进度模式 | P0 | Planned | 2026-07-16 用户要求；截图全表待验证；后端探针 `/opt/grok2api/tools/grok2api-account-pool-probe.py` 已能登录跑通 |
+| FE-003 | 号池循环探活可视化 | `https://grokimage.relai.asia/accounts` 上大量「待验证」，后台探活只在日志可见 | 账号页展示当前/最近账号、验证/恢复阶段、调度时间、成功失败、七类池统计与最近结果 | P0 | Done | 5 秒只读轮询；桌面与 390px 本地验收通过 |
 
 ## 后端
 
@@ -27,7 +27,7 @@
 | BE-004 | Messages 用量与模型归一化 | 流式请求输入/缓存为 0，实际模型暴露 `-build-free` | 尾事件发送完整 usage，对外固定公开模型，内部保留观测型号 | P0 | Done | 后端全量测试通过 |
 | BE-005 | Build 多池恢复调度 | 权限拒绝只能停在失效态或被直接删除 | 隔离后串行恢复、分级退避、软退役、重导入复活 | P0 | Done | 恢复池与待验证池交替，最大并发 1 |
 | BE-006 | Web 桥接故障隔离 | 桥接停机会把本机连接失败误记为代理 `transport error`，冷却整个 Web 池 | 桥接不可达只记录控制面告警，不反馈代理健康；真实 403/代理故障继续反馈 | P0 | Done | 单元测试覆盖连接拒绝分类，生产仅做单账号 canary |
-| BE-007 | 探活任务控制面 API | 探活在主机 systemd timer，管理端无法启动/观测/取消 | 新增 admin API：`POST /accounts/probe-cycle`（concurrency 1–5）、`GET` 进度、`DELETE` 取消；状态落库或内存+审计；前端 FE-003 消费 | P0 | Planned | 与 FE-003 成对；现有导入/强制刷新已有 `runAccountTask` 流式进度可参考 |
+| BE-007 | 探活状态 API | 后台循环探针无法从管理端观测 | 新增只读 `GET /accounts/build-probe`，暴露当前账号、阶段、调度、运行期统计、分池和最近结果 | P0 | Done | Panda 固定单并发；不暴露批量启动/并发调节，避免生产误操作 |
 | BE-008 | Grok Web HTTP 逆向（类 gptimage） | 当前 Web/生图每请求起 browser-bridge Chrome，Panda 资源与 CF 成本极高 | 对照 `/root/gptimage`：`curl_cffi` 伪装 + sentinel/会话 HTTP API；浏览器仅做 CF clearance；目标去掉每请求 Chromium | P0 | Planned | gptimage 用 `openai_backend_api.py` + conversation/files/tasks；grok 需单独抓包，不能直接抄 ChatGPT 路径 |
 
 ## 稳定性与可维护性

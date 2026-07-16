@@ -303,6 +303,41 @@ func TestAccountAnalyticsRouteReturnsCurrentSnapshot(t *testing.T) {
 	}
 }
 
+func TestBuildProbeStatusRouteReturnsPoolStatisticsWithoutNullTimes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "build-probe-status.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewAccountRepository(database)
+	service := accountapp.NewService(repository, nil, nil, nil, provider.NewRegistry(cliprovider.NewAdapter(cliprovider.Config{}, nil)), nil, nil)
+	if _, _, err := repository.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, AuthType: accountdomain.AuthTypeOAuth, Name: "pending", SourceKey: "pending",
+		EncryptedAccessToken: "token", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	NewHandler(service, nil).Register(router.Group("/api/admin/v1"))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/v1/accounts/build-probe", nil)
+
+	router.ServeHTTP(recorder, request)
+
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK || !strings.Contains(body, `"enabled":false`) || !strings.Contains(body, `"verification":1`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, body)
+	}
+	if strings.Contains(body, `"startedAt":null`) || strings.Contains(body, `"nextRunAt":null`) || strings.Contains(body, `"current":null`) {
+		t.Fatalf("optional fields must be omitted: %s", body)
+	}
+}
+
 func TestAccountSyncPipelineUsesFinalQueuedTotal(t *testing.T) {
 	syncer := &accountProgressSynchronizerStub{}
 	handler := NewHandler(nil, syncer)

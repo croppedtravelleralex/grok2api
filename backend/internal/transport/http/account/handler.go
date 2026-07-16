@@ -130,6 +130,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/accounts", h.list)
 	router.GET("/accounts/summary", h.summary)
 	router.GET("/accounts/analytics", h.analytics)
+	router.GET("/accounts/build-probe", h.buildProbeStatus)
 	router.GET("/accounts/export", h.exportCredentials)
 	router.GET("/accounts/:id", h.get)
 	router.POST("/accounts/device/start", h.startDevice)
@@ -389,6 +390,54 @@ func (h *Handler) analytics(c *gin.Context) {
 		})
 	}
 	response.Success(c, http.StatusOK, gin.H{"from": value.From, "to": value.To, "intervalMinutes": value.IntervalMinutes, "points": points})
+}
+
+func (h *Handler) buildProbeStatus(c *gin.Context) {
+	value, err := h.service.BuildProbeStatus(c.Request.Context())
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "buildProbeStatusFailed", "读取 Build 探针状态失败")
+		return
+	}
+	recent := make([]gin.H, 0, len(value.Recent))
+	for _, item := range value.Recent {
+		recent = append(recent, gin.H{
+			"accountId": strconv.FormatUint(item.AccountID, 10), "accountName": item.AccountName,
+			"mode": item.Mode, "outcome": item.Outcome, "pool": item.Pool, "error": item.Error,
+			"startedAt": item.StartedAt, "completedAt": item.CompletedAt, "durationMs": item.Duration.Milliseconds(),
+		})
+	}
+	result := gin.H{
+		"enabled": value.Enabled, "running": value.Running,
+		"intervalSeconds": int(value.Interval.Seconds()), "idleIntervalSeconds": int(value.IdleInterval.Seconds()), "initialDelaySeconds": int(value.InitialDelay.Seconds()),
+		"lastError": value.LastError,
+		"statistics": gin.H{
+			"attempts": value.Statistics.Attempts, "succeeded": value.Statistics.Succeeded, "failed": value.Statistics.Failed,
+			"verified": value.Statistics.Verified, "recovered": value.Statistics.Recovered, "cooledDown": value.Statistics.CooledDown,
+			"quarantined": value.Statistics.Quarantined, "recoveryQueued": value.Statistics.RecoveryQueued,
+			"retired": value.Statistics.Retired, "consecutiveFailures": value.Statistics.ConsecutiveFailures,
+		},
+		"pools": gin.H{
+			"production": value.Pools.Production, "verification": value.Pools.Verification, "cooldown": value.Pools.Cooldown,
+			"quarantine": value.Pools.Quarantine, "recovery": value.Pools.Recovery, "retired": value.Pools.Retired, "disabled": value.Pools.Disabled,
+		},
+		"recent": recent,
+	}
+	if value.StartedAt != nil {
+		result["startedAt"] = value.StartedAt
+	}
+	if value.NextRunAt != nil {
+		result["nextRunAt"] = value.NextRunAt
+	}
+	if value.LastCompletedAt != nil {
+		result["lastCompletedAt"] = value.LastCompletedAt
+	}
+	if value.Current != nil {
+		result["current"] = gin.H{
+			"accountId": strconv.FormatUint(value.Current.AccountID, 10), "accountName": value.Current.AccountName,
+			"mode": value.Current.Mode, "startedAt": value.Current.StartedAt,
+		}
+	}
+	response.Success(c, http.StatusOK, result)
 }
 
 func (h *Handler) batchUpdate(c *gin.Context) {
@@ -1106,25 +1155,7 @@ func newAccountResponse(value accountapp.View) accountResponse {
 }
 
 func accountPool(value accountdomain.Credential) string {
-	if !value.Enabled {
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(value.LastError)), "retired:") {
-			return "retired"
-		}
-		return "disabled"
-	}
-	if value.AuthStatus == accountdomain.AuthStatusReauthRequired {
-		if value.CooldownUntil != nil && value.CooldownUntil.After(time.Now().UTC()) {
-			return "recovery"
-		}
-		return "quarantine"
-	}
-	if value.CooldownUntil != nil && value.CooldownUntil.After(time.Now().UTC()) {
-		return "cooldown"
-	}
-	if value.Provider == accountdomain.ProviderBuild && strings.TrimSpace(value.ObservedModel) == "" {
-		return "verification"
-	}
-	return "production"
+	return accountapp.AccountPoolAt(value, time.Now().UTC())
 }
 
 func newQuotaResponse(value accountapp.QuotaView) quotaResponse {

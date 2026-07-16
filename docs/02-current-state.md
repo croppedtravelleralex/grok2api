@@ -3,7 +3,7 @@
 ## 最后更新时间
 
 - 日期：2026-07-16
-- 维护目的：记录号池探活可视化需求、Cloudflare 403（直连 vs Webshare）对照证据，以及 Grok Web HTTP 逆向待办。
+- 维护目的：记录号池循环探针可视化落地、Cloudflare 403（直连 vs Webshare）对照证据，以及 Grok Web HTTP 逆向待办。
 
 ## 整体状态摘要
 
@@ -28,7 +28,9 @@
 - Messages 流式尾事件会返回完整输入、输出和缓存命中 Token；Claude Code 的 `cache_control` 稳定前缀会派生粘滞键。
 - Build `permission-denied` 不再伪装成客户端登录失效：账号被隔离，Messages 对外返回可重试的 503 `overloaded_error`。
 - Build 调度已明确分为生产池、待验证池、隔离池、恢复池和退役池：权限拒绝立即进入隔离池；同一个单并发 worker 在恢复池与待验证池之间交替，避免死号恢复和新号验证互相饿死。
-- 隔离账号第一次恢复会优先尝试已关联 Web SSO，或最多旋转一次可用 RT，再执行最小 Build Chat 请求；失败按 15 分钟、1 小时退避，累计 3 次后软退役。软退役保留 ID、关联和审计，重新导入新凭据会自动复活。
+- 隔离账号第一次恢复会优先尝试已关联 Web SSO，或最多旋转一次可用 RT，再执行最小 Build Chat 请求；前两次失败分别退避 15 分钟、1 小时，第 3 次失败后软退役。软退役保留 ID、关联和审计，重新导入新凭据会自动复活。
+- Accounts 页已增加 Build 循环探针面板：每 5 秒读取只读状态，展示当前/最近账号、验证或恢复阶段、下次运行时间、连续失败、运行期累计成功失败、生产可信池占比、七类池数量和最近结果。
+- 新增只读管理接口 `GET /api/admin/v1/accounts/build-probe`；统计保存在当前进程内，服务重启后从零累计，账号池数量始终从数据库实时汇总。
 - 图片本地归档已记录请求 ID、模型、请求分辨率、实际宽高、生成耗时和精确到秒的时间。
 - 图片管理已支持本地日期筛选、按日期分组、按日期删除和一键删除全部。
 - 旧图片在读取时会从 PNG/JPEG/GIF 文件解析实际分辨率；旧图片无法反推出历史生成耗时，会显示未知。
@@ -39,6 +41,7 @@
 - 后端 `go test ./...` 已通过。
 - 前端 `pnpm lint` 与 `pnpm build` 已通过。
 - 本地临时实例已完成数据库迁移和管理 API 验收：图片列表、日期筛选、图片读取、元数据展示和按日期删除均通过。
+- 本地探针可视化验收通过：管理接口返回结构正确，桌面与 390px 视口均可显示且无横向溢出；前端控制台无新增运行错误。
 - 已建立 `docs/` 维护入口和 Panda 低资源操作规则。
 
 ## 账号池诊断事实
@@ -65,13 +68,13 @@
 
 - 浏览器桥接的 30 秒启动上限、阶段化错误和结构化 502 已部署；会话复用与 UA/平台一致性修复已完成本地测试，等待低资源生产 canary。
 - **P0 待办（2026-07-16，详见 [06-open-todos-2026-07-16.md](./06-open-todos-2026-07-16.md)）**
-  1. 账号页循环探活可视化（进度 / 当前账号 / 成功失败数）— FE-003 + BE-007
+  1. 账号页循环探活只读可视化已完成；人工启动/取消和并发调节不进入 Panda 生产面板，固定单并发由后台持续运行 — FE-003 + BE-007
   2. Cloudflare 403：直连与 Webshare 对照证据已完成；换住宅/ISP 出口仍待做 — MTN-007 / MTN-005
   3. Grok Web/生图 HTTP 逆向（对齐 gptimage，去掉每请求 Chrome）— BE-008
 
 ## 2026-07-16 新增事实
 
-- 管理端 Accounts 页大量「待验证」；主机探针已能登录跑通，但进度只在 journal，前端不可见。
+- 管理端 Accounts 页大量「待验证」；循环探针现已通过页面和管理 API 可见，无需再登录主机读取 journal。
 - 空代理 egress 生图仍 502（bootstrap ~103s）；有请求时 bridge 峰值约 CPU 76% / 内存 ~487MB。
 - Cloudflare plain HTTP 对照：panda 直连与 Webshare 抽样 5 节点对 `grok.com` **全部 403 + Just a moment**（`plain_200_no_cf=0`）。
 - **拒因深挖（2026-07-16）**：被拒页为 CF **Managed Challenge**（`cf-mitigated=challenge`，`cType=managed`），不是硬封文案；本机 GSL 机房段可 plain 200；udeal 偶发 `pass_app` 但 session 会漂（原 QmFKV 等已失效；新样本 `6XIJ`/Webgist GB 可过）。
@@ -96,7 +99,7 @@
 
 ## 下一步 3-5 项
 
-1. 实现账号探活可视化（FE-003/BE-007），让 Accounts 页能看见进度与成败计数。
+1. 在 Panda 低资源门槛下部署并观察探针面板与只读 API，确认单并发节拍和资源占用稳定。
 2. 更换可粘滞住宅/ISP 出口后做单浏览器 canary；当前机房 Webshare plain HTTP 已证实同样 CF 403。
 3. 启动 Grok Web HTTP 逆向 PoC（BE-008），对照 gptimage，目标去掉每请求 Chromium。
 4. 观察 Build 恢复池；为 `invalid_grant` 导入新 RT，为 `access denied` 更换具备 Build Chat 权限的授权。

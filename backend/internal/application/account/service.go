@@ -235,6 +235,7 @@ type Service struct {
 	credentialRefreshWake chan struct{}
 	buildProbeMu          sync.Mutex
 	buildRecoveryTurn     bool
+	buildProbe            *buildProbeMonitor
 	logger                *slog.Logger
 	now                   func() time.Time
 }
@@ -251,6 +252,7 @@ func NewService(accounts repository.AccountRepository, audits repository.AuditRe
 		quotaRefreshQueue:     make(chan webQuotaRefreshRequest, webQuotaRefreshQueueSize),
 		credentialRefreshWake: make(chan struct{}, 1),
 		buildRecoveryTurn:     true,
+		buildProbe:            &buildProbeMonitor{},
 		conversionPool:        batch.NewPool(25), syncPool: batch.NewPool(25), webQuotaPool: batch.NewPool(1), refreshPool: batch.NewPool(25), logger: slog.Default(),
 		now: func() time.Time { return time.Now().UTC() },
 	}
@@ -448,7 +450,10 @@ func (s *Service) ProbeNextBuildChat(ctx context.Context) (uint64, bool, error) 
 			return 0, false, mapRepositoryError(err)
 		}
 		if len(recovery) > 0 {
-			return s.recoverBuildChat(ctx, recovery[0])
+			candidate := recovery[0]
+			return s.observeBuildProbe(ctx, candidate, BuildProbeModeRecovery, func() (uint64, bool, error) {
+				return s.recoverBuildChat(ctx, candidate)
+			})
 		}
 	}
 	values, err := s.accounts.ListEnabled(ctx, accountdomain.ProviderBuild)
@@ -474,17 +479,22 @@ func (s *Service) ProbeNextBuildChat(ctx context.Context) (uint64, bool, error) 
 				return 0, false, mapRepositoryError(recoveryErr)
 			}
 			if len(recovery) > 0 {
-				return s.recoverBuildChat(ctx, recovery[0])
+				candidate := recovery[0]
+				return s.observeBuildProbe(ctx, candidate, BuildProbeModeRecovery, func() (uint64, bool, error) {
+					return s.recoverBuildChat(ctx, candidate)
+				})
 			}
 		}
 		return 0, false, nil
 	}
-	selectedID := candidate.ID
-	candidate, err = s.EnsureCredential(ctx, candidate, false)
-	if err != nil {
-		return selectedID, true, err
-	}
-	return s.probeBuildChatCredential(ctx, candidate, false)
+	return s.observeBuildProbe(ctx, candidate, BuildProbeModeVerification, func() (uint64, bool, error) {
+		selectedID := candidate.ID
+		ready, ensureErr := s.EnsureCredential(ctx, candidate, false)
+		if ensureErr != nil {
+			return selectedID, true, ensureErr
+		}
+		return s.probeBuildChatCredential(ctx, ready, false)
+	})
 }
 
 func (s *Service) nextBuildRecoveryTurn() bool {

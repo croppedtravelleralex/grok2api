@@ -142,6 +142,54 @@ export type AccountAnalyticsDTO = {
   points: AccountAnalyticsPointDTO[];
 };
 
+export type BuildProbeMode = "verification" | "recovery";
+export type BuildProbeOutcome = "verified" | "recovered" | "cooldown" | "quarantine" | "recovery" | "retired" | "failed";
+
+export type BuildProbeStatusDTO = {
+  enabled: boolean;
+  running: boolean;
+  intervalSeconds: number;
+  idleIntervalSeconds: number;
+  initialDelaySeconds: number;
+  startedAt?: string;
+  nextRunAt?: string;
+  lastCompletedAt?: string;
+  lastError: string;
+  current?: { accountId: string; accountName: string; mode: BuildProbeMode; startedAt: string };
+  statistics: {
+    attempts: number;
+    succeeded: number;
+    failed: number;
+    verified: number;
+    recovered: number;
+    cooledDown: number;
+    quarantined: number;
+    recoveryQueued: number;
+    retired: number;
+    consecutiveFailures: number;
+  };
+  pools: {
+    production: number;
+    verification: number;
+    cooldown: number;
+    quarantine: number;
+    recovery: number;
+    retired: number;
+    disabled: number;
+  };
+  recent: Array<{
+    accountId: string;
+    accountName: string;
+    mode: BuildProbeMode;
+    outcome: BuildProbeOutcome;
+    pool: AccountDTO["pool"];
+    error: string;
+    startedAt: string;
+    completedAt: string;
+    durationMs: number;
+  }>;
+};
+
 export type AccountReauthenticateInput = {
   accessToken?: string;
   refreshToken?: string;
@@ -216,6 +264,25 @@ const decodeAccountSummary = createObjectDecoder<AccountSummaryDTO>("account sum
   recovery: hasShape({ cooldown: isNumber, waitingReset: isNumber, probing: isNumber }),
   issues: hasShape({ disabled: isNumber, reauthRequired: isNumber }),
 });
+const buildProbeModeValidator = isOneOf("verification", "recovery");
+const buildProbeOutcomeValidator = isOneOf("verified", "recovered", "cooldown", "quarantine", "recovery", "retired", "failed");
+const buildProbePoolValidator = isOneOf("production", "verification", "cooldown", "quarantine", "recovery", "retired", "disabled");
+const buildProbeCurrentValidator = hasShape({ accountId: isString, accountName: isString, mode: buildProbeModeValidator, startedAt: isString });
+const buildProbeResultValidator = hasShape({
+  accountId: isString, accountName: isString, mode: buildProbeModeValidator, outcome: buildProbeOutcomeValidator, pool: buildProbePoolValidator,
+  error: isString, startedAt: isString, completedAt: isString, durationMs: isNumber,
+});
+const decodeBuildProbeStatus = createObjectDecoder<BuildProbeStatusDTO>("build probe status", {
+  enabled: isBoolean, running: isBoolean, intervalSeconds: isNumber, idleIntervalSeconds: isNumber, initialDelaySeconds: isNumber,
+  startedAt: isOptional(isString), nextRunAt: isOptional(isString), lastCompletedAt: isOptional(isString), lastError: isString,
+  current: isOptional(buildProbeCurrentValidator),
+  statistics: hasShape({
+    attempts: isNumber, succeeded: isNumber, failed: isNumber, verified: isNumber, recovered: isNumber, cooledDown: isNumber,
+    quarantined: isNumber, recoveryQueued: isNumber, retired: isNumber, consecutiveFailures: isNumber,
+  }),
+  pools: hasShape({ production: isNumber, verification: isNumber, cooldown: isNumber, quarantine: isNumber, recovery: isNumber, retired: isNumber, disabled: isNumber }),
+  recent: isArrayOf(buildProbeResultValidator),
+});
 const accountAnalyticsPointValidator = hasShape({
   bucketAt: isString, provider: isOneOf("grok_build", "grok_web", "grok_console"), total: isNumber, available: isNumber,
   cooldown: isNumber, waitingReset: isNumber, probing: isNumber, disabled: isNumber, reauthRequired: isNumber,
@@ -268,6 +335,10 @@ export function getAccountSummary(): Promise<AccountSummaryDTO> {
 
 export function getAccountAnalytics(period: AccountAnalyticsPeriod): Promise<AccountAnalyticsDTO> {
   return apiRequest(`/api/admin/v1/accounts/analytics?period=${period}`, {}, decodeAccountAnalytics);
+}
+
+export function getBuildProbeStatus(): Promise<BuildProbeStatusDTO> {
+  return apiRequest("/api/admin/v1/accounts/build-probe", {}, decodeBuildProbeStatus);
 }
 
 export function updateAccount(id: string, input: AccountUpdateInput): Promise<AccountDTO> {
