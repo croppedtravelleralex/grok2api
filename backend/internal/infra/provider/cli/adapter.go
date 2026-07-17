@@ -95,6 +95,12 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			}
 			return invalidResponsesResponse(err), nil
 		}
+		if key := strings.TrimSpace(request.PromptCacheKey); key != "" {
+			body, err = ensurePromptCacheKey(body, key)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	var bodyReader io.Reader
 	if len(body) > 0 {

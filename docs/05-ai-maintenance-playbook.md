@@ -19,7 +19,9 @@
 ## Panda 强制规则
 
 - 所有 Panda 操作必须使用 `panda-remote-ops` 流程。
-- 任何变更前报告：内存、负载/CPU、磁盘、服务健康、预算、canary、停止阈值和回滚。
+- **禁止在 Panda 上编译或构建**：不得 `go build` / 全量 `go test`、`docker build`、`pnpm build`、装构建依赖或生成镜像。Panda 只拉取并运行已构建产物。
+- 标准部署链：Windows 本机改代码并跑通测试 → push 到 GitHub（触发 Actions/GHCR）→ Panda `pull` 镜像并重建容器 → 按需清理 GHCR/临时产物；不在 Panda 留构建缓存。
+- 任何变更前报告：内存、负载/CPU、磁盘、服务健康、预算、canary、停止线和回滚。
 - Panda 不构建镜像；通过 GitHub Actions/GHCR 拉取本地已验证的产物。
 - 浏览器最多先启一个会话；账号刷新、额度同步和模型测试从并发 1 开始。
 - 不同时运行启动追赶、全量刷新、浏览器测试和多接口回归。

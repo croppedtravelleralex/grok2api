@@ -178,6 +178,66 @@ func TestMarkReauthRequiredPreservesSoftRetiredState(t *testing.T) {
 	}
 }
 
+func TestProbeNextBuildChatRefreshesBillingForCurrentAccount(t *testing.T) {
+	database, err := relational.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "build-probe-billing.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewAccountRepository(database)
+	adapter := &buildChatBillingProbeAdapter{}
+	service := NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+	credential := createBuildProbeAccount(t, repository, "billing-probe")
+	credential.EncryptedRefreshToken = "refresh-token"
+	if _, err := repository.Update(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+
+	accountID, found, err := service.ProbeNextBuildChat(context.Background())
+	if err != nil || !found || accountID != credential.ID {
+		t.Fatalf("account=%d found=%v err=%v", accountID, found, err)
+	}
+	if adapter.billingCount != 1 {
+		t.Fatalf("billing refreshes = %d", adapter.billingCount)
+	}
+	billing, err := repository.GetBilling(context.Background(), credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if billing.MonthlyLimit != 100 || billing.Used != 12 {
+		t.Fatalf("billing = %#v", billing)
+	}
+}
+
+type buildChatBillingProbeAdapter struct {
+	billingCount int
+}
+
+func (a *buildChatBillingProbeAdapter) Provider() accountdomain.Provider {
+	return accountdomain.ProviderBuild
+}
+func (a *buildChatBillingProbeAdapter) Definition() provider.Definition {
+	return provider.Definition{
+		Provider:     accountdomain.ProviderBuild,
+		Quota:        provider.QuotaBilling,
+		Credential:   provider.CredentialSurface{AuthType: accountdomain.AuthTypeOAuth, Refresh: true},
+		Conversation: provider.ConversationSurface{Responses: true},
+	}
+}
+func (a *buildChatBillingProbeAdapter) RefreshCredential(context.Context, accountdomain.Credential) (provider.RefreshedCredential, error) {
+	return provider.RefreshedCredential{EncryptedAccessToken: "access", EncryptedRefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+func (a *buildChatBillingProbeAdapter) GetBilling(context.Context, accountdomain.Credential) (accountdomain.Billing, error) {
+	a.billingCount++
+	return accountdomain.Billing{MonthlyLimit: 100, Used: 12, SyncedAt: time.Now().UTC()}, nil
+}
+func (a *buildChatBillingProbeAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {
+	return &provider.Response{StatusCode: http.StatusOK, Status: http.StatusText(http.StatusOK), Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"model":"grok-4.5-build-free"}`))}, nil
+}
+
 func TestRefreshTokenImmediatelyVerifiesBuildCapability(t *testing.T) {
 	service, repository, adapter := newBuildChatRecoveryService(t)
 	credential := createBuildProbeAccount(t, repository, "manual-refresh-verification")

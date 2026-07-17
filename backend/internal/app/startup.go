@@ -516,7 +516,7 @@ func (a *Application) runBuildChatProbe(ctx context.Context) {
 			return
 		case <-timer.C:
 		}
-		probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		probeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		accountID, found, err := a.accounts.ProbeNextBuildChat(probeCtx)
 		cancel()
 		if err != nil && ctx.Err() == nil {

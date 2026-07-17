@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // normalizeResponsesRequest 改写路由字段和兼容别名，并为上游不支持的新工具协议建立请求级映射。
@@ -73,6 +74,24 @@ func normalizeResponseFormat(raw json.RawMessage) (json.RawMessage, error) {
 func isEmptyJSON(raw json.RawMessage) bool {
 	value := bytes.TrimSpace(raw)
 	return len(value) == 0 || bytes.Equal(value, []byte("null")) || bytes.Equal(value, []byte(`""`))
+}
+
+// ensurePromptCacheKey 把 Anthropic cache_control 派生出的粘滞键写入 Responses 请求体，
+// 便于上游返回 cached_tokens；若调用方已显式提供 prompt_cache_key 则不覆盖。
+func ensurePromptCacheKey(body []byte, key string) ([]byte, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return body, nil
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("解析 Responses 请求以写入 prompt_cache_key: %w", err)
+	}
+	if raw, ok := payload["prompt_cache_key"]; ok && !isEmptyJSON(raw) {
+		return body, nil
+	}
+	payload["prompt_cache_key"] = mustJSON(key)
+	return json.Marshal(payload)
 }
 
 func mustJSON(value any) json.RawMessage {

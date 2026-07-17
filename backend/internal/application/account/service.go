@@ -489,10 +489,11 @@ func (s *Service) ProbeNextBuildChat(ctx context.Context) (uint64, bool, error) 
 	}
 	return s.observeBuildProbe(ctx, candidate, BuildProbeModeVerification, func() (uint64, bool, error) {
 		selectedID := candidate.ID
-		ready, ensureErr := s.EnsureCredential(ctx, candidate, false)
+		ready, ensureErr := s.prepareBuildProbeCredential(ctx, candidate, false)
 		if ensureErr != nil {
 			return selectedID, true, ensureErr
 		}
+		s.refreshBuildProbeBilling(ctx, ready.ID)
 		return s.probeBuildChatCredential(ctx, ready, false)
 	})
 }
@@ -524,18 +525,43 @@ func (s *Service) recoverBuildChat(ctx context.Context, candidate accountdomain.
 		}
 	}
 	// invalid_grant 表示旧 RT 已被撤销或轮换；重复提交同一 RT 只会制造请求风暴。
-	// 其余认证/权限拒绝在第一次恢复时最多旋转一次 RT，再用最小请求验证真实能力。
-	if candidate.FailureCount == 0 && candidate.EncryptedRefreshToken != "" && !strings.Contains(reason, "invalid_grant") {
-		refreshed, err := s.ensureCredential(ctx, candidate, true, true, false)
-		if err != nil {
-			return s.deferOrRetireBuildRecovery(ctx, candidate, "RT refresh failed: "+err.Error())
-		}
-		candidate = refreshed
-	}
 	if strings.Contains(reason, "invalid_grant") && !recoveredFromWeb {
 		return s.deferOrRetireBuildRecovery(ctx, candidate, "invalid_grant requires a fresh RT")
 	}
-	return s.probeBuildChatCredential(ctx, candidate, true)
+	ready, err := s.prepareBuildProbeCredential(ctx, candidate, true)
+	if err != nil {
+		return s.deferOrRetireBuildRecovery(ctx, candidate, "RT refresh failed: "+err.Error())
+	}
+	s.refreshBuildProbeBilling(ctx, ready.ID)
+	return s.probeBuildChatCredential(ctx, ready, true)
+}
+
+// prepareBuildProbeCredential 对探针当前账号做条件凭据续期：
+// 验证模式仅在 AT 缺失或临近过期时刷新；恢复模式在首次尝试时强制旋转一次 RT。
+func (s *Service) prepareBuildProbeCredential(ctx context.Context, candidate accountdomain.Credential, recovery bool) (accountdomain.Credential, error) {
+	force := false
+	bypassCooldown := false
+	if recovery {
+		reason := strings.ToLower(strings.TrimSpace(candidate.LastError + " " + candidate.LastRefreshErrorCode))
+		if candidate.FailureCount == 0 && candidate.EncryptedRefreshToken != "" && !strings.Contains(reason, "invalid_grant") {
+			force = true
+			bypassCooldown = true
+		}
+	}
+	return s.ensureCredential(ctx, candidate, force, bypassCooldown, false)
+}
+
+// refreshBuildProbeBilling 同步当前探针账号额度；失败只记日志，不阻断能力探测。
+func (s *Service) refreshBuildProbeBilling(ctx context.Context, accountID uint64) {
+	if accountID == 0 || s.providers == nil {
+		return
+	}
+	if _, ok := s.providers.Billing(accountdomain.ProviderBuild); !ok {
+		return
+	}
+	if _, err := s.RefreshBilling(ctx, accountID); err != nil {
+		s.logger.Warn("build_probe_billing_refresh_failed", "account_id", accountID, "error", err)
+	}
 }
 
 func (s *Service) probeBuildChatCredential(ctx context.Context, candidate accountdomain.Credential, recovery bool) (uint64, bool, error) {

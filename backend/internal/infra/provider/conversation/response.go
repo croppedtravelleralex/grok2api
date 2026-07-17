@@ -266,9 +266,16 @@ func chatUsage(value responseUsage) map[string]any {
 }
 
 func anthropicUsage(value responseUsage) map[string]any {
+	cached := value.InputTokensDetails.CachedTokens
+	input := value.InputTokens
+	// Anthropic 语义：input_tokens 不含 cache_read；Grok/OpenAI 常把缓存命中算进 input_tokens。
+	// 若上游同时给出 cached_tokens，拆成 NewAPI/Claude Code 可识别的 cache_read 字段。
+	if cached > 0 && input >= cached {
+		input -= cached
+	}
 	return map[string]any{
-		"input_tokens": value.InputTokens, "output_tokens": value.OutputTokens,
-		"cache_creation_input_tokens": 0, "cache_read_input_tokens": value.InputTokensDetails.CachedTokens,
+		"input_tokens": input, "output_tokens": value.OutputTokens,
+		"cache_creation_input_tokens": 0, "cache_read_input_tokens": cached,
 	}
 }
 

@@ -61,6 +61,30 @@ func TestNormalizeResponsesRequestDoesNotInventPromptCacheKey(t *testing.T) {
 	}
 }
 
+func TestEnsurePromptCacheKeyInjectsDerivedKeyWithoutOverridingExplicit(t *testing.T) {
+	injected, err := ensurePromptCacheKey([]byte(`{"model":"grok-4.5","input":"hello"}`), "derived-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(injected, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["prompt_cache_key"] != "derived-key" {
+		t.Fatalf("prompt_cache_key = %#v", payload["prompt_cache_key"])
+	}
+	preserved, err := ensurePromptCacheKey([]byte(`{"model":"grok-4.5","input":"hello","prompt_cache_key":"official-key"}`), "derived-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(preserved, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["prompt_cache_key"] != "official-key" {
+		t.Fatalf("explicit prompt_cache_key overwritten: %#v", payload["prompt_cache_key"])
+	}
+}
+
 func TestNormalizeResponsesRequestFlattensJSONSchema(t *testing.T) {
 	body := []byte(`{"model":"public","input":"hello","response_format":{"type":"json_schema","json_schema":{"name":"answer","strict":true,"schema":{"type":"object"}}}}`)
 	normalized, _, err := normalizeResponsesRequest(body, "grok-4.5")

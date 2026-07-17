@@ -2,14 +2,14 @@
 
 ## 最后更新时间
 
-- 日期：2026-07-16
-- 维护目的：记录号池循环探针可视化落地、Cloudflare 403（直连 vs Webshare）对照证据，以及 Grok Web HTTP 逆向待办。
+- 日期：2026-07-17
+- 维护目的：记录 Build 探针「扫到即续期+刷 Billing」、Messages 缓存 usage 拆分，以及 NewAPI `grok-4.5` 渠道调度修复。
 
 ## 整体状态摘要
 
 - 后端为 Go 网关，前端为 React/Vite 管理端，支持 Grok Build、Web、Console 三个账号池。
 - 本地工作分支为 `codex/panda-safe-completion`；Panda 已运行本轮镜像摘要 `sha256:4ce09f388c12...`（提交 `ff3f8da`）。
-- Panda 为低资源生产机，部署采用本地提交、GitHub Actions/GHCR 构建、Panda 拉取镜像的方式。
+- Panda 为低资源生产机：**禁止在其上编译/构建**；标准链为本地改测 → GitHub 上传（Actions/GHCR）→ Panda 仅 `pull` 运行 → 按需清理 GHCR/临时仓库产物。
 - NewAPI 已按 Chat Completions、Responses、Messages、Images 和 Videos 拆分接入；本轮不改其渠道结构。
 - NewAPI 图片渠道已移除人为的 `gpt-image-*` 名称，统一为 `grok-imagine-image`、`grok-imagine-image-quality` 和 `grok-imagine-image-edit`；由于 Web/Cloudflare 仍不可用，generations/edits 暂时 disabled，模型列表不再暴露旧别名或不可用入口。
 
@@ -28,6 +28,8 @@
 - Messages 流式尾事件会返回完整输入、输出和缓存命中 Token；Claude Code 的 `cache_control` 稳定前缀会派生粘滞键。
 - Build `permission-denied` 不再伪装成客户端登录失效：账号被隔离，Messages 对外返回可重试的 503 `overloaded_error`。
 - Build 调度已明确分为生产池、待验证池、隔离池、恢复池和退役池：权限拒绝立即进入隔离池；同一个单并发 worker 在恢复池与待验证池之间交替，避免死号恢复和新号验证互相饿死。
+- Build 循环探针扫到账号时会：条件续期凭据（验证模式仅临近过期续期；恢复模式首次强制旋 RT）→ 刷 Billing（失败不阻断）→ 再做最小 grok-4.5 能力探测；单次超时放宽到 90 秒。
+- Anthropic Messages：上游 `cached_tokens` 按 Anthropic 语义拆成 `input_tokens` + `cache_read_input_tokens`；Claude Code 的 `cache_control` 派生键会写入上游 `prompt_cache_key`，便于返回缓存命中。
 - 隔离账号第一次恢复会优先尝试已关联 Web SSO，或最多旋转一次可用 RT，再执行最小 Build Chat 请求；前两次失败分别退避 15 分钟、1 小时，第 3 次失败后软退役。软退役保留 ID、关联和审计，重新导入新凭据会自动复活。
 - Accounts 页已增加 Build 循环探针面板：每 5 秒读取只读状态，展示当前/最近账号、验证或恢复阶段、下次运行时间、连续失败、运行期累计成功失败、生产可信池占比、七类池数量和最近结果。
 - 新增只读管理接口 `GET /api/admin/v1/accounts/build-probe`；统计保存在当前进程内，服务重启后从零累计，账号池数量始终从数据库实时汇总。

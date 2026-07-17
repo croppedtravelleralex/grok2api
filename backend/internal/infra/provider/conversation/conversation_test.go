@@ -436,13 +436,26 @@ func TestConvertResponsesStreamMessagesEmitsFinalUsageAndPublicModel(t *testing.
 		t.Fatal(err)
 	}
 	value := string(converted)
-	for _, expected := range []string{`"model":"grok-4.5"`, `"input_tokens":120`, `"output_tokens":7`, `"cache_read_input_tokens":80`} {
+	// Anthropic 语义：input_tokens 不含 cache_read（120-80=40）
+	for _, expected := range []string{`"model":"grok-4.5"`, `"input_tokens":40`, `"output_tokens":7`, `"cache_read_input_tokens":80`} {
 		if !strings.Contains(value, expected) {
 			t.Fatalf("missing %s in stream:\n%s", expected, value)
 		}
 	}
 	if strings.Contains(value, `"model":"grok-4.5-build-free"`) {
 		t.Fatalf("raw upstream model leaked: %s", value)
+	}
+}
+
+func TestAnthropicUsageSplitsInclusiveCachedTokens(t *testing.T) {
+	usage := anthropicUsage(responseUsage{
+		InputTokens: 200, OutputTokens: 5,
+		InputTokensDetails: struct {
+			CachedTokens int64 `json:"cached_tokens"`
+		}{CachedTokens: 80},
+	})
+	if usage["input_tokens"] != int64(120) || usage["cache_read_input_tokens"] != int64(80) || usage["output_tokens"] != int64(5) {
+		t.Fatalf("usage = %#v", usage)
 	}
 }
 
