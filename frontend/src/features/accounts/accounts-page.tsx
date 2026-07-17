@@ -118,6 +118,7 @@ export function AccountsPage() {
   const [deviceSession, setDeviceSession] = useState<DeviceSessionDTO | null>(null);
   const [deviceStatus, setDeviceStatus] = useState<"starting" | "pending" | "failed">("starting");
   const [quickImportOpen, setQuickImportOpen] = useState(false);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [quickImportTokens, setQuickImportTokens] = useState("");
   const debouncedSearch = useDebouncedValue(search);
 
@@ -156,8 +157,16 @@ export function AccountsPage() {
 
   const invalidateAccountData = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ["accounts"] });
-    void queryClient.invalidateQueries({ queryKey: ["accounts", "summary"] });
   }, [queryClient]);
+
+  async function refreshAll(): Promise<void> {
+    setManualRefreshing(true);
+    try {
+      await queryClient.invalidateQueries({ queryKey: ["accounts"] });
+    } finally {
+      setManualRefreshing(false);
+    }
+  }
 
   const updateMutation = useMutation({
     mutationFn: (values: AccountForm) => {
@@ -561,12 +570,26 @@ export function AccountsPage() {
   const providerAccountTotal = provider === "grok_build" ? buildSummary.total : provider === "grok_web" ? webSummary.total : consoleSummary.total;
   const hasProviderAccounts = providerAccountTotal > 0 || (result?.total ?? 0) > 0;
   const syncAllPending = allBillingMutation.isPending || allWebQuotaMutation.isPending || allConsoleQuotaMutation.isPending;
+  const pageRefreshing = manualRefreshing || accountsQuery.isFetching || summaryQuery.isFetching;
 
   return (
     <div className="space-y-8">
-      <header>
-        <h1 className="text-xl font-medium">{t("accounts.title")}</h1>
-        <p className="sr-only">{t("console.accountsDescription")}</p>
+      <header className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-xl font-medium">{t("accounts.title")}</h1>
+          <p className="sr-only">{t("console.accountsDescription")}</p>
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="shrink-0 text-muted-foreground"
+          onClick={() => void refreshAll()}
+          disabled={pageRefreshing}
+        >
+          <RefreshCw className={manualRefreshing ? "animate-spin" : undefined} />
+          {t("common.refresh")}
+        </Button>
       </header>
       <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <AccountMetricPanel icon={<SquareTerminal />} loading={summaryLoading} label={t("accounts.buildAccountCount")} value={summaryUnavailable ? "-" : formatNumber(buildSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(buildSummary.available, i18n.language, 0) })} />
