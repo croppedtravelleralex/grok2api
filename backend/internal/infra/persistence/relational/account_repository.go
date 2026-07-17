@@ -266,6 +266,33 @@ func (r *AccountRepository) ListRecoveryCandidates(ctx context.Context, provider
 	return out, nil
 }
 
+// ListPurgeCandidates 返回已软退役或已标 deletable、且到达再检时间的账号。
+// 不包含管理员手动禁用（无 retired:/deletable: 前缀）的账号，避免误复活。
+func (r *AccountRepository) ListPurgeCandidates(ctx context.Context, provider account.Provider, now time.Time, limit int) ([]account.Credential, error) {
+	if limit < 1 {
+		return []account.Credential{}, nil
+	}
+	var rows []accountModel
+	err := r.db.db.WithContext(ctx).
+		Preload("Credential").Preload("WebProfile").
+		Where(
+			"provider = ? AND enabled = ? AND (cooldown_until IS NULL OR cooldown_until <= ?) AND (lower(last_error) LIKE ? OR lower(last_error) LIKE ?)",
+			provider, false, now.UTC(), "retired:%", "deletable:%",
+		).
+		Order("id ASC").Limit(limit).Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]account.Credential, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toAccountDomain(row))
+	}
+	if err := r.attachAccountLinks(ctx, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (r *AccountRepository) ListEnabledAccountIDs(ctx context.Context, provider account.Provider, refreshableOnly bool) ([]uint64, error) {
 	query := r.db.db.WithContext(ctx).
 		Table("provider_accounts AS account").

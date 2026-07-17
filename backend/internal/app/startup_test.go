@@ -171,6 +171,14 @@ func TestBuildChatProbeSettingsAreDisabledByDefaultAndBounded(t *testing.T) {
 	if got := buildChatProbeIdleInterval(); got != defaultBuildChatProbeIdleInterval {
 		t.Fatalf("unsafe probe idle interval = %s", got)
 	}
+	t.Setenv("GROK2API_BUILD_SAFE_PURGE_APPLY", "")
+	if buildChatProbePurgeApply() {
+		t.Fatal("purge apply should default off")
+	}
+	t.Setenv("GROK2API_BUILD_SAFE_PURGE_APPLY", "true")
+	if !buildChatProbePurgeApply() {
+		t.Fatal("purge apply true not recognized")
+	}
 }
 
 func TestDisabledBuildChatProbeWaitsForShutdown(t *testing.T) {

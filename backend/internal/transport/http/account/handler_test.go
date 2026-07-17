@@ -330,11 +330,19 @@ func TestBuildProbeStatusRouteReturnsPoolStatisticsWithoutNullTimes(t *testing.T
 	router.ServeHTTP(recorder, request)
 
 	body := recorder.Body.String()
-	if recorder.Code != http.StatusOK || !strings.Contains(body, `"enabled":false`) || !strings.Contains(body, `"verification":1`) {
+	if recorder.Code != http.StatusOK || !strings.Contains(body, `"enabled":false`) || !strings.Contains(body, `"verification":1`) || !strings.Contains(body, `"purgeApply":false`) {
 		t.Fatalf("status = %d, body = %s", recorder.Code, body)
 	}
 	if strings.Contains(body, `"startedAt":null`) || strings.Contains(body, `"nextRunAt":null`) || strings.Contains(body, `"current":null`) {
 		t.Fatalf("optional fields must be omitted: %s", body)
+	}
+
+	patch := httptest.NewRecorder()
+	patchRequest := httptest.NewRequest(http.MethodPatch, "/api/admin/v1/accounts/build-probe", strings.NewReader(`{"purgeApply":true}`))
+	patchRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(patch, patchRequest)
+	if patch.Code != http.StatusOK || !strings.Contains(patch.Body.String(), `"purgeApply":true`) {
+		t.Fatalf("patch status = %d, body = %s", patch.Code, patch.Body.String())
 	}
 }
 

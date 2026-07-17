@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ type BuildProbeOutcome string
 const (
 	BuildProbeModeVerification BuildProbeMode = "verification"
 	BuildProbeModeRecovery     BuildProbeMode = "recovery"
+	BuildProbeModePurge        BuildProbeMode = "purge"
 
 	BuildProbeOutcomeVerified   BuildProbeOutcome = "verified"
 	BuildProbeOutcomeRecovered  BuildProbeOutcome = "recovered"
@@ -26,6 +28,9 @@ const (
 	BuildProbeOutcomeRecovery   BuildProbeOutcome = "recovery"
 	BuildProbeOutcomeRetired    BuildProbeOutcome = "retired"
 	BuildProbeOutcomeFailed     BuildProbeOutcome = "failed"
+	BuildProbeOutcomeKept       BuildProbeOutcome = "kept"
+	BuildProbeOutcomeDeletable  BuildProbeOutcome = "deletable"
+	BuildProbeOutcomeDeleted    BuildProbeOutcome = "deleted"
 )
 
 type BuildProbeCurrent struct {
@@ -57,6 +62,9 @@ type BuildProbeStatistics struct {
 	Quarantined         int64
 	RecoveryQueued      int64
 	Retired             int64
+	Kept                int64
+	Deletable           int64
+	Deleted             int64
 	ConsecutiveFailures int64
 }
 
@@ -73,6 +81,7 @@ type BuildProbePoolSummary struct {
 type BuildProbeStatus struct {
 	Enabled         bool
 	Running         bool
+	PurgeApply      bool
 	Interval        time.Duration
 	IdleInterval    time.Duration
 	InitialDelay    time.Duration
@@ -89,6 +98,7 @@ type BuildProbeStatus struct {
 type buildProbeMonitor struct {
 	mu              sync.RWMutex
 	enabled         bool
+	purgeApply      bool
 	interval        time.Duration
 	idleInterval    time.Duration
 	initialDelay    time.Duration
@@ -104,6 +114,14 @@ type buildProbeMonitor struct {
 func (s *Service) ConfigureBuildProbe(interval, idleInterval, initialDelay time.Duration) {
 	now := s.now()
 	s.buildProbe.configure(now, interval, idleInterval, initialDelay)
+}
+
+func (s *Service) ConfigureBuildProbePurgeApply(enabled bool) {
+	s.buildProbe.setPurgeApply(enabled)
+}
+
+func (s *Service) SetBuildProbePurgeApply(enabled bool) {
+	s.buildProbe.setPurgeApply(enabled)
 }
 
 func (s *Service) ScheduleBuildProbe(next time.Time) {
@@ -181,6 +199,9 @@ func (s *Service) observeBuildProbe(ctx context.Context, candidate accountdomain
 		updated = value
 	}
 	s.buildProbe.finish(updated, mode, startedAt, completedAt, err)
+	if mode == BuildProbeModePurge && (errors.Is(err, errPurgeDeletable) || errors.Is(err, errPurgeDeleted)) {
+		return accountID, found, nil
+	}
 	return accountID, found, err
 }
 
@@ -201,6 +222,18 @@ func (m *buildProbeMonitor) configure(now time.Time, interval, idleInterval, ini
 	}
 	next := now.Add(initialDelay)
 	m.nextRunAt = &next
+}
+
+func (m *buildProbeMonitor) setPurgeApply(enabled bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.purgeApply = enabled
+}
+
+func (m *buildProbeMonitor) purgeApplyEnabled() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.purgeApply
 }
 
 func (m *buildProbeMonitor) schedule(next time.Time) {
@@ -224,6 +257,9 @@ func (m *buildProbeMonitor) finish(candidate accountdomain.Credential, mode Buil
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	pool := AccountPoolAt(candidate, completedAt)
+	if mode == BuildProbeModePurge && errors.Is(probeErr, errPurgeDeleted) {
+		pool = "disabled"
+	}
 	outcome := buildProbeOutcome(mode, pool, probeErr)
 	errorMessage := ""
 	if probeErr != nil {
@@ -233,7 +269,23 @@ func (m *buildProbeMonitor) finish(candidate accountdomain.Credential, mode Buil
 		}
 	}
 	m.statistics.Attempts++
-	if probeErr == nil {
+	switch {
+	case mode == BuildProbeModePurge && outcome == BuildProbeOutcomeKept:
+		m.statistics.Succeeded++
+		m.statistics.Kept++
+		m.statistics.ConsecutiveFailures = 0
+	case mode == BuildProbeModePurge && outcome == BuildProbeOutcomeDeletable:
+		m.statistics.Failed++
+		m.statistics.Deletable++
+		m.statistics.ConsecutiveFailures++
+	case mode == BuildProbeModePurge && outcome == BuildProbeOutcomeDeleted:
+		m.statistics.Failed++
+		m.statistics.Deleted++
+		m.statistics.ConsecutiveFailures++
+	case mode == BuildProbeModePurge && outcome == BuildProbeOutcomeFailed:
+		m.statistics.Failed++
+		m.statistics.ConsecutiveFailures++
+	case probeErr == nil:
 		m.statistics.Succeeded++
 		m.statistics.ConsecutiveFailures = 0
 		if mode == BuildProbeModeRecovery {
@@ -241,7 +293,7 @@ func (m *buildProbeMonitor) finish(candidate accountdomain.Credential, mode Buil
 		} else {
 			m.statistics.Verified++
 		}
-	} else {
+	default:
 		m.statistics.Failed++
 		m.statistics.ConsecutiveFailures++
 		switch outcome {
@@ -270,6 +322,18 @@ func (m *buildProbeMonitor) finish(candidate accountdomain.Credential, mode Buil
 }
 
 func buildProbeOutcome(mode BuildProbeMode, pool string, probeErr error) BuildProbeOutcome {
+	if mode == BuildProbeModePurge {
+		if probeErr == nil {
+			return BuildProbeOutcomeKept
+		}
+		if errors.Is(probeErr, errPurgeDeleted) {
+			return BuildProbeOutcomeDeleted
+		}
+		if errors.Is(probeErr, errPurgeDeletable) {
+			return BuildProbeOutcomeDeletable
+		}
+		return BuildProbeOutcomeFailed
+	}
 	if probeErr == nil {
 		if mode == BuildProbeModeRecovery {
 			return BuildProbeOutcomeRecovered
@@ -294,7 +358,8 @@ func (m *buildProbeMonitor) snapshot() BuildProbeStatus {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := BuildProbeStatus{
-		Enabled: m.enabled, Running: m.current != nil, Interval: m.interval, IdleInterval: m.idleInterval,
+		Enabled: m.enabled, Running: m.current != nil, PurgeApply: m.purgeApply,
+		Interval: m.interval, IdleInterval: m.idleInterval,
 		InitialDelay: m.initialDelay, StartedAt: cloneTime(m.startedAt), NextRunAt: cloneTime(m.nextRunAt),
 		LastCompletedAt: cloneTime(m.lastCompletedAt), LastError: m.lastError, Statistics: m.statistics,
 		Recent: append([]BuildProbeResult(nil), m.recent...),

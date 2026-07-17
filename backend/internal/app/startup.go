@@ -93,6 +93,12 @@ func buildChatProbeIdleInterval() time.Duration {
 	return boundedEnvDuration("GROK2API_BUILD_CHAT_PROBE_IDLE_EVERY", defaultBuildChatProbeIdleInterval, time.Minute, 24*time.Hour)
 }
 
+// buildChatProbePurgeApply 控制安全删除是否真正执行删除；默认关闭，仅标记 deletable。
+func buildChatProbePurgeApply() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("GROK2API_BUILD_SAFE_PURGE_APPLY")))
+	return value == "1" || value == "true" || value == "on" || value == "yes"
+}
+
 type startupReport struct {
 	StartedAt                time.Time
 	CompletedAt              *time.Time
@@ -508,6 +514,7 @@ func (a *Application) runBuildChatProbe(ctx context.Context) {
 	idleInterval := buildChatProbeIdleInterval()
 	initialDelay := buildChatProbeInitialDelay()
 	a.accounts.ConfigureBuildProbe(interval, idleInterval, initialDelay)
+	a.accounts.ConfigureBuildProbePurgeApply(buildChatProbePurgeApply())
 	timer := time.NewTimer(initialDelay)
 	defer timer.Stop()
 	for {

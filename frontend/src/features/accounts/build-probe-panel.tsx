@@ -1,11 +1,12 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, CheckCircle2, CircleAlert, Clock3, RefreshCw, ShieldCheck } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
-import { getBuildProbeStatus, type BuildProbeOutcome } from "@/features/accounts/accounts-api";
+import { Switch } from "@/components/ui/switch";
+import { getBuildProbeStatus, updateBuildProbePurgeApply, type BuildProbeOutcome } from "@/features/accounts/accounts-api";
 import { cn } from "@/shared/lib/cn";
 import { formatDateTimeSeconds, formatDuration, formatNumber } from "@/shared/lib/format";
 
@@ -15,6 +16,7 @@ type BuildProbePanelProps = {
 
 export function BuildProbePanel({ onCompleted }: BuildProbePanelProps) {
   const { t, i18n } = useTranslation();
+  const queryClient = useQueryClient();
   const callbackRef = useRef(onCompleted);
   const lastCompletedRef = useRef<string | undefined>(undefined);
   const query = useQuery({
@@ -22,6 +24,12 @@ export function BuildProbePanel({ onCompleted }: BuildProbePanelProps) {
     queryFn: getBuildProbeStatus,
     refetchInterval: 5_000,
     staleTime: 4_000,
+  });
+  const purgeApplyMutation = useMutation({
+    mutationFn: updateBuildProbePurgeApply,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["accounts", "build-probe"], data);
+    },
   });
   const status = query.data;
 
@@ -50,8 +58,8 @@ export function BuildProbePanel({ onCompleted }: BuildProbePanelProps) {
 
   const poolTotal = Object.values(status.pools).reduce((sum, value) => sum + value, 0);
   const productionPercent = poolTotal > 0 ? Math.round((status.pools.production / poolTotal) * 100) : 0;
-  const handledSuccessfully = status.statistics.verified + status.statistics.recovered;
-  const poolActions = status.statistics.cooledDown + status.statistics.quarantined + status.statistics.recoveryQueued + status.statistics.retired;
+  const handledSuccessfully = status.statistics.verified + status.statistics.recovered + status.statistics.kept;
+  const poolActions = status.statistics.cooledDown + status.statistics.quarantined + status.statistics.recoveryQueued + status.statistics.retired + status.statistics.deletable + status.statistics.deleted;
   const currentLabel = status.current?.accountName || status.recent[0]?.accountName || t("buildProbe.noAccount");
   const statusLabel = !status.enabled ? t("buildProbe.disabled") : status.running ? t("buildProbe.running") : t("buildProbe.waiting");
 
@@ -73,6 +81,26 @@ export function BuildProbePanel({ onCompleted }: BuildProbePanelProps) {
           <div className="mt-1 tabular-nums">{t("buildProbe.consecutiveFailures", { count: formatNumber(status.statistics.consecutiveFailures, i18n.language, 0) })}</div>
         </div>
       </div>
+
+      <div className="mt-3 flex flex-col gap-2 rounded-md bg-muted/25 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-xs font-medium">{t("buildProbe.purgeApplyTitle")}</p>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">{t("buildProbe.purgeApplyHint")}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="text-[11px] text-muted-foreground">{status.purgeApply ? t("buildProbe.purgeApplyOn") : t("buildProbe.purgeApplyOff")}</span>
+          <Switch
+            checked={status.purgeApply}
+            disabled={purgeApplyMutation.isPending || !status.enabled}
+            onCheckedChange={(checked) => {
+              if (checked && !window.confirm(t("buildProbe.purgeApplyConfirm"))) return;
+              purgeApplyMutation.mutate(checked);
+            }}
+            aria-label={t("buildProbe.purgeApplyTitle")}
+          />
+        </div>
+      </div>
+      {purgeApplyMutation.isError ? <p className="mt-1 text-xs text-destructive">{purgeApplyMutation.error.message}</p> : null}
 
       <div className="mt-4 grid gap-3 xl:grid-cols-[1.25fr_1fr]">
         <div className="rounded-md bg-muted/35 p-3">
@@ -98,6 +126,12 @@ export function BuildProbePanel({ onCompleted }: BuildProbePanelProps) {
           <ProbeMetric icon={<CircleAlert />} label={t("buildProbe.failed")} value={status.statistics.failed} locale={i18n.language} tone="danger" />
           <ProbeMetric icon={<Clock3 />} label={t("buildProbe.poolActions")} value={poolActions} locale={i18n.language} tone="warning" />
         </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-6">
+        <ProbeMetric label={t("buildProbe.purgeKept")} value={status.statistics.kept} locale={i18n.language} tone="success" />
+        <ProbeMetric label={t("buildProbe.purgeDeletable")} value={status.statistics.deletable} locale={i18n.language} tone="warning" />
+        <ProbeMetric label={t("buildProbe.purgeDeleted")} value={status.statistics.deleted} locale={i18n.language} tone="danger" />
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-7">
@@ -128,7 +162,7 @@ export function BuildProbePanel({ onCompleted }: BuildProbePanelProps) {
   );
 }
 
-function ProbeMetric({ icon, label, value, locale, tone = "default" }: { icon: ReactNode; label: string; value: number; locale: string; tone?: "default" | "success" | "warning" | "danger" }) {
+function ProbeMetric({ icon, label, value, locale, tone = "default" }: { icon?: ReactNode; label: string; value: number; locale: string; tone?: "default" | "success" | "warning" | "danger" }) {
   return (
     <div className="rounded-md bg-muted/25 p-3">
       <div className={cn("flex items-center justify-between text-[11px] text-muted-foreground [&_svg]:size-3.5", tone === "success" && "text-emerald-700 dark:text-emerald-300", tone === "warning" && "text-amber-700 dark:text-amber-300", tone === "danger" && "text-destructive")}><span>{label}</span>{icon}</div>
@@ -138,7 +172,7 @@ function ProbeMetric({ icon, label, value, locale, tone = "default" }: { icon: R
 }
 
 function OutcomeBadge({ outcome, label }: { outcome: BuildProbeOutcome; label: string }) {
-  const success = outcome === "verified" || outcome === "recovered";
-  const warning = outcome === "cooldown" || outcome === "recovery";
+  const success = outcome === "verified" || outcome === "recovered" || outcome === "kept";
+  const warning = outcome === "cooldown" || outcome === "recovery" || outcome === "deletable";
   return <Badge variant={success ? "default" : warning ? "secondary" : "destructive"} className={cn("shrink-0", success && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300", warning && "bg-amber-500/10 text-amber-700 dark:text-amber-300")}>{label}</Badge>;
 }

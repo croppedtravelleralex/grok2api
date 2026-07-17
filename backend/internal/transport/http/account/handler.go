@@ -131,6 +131,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/accounts/summary", h.summary)
 	router.GET("/accounts/analytics", h.analytics)
 	router.GET("/accounts/build-probe", h.buildProbeStatus)
+	router.PATCH("/accounts/build-probe", h.updateBuildProbe)
 	router.GET("/accounts/export", h.exportCredentials)
 	router.GET("/accounts/:id", h.get)
 	router.POST("/accounts/device/start", h.startDevice)
@@ -398,6 +399,29 @@ func (h *Handler) buildProbeStatus(c *gin.Context) {
 		response.Error(c, http.StatusInternalServerError, "buildProbeStatusFailed", "读取 Build 探针状态失败")
 		return
 	}
+	response.Success(c, http.StatusOK, newBuildProbeStatusResponse(value))
+}
+
+type updateBuildProbeRequest struct {
+	PurgeApply *bool `json:"purgeApply"`
+}
+
+func (h *Handler) updateBuildProbe(c *gin.Context) {
+	var request updateBuildProbeRequest
+	if c.ShouldBindJSON(&request) != nil || request.PurgeApply == nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	h.service.SetBuildProbePurgeApply(*request.PurgeApply)
+	value, err := h.service.BuildProbeStatus(c.Request.Context())
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "buildProbeStatusFailed", "读取 Build 探针状态失败")
+		return
+	}
+	response.Success(c, http.StatusOK, newBuildProbeStatusResponse(value))
+}
+
+func newBuildProbeStatusResponse(value accountapp.BuildProbeStatus) gin.H {
 	recent := make([]gin.H, 0, len(value.Recent))
 	for _, item := range value.Recent {
 		recent = append(recent, gin.H{
@@ -407,14 +431,15 @@ func (h *Handler) buildProbeStatus(c *gin.Context) {
 		})
 	}
 	result := gin.H{
-		"enabled": value.Enabled, "running": value.Running,
+		"enabled": value.Enabled, "running": value.Running, "purgeApply": value.PurgeApply,
 		"intervalSeconds": int(value.Interval.Seconds()), "idleIntervalSeconds": int(value.IdleInterval.Seconds()), "initialDelaySeconds": int(value.InitialDelay.Seconds()),
 		"lastError": value.LastError,
 		"statistics": gin.H{
 			"attempts": value.Statistics.Attempts, "succeeded": value.Statistics.Succeeded, "failed": value.Statistics.Failed,
 			"verified": value.Statistics.Verified, "recovered": value.Statistics.Recovered, "cooledDown": value.Statistics.CooledDown,
 			"quarantined": value.Statistics.Quarantined, "recoveryQueued": value.Statistics.RecoveryQueued,
-			"retired": value.Statistics.Retired, "consecutiveFailures": value.Statistics.ConsecutiveFailures,
+			"retired": value.Statistics.Retired, "kept": value.Statistics.Kept, "deletable": value.Statistics.Deletable,
+			"deleted": value.Statistics.Deleted, "consecutiveFailures": value.Statistics.ConsecutiveFailures,
 		},
 		"pools": gin.H{
 			"production": value.Pools.Production, "verification": value.Pools.Verification, "cooldown": value.Pools.Cooldown,
@@ -437,7 +462,7 @@ func (h *Handler) buildProbeStatus(c *gin.Context) {
 			"mode": value.Current.Mode, "startedAt": value.Current.StartedAt,
 		}
 	}
-	response.Success(c, http.StatusOK, result)
+	return result
 }
 
 func (h *Handler) batchUpdate(c *gin.Context) {

@@ -26,6 +26,7 @@ type AccountRepository interface {
 	Summarize(ctx context.Context, now time.Time) ([]AccountSummary, error)
 	ListEnabled(ctx context.Context, provider account.Provider) ([]account.Credential, error)
 	ListRecoveryCandidates(ctx context.Context, provider account.Provider, now time.Time, limit int) ([]account.Credential, error)
+	ListPurgeCandidates(ctx context.Context, provider account.Provider, now time.Time, limit int) ([]account.Credential, error)
 	ListEnabledAccountIDs(ctx context.Context, provider account.Provider, refreshableOnly bool) ([]uint64, error)
 	ListUnlinkedWebAccountIDs(ctx context.Context, limit int) ([]uint64, error)
 	HasActive(ctx context.Context, provider account.Provider) (bool, error)

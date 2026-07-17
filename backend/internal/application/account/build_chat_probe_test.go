@@ -178,6 +178,135 @@ func TestMarkReauthRequiredPreservesSoftRetiredState(t *testing.T) {
 	}
 }
 
+func TestProbeNextBuildChatPurgeKeepsCapableDisabledAccount(t *testing.T) {
+	service, repository, adapter := newBuildChatRecoveryService(t)
+	credential := createBuildProbeAccount(t, repository, "purge-keep")
+	credential.Enabled = false
+	credential.AuthStatus = accountdomain.AuthStatusReauthRequired
+	credential.LastError = "retired: Build Chat recovery returned 403"
+	credential.EncryptedRefreshToken = "refresh-old"
+	credential.ObservedModel = ""
+	if _, err := repository.Update(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+
+	accountID, found, err := service.ProbeNextBuildChat(context.Background())
+	if err != nil || !found || accountID != credential.ID {
+		t.Fatalf("account=%d found=%v err=%v", accountID, found, err)
+	}
+	updated, err := repository.Get(context.Background(), credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Enabled || updated.AuthStatus != accountdomain.AuthStatusActive || updated.ObservedModel != "grok-4.5-build-free" || updated.LastError != "" {
+		t.Fatalf("updated=%#v refreshes=%d", updated, adapter.refreshCount)
+	}
+	status, err := service.BuildProbeStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Statistics.Kept != 1 || len(status.Recent) == 0 || status.Recent[0].Outcome != BuildProbeOutcomeKept {
+		t.Fatalf("status=%#v", status)
+	}
+}
+
+func TestProbeNextBuildChatPurgeMarksDeletableWhenApplyOff(t *testing.T) {
+	service, repository := newBuildChatProbeService(t, http.StatusForbidden, `{"error":{"code":"permission-denied","message":"Access to the chat endpoint is denied"}}`)
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	credential := createBuildProbeAccount(t, repository, "purge-deletable")
+	credential.Enabled = false
+	credential.LastError = "retired: exhausted"
+	credential.EncryptedRefreshToken = ""
+	if _, err := repository.Update(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+
+	accountID, found, err := service.ProbeNextBuildChat(context.Background())
+	if err != nil || !found || accountID != credential.ID {
+		t.Fatalf("account=%d found=%v err=%v", accountID, found, err)
+	}
+	updated, err := repository.Get(context.Background(), credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Enabled || !strings.HasPrefix(updated.LastError, "deletable:") || updated.CooldownUntil == nil || !updated.CooldownUntil.After(now) {
+		t.Fatalf("updated=%#v", updated)
+	}
+	status, err := service.BuildProbeStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.PurgeApply || status.Statistics.Deletable != 1 || status.Statistics.Deleted != 0 {
+		t.Fatalf("status=%#v", status)
+	}
+}
+
+func TestProbeNextBuildChatPurgeDeletesWhenApplyOn(t *testing.T) {
+	service, repository := newBuildChatProbeService(t, http.StatusForbidden, `{"error":{"code":"permission-denied","message":"Access to the chat endpoint is denied"}}`)
+	service.SetBuildProbePurgeApply(true)
+	now := time.Date(2026, 7, 17, 13, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	credential := createBuildProbeAccount(t, repository, "purge-delete")
+	credential.Enabled = false
+	credential.LastError = "retired: exhausted"
+	credential.EncryptedRefreshToken = ""
+	if _, err := repository.Update(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+
+	accountID, found, err := service.ProbeNextBuildChat(context.Background())
+	if err != nil || !found || accountID != credential.ID {
+		t.Fatalf("first account=%d found=%v err=%v", accountID, found, err)
+	}
+	marked, err := repository.Get(context.Background(), credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(marked.LastError, "deletable:") {
+		t.Fatalf("expected first pass to mark deletable, got %#v", marked)
+	}
+
+	now = now.Add(time.Second)
+	accountID, found, err = service.ProbeNextBuildChat(context.Background())
+	if err != nil || !found || accountID != credential.ID {
+		t.Fatalf("second account=%d found=%v err=%v", accountID, found, err)
+	}
+	if _, err := repository.Get(context.Background(), credential.ID); err == nil {
+		t.Fatal("expected account deleted on second pass")
+	}
+	status, err := service.BuildProbeStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.PurgeApply || status.Statistics.Deleted != 1 || status.Statistics.Deletable < 1 {
+		t.Fatalf("status=%#v", status)
+	}
+}
+
+func TestProbeNextBuildChatPurgeSkipsManuallyDisabledAccounts(t *testing.T) {
+	service, repository := newBuildChatProbeService(t, http.StatusOK, `{"model":"grok-4.5-build-free"}`)
+	credential := createBuildProbeAccount(t, repository, "manual-disabled")
+	credential.Enabled = false
+	credential.LastError = ""
+	credential.EncryptedRefreshToken = "refresh-old"
+	if _, err := repository.Update(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+
+	accountID, found, err := service.ProbeNextBuildChat(context.Background())
+	if err != nil || found || accountID != 0 {
+		t.Fatalf("expected no purge candidate, account=%d found=%v err=%v", accountID, found, err)
+	}
+	updated, err := repository.Get(context.Background(), credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Enabled {
+		t.Fatalf("manual disabled account must not be revived: %#v", updated)
+	}
+}
+
 func TestProbeNextBuildChatRefreshesBillingForCurrentAccount(t *testing.T) {
 	database, err := relational.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "build-probe-billing.db"))
 	if err != nil {

@@ -142,12 +142,13 @@ export type AccountAnalyticsDTO = {
   points: AccountAnalyticsPointDTO[];
 };
 
-export type BuildProbeMode = "verification" | "recovery";
-export type BuildProbeOutcome = "verified" | "recovered" | "cooldown" | "quarantine" | "recovery" | "retired" | "failed";
+export type BuildProbeMode = "verification" | "recovery" | "purge";
+export type BuildProbeOutcome = "verified" | "recovered" | "cooldown" | "quarantine" | "recovery" | "retired" | "failed" | "kept" | "deletable" | "deleted";
 
 export type BuildProbeStatusDTO = {
   enabled: boolean;
   running: boolean;
+  purgeApply: boolean;
   intervalSeconds: number;
   idleIntervalSeconds: number;
   initialDelaySeconds: number;
@@ -166,6 +167,9 @@ export type BuildProbeStatusDTO = {
     quarantined: number;
     recoveryQueued: number;
     retired: number;
+    kept: number;
+    deletable: number;
+    deleted: number;
     consecutiveFailures: number;
   };
   pools: {
@@ -264,8 +268,8 @@ const decodeAccountSummary = createObjectDecoder<AccountSummaryDTO>("account sum
   recovery: hasShape({ cooldown: isNumber, waitingReset: isNumber, probing: isNumber }),
   issues: hasShape({ disabled: isNumber, reauthRequired: isNumber }),
 });
-const buildProbeModeValidator = isOneOf("verification", "recovery");
-const buildProbeOutcomeValidator = isOneOf("verified", "recovered", "cooldown", "quarantine", "recovery", "retired", "failed");
+const buildProbeModeValidator = isOneOf("verification", "recovery", "purge");
+const buildProbeOutcomeValidator = isOneOf("verified", "recovered", "cooldown", "quarantine", "recovery", "retired", "failed", "kept", "deletable", "deleted");
 const buildProbePoolValidator = isOneOf("production", "verification", "cooldown", "quarantine", "recovery", "retired", "disabled");
 const buildProbeCurrentValidator = hasShape({ accountId: isString, accountName: isString, mode: buildProbeModeValidator, startedAt: isString });
 const buildProbeResultValidator = hasShape({
@@ -273,12 +277,12 @@ const buildProbeResultValidator = hasShape({
   error: isString, startedAt: isString, completedAt: isString, durationMs: isNumber,
 });
 const decodeBuildProbeStatus = createObjectDecoder<BuildProbeStatusDTO>("build probe status", {
-  enabled: isBoolean, running: isBoolean, intervalSeconds: isNumber, idleIntervalSeconds: isNumber, initialDelaySeconds: isNumber,
+  enabled: isBoolean, running: isBoolean, purgeApply: isBoolean, intervalSeconds: isNumber, idleIntervalSeconds: isNumber, initialDelaySeconds: isNumber,
   startedAt: isOptional(isString), nextRunAt: isOptional(isString), lastCompletedAt: isOptional(isString), lastError: isString,
   current: isOptional(buildProbeCurrentValidator),
   statistics: hasShape({
     attempts: isNumber, succeeded: isNumber, failed: isNumber, verified: isNumber, recovered: isNumber, cooledDown: isNumber,
-    quarantined: isNumber, recoveryQueued: isNumber, retired: isNumber, consecutiveFailures: isNumber,
+    quarantined: isNumber, recoveryQueued: isNumber, retired: isNumber, kept: isNumber, deletable: isNumber, deleted: isNumber, consecutiveFailures: isNumber,
   }),
   pools: hasShape({ production: isNumber, verification: isNumber, cooldown: isNumber, quarantine: isNumber, recovery: isNumber, retired: isNumber, disabled: isNumber }),
   recent: isArrayOf(buildProbeResultValidator),
@@ -339,6 +343,10 @@ export function getAccountAnalytics(period: AccountAnalyticsPeriod): Promise<Acc
 
 export function getBuildProbeStatus(): Promise<BuildProbeStatusDTO> {
   return apiRequest("/api/admin/v1/accounts/build-probe", {}, decodeBuildProbeStatus);
+}
+
+export function updateBuildProbePurgeApply(purgeApply: boolean): Promise<BuildProbeStatusDTO> {
+  return apiRequest("/api/admin/v1/accounts/build-probe", { method: "PATCH", body: { purgeApply } }, decodeBuildProbeStatus);
 }
 
 export function updateAccount(id: string, input: AccountUpdateInput): Promise<AccountDTO> {
