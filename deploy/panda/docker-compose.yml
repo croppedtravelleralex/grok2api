@@ -17,8 +17,8 @@ services:
       GROK2API_BUILD_CHAT_PROBE_INITIAL_DELAY: "2m"
       GROK2API_BUILD_CHAT_PROBE_EVERY: "30s"
       GROK2API_BUILD_CHAT_PROBE_IDLE_EVERY: "5m"
-      # 安全删除默认仅标记 deletable；面板可开 purgeApply，或设 GROK2API_BUILD_SAFE_PURGE_APPLY=true
-      GROK2API_BUILD_SAFE_PURGE_APPLY: "false"
+      # 安全删除：true=两阶段后物理删除；false=仅标记。面板开关可覆盖，重启以本变量为准。
+      GROK2API_BUILD_SAFE_PURGE_APPLY: "${GROK2API_BUILD_SAFE_PURGE_APPLY:-true}"
     volumes:
       - /opt/grok2api/config.yaml:/run/grok2api/config.yaml:ro
       - /opt/grok2api/data:/app/data
