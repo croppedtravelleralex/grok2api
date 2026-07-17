@@ -8,7 +8,7 @@
 ## 整体状态摘要
 
 - 后端为 Go 网关，前端为 React/Vite 管理端，支持 Grok Build、Web、Console 三个账号池。
-- 本地工作分支为 `codex/panda-safe-completion`；Panda 已运行本轮镜像摘要 `sha256:4ce09f388c12...`（提交 `ff3f8da`）。
+- 本地工作分支为 `codex/panda-safe-completion`；Panda 已运行本轮镜像 `sha256:7b32bcb6f73c...`（提交 `ff7f7ca`，Actions `29549850820`）。
 - Panda 为低资源生产机：**禁止在其上编译/构建**；标准链为本地改测 → GitHub 上传（Actions/GHCR）→ Panda 仅 `pull` 运行 → 按需清理 GHCR/临时仓库产物。
 - NewAPI 已按 Chat Completions、Responses、Messages、Images 和 Videos 拆分接入；本轮不改其渠道结构。
 - NewAPI 图片渠道已移除人为的 `gpt-image-*` 名称，统一为 `grok-imagine-image`、`grok-imagine-image-quality` 和 `grok-imagine-image-edit`；由于 Web/Cloudflare 仍不可用，generations/edits 暂时 disabled，模型列表不再暴露旧别名或不可用入口。
