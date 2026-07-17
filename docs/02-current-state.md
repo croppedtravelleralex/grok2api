@@ -3,13 +3,14 @@
 ## 最后更新时间
 
 - 日期：2026-07-17
-- 维护目的：记录 Build 探针「扫到即续期+刷 Billing」、Messages 缓存 usage 拆分，以及 NewAPI `grok-4.5` 渠道调度修复。
+- 维护目的：记录探针安全删除门禁（purgeApply 默关）与生产部署验收。
 
 ## 整体状态摘要
 
 - 后端为 Go 网关，前端为 React/Vite 管理端，支持 Grok Build、Web、Console 三个账号池。
-- 本地工作分支为 `codex/panda-safe-completion`；Panda 已运行本轮镜像 `sha256:79cd27fec01a...`（提交 `8961aa6`，Actions `29559496097`）。
+- 本地工作分支为 `codex/panda-safe-completion`；Panda 已运行本轮镜像 `sha256:0360e4800d2a...`（提交 `cf12c4c`，Actions `29562812320`）。
 - Panda 为低资源生产机：**禁止在其上编译/构建**；标准链为本地改测 → GitHub 上传（Actions/GHCR）→ Panda 仅 `pull` 运行 → 按需清理 GHCR/临时仓库产物。
+- Build 探针在验证/恢复池扫空后对 `retired:`/`deletable:` 账号跑安全删除门禁；`purgeApply` 默认关闭，仅标记可删。
 - NewAPI 已按 Chat Completions、Responses、Messages、Images 和 Videos 拆分接入；本轮不改其渠道结构。
 - NewAPI 图片渠道已移除人为的 `gpt-image-*` 名称，统一为 `grok-imagine-image`、`grok-imagine-image-quality` 和 `grok-imagine-image-edit`；由于 Web/Cloudflare 仍不可用，generations/edits 暂时 disabled，模型列表不再暴露旧别名或不可用入口。
 

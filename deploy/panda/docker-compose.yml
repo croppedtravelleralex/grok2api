@@ -3,7 +3,7 @@ name: grok2api
 services:
   grok2api:
     container_name: grok2api
-    image: "${GROK2API_IMAGE:-ghcr.io/croppedtravelleralex/grok2api@sha256:79cd27fec01acf2f70b62016fcc1d74db08320f9f3423ecd7320f4516bac0665}"
+    image: "${GROK2API_IMAGE:-ghcr.io/croppedtravelleralex/grok2api@sha256:0360e4800d2a29ac3d0ea37f14b34fffbc03a561c5edbed4ef295e4acd9a266b}"
     ports:
       - "127.0.0.1:18000:8000"
     environment:
