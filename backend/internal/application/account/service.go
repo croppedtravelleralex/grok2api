@@ -523,13 +523,15 @@ func (s *Service) probeNextBuildPurge(ctx context.Context) (uint64, bool, error)
 // 任一环节有返回则复活进生产池；全失败才标 deletable，purgeApply 打开时才删除。
 func (s *Service) purgeBuildChat(ctx context.Context, candidate accountdomain.Credential) (uint64, bool, error) {
 	selectedID := candidate.ID
+	// 刷新 Token 可能改写账号行；进门禁前先记住是否已过 dry-run 打标，避免丢 deletable 后死循环。
+	alreadyMarked := strings.HasPrefix(strings.ToLower(strings.TrimSpace(candidate.LastError)), "deletable:")
 	if strings.TrimSpace(candidate.EncryptedRefreshToken) == "" && strings.TrimSpace(candidate.EncryptedAccessToken) == "" {
-		return s.finishPurgeFailure(ctx, candidate, "missing credentials")
+		return s.finishPurgeFailure(ctx, candidate, "missing credentials", alreadyMarked)
 	}
 	force := strings.TrimSpace(candidate.EncryptedRefreshToken) != ""
 	ready, err := s.ensureCredential(ctx, candidate, force, true, false)
 	if err != nil {
-		return s.finishPurgeFailure(ctx, candidate, "refresh failed: "+err.Error())
+		return s.finishPurgeFailure(ctx, candidate, "refresh failed: "+err.Error(), alreadyMarked)
 	}
 	observed, probeErr := s.probeBuildChatCapabilityOnly(ctx, ready)
 	if probeErr != nil || strings.TrimSpace(observed) == "" {
@@ -539,7 +541,7 @@ func (s *Service) purgeBuildChat(ctx context.Context, candidate accountdomain.Cr
 		} else if strings.TrimSpace(observed) == "" {
 			reason = "model probe returned empty model"
 		}
-		return s.finishPurgeFailure(ctx, ready, reason)
+		return s.finishPurgeFailure(ctx, ready, reason, alreadyMarked)
 	}
 	s.refreshBuildProbeBilling(ctx, ready.ID)
 	ready.Enabled = true
@@ -596,12 +598,14 @@ func (s *Service) probeBuildChatCapabilityOnly(ctx context.Context, candidate ac
 	return observedModel, nil
 }
 
-func (s *Service) finishPurgeFailure(ctx context.Context, candidate accountdomain.Credential, reason string) (uint64, bool, error) {
+func (s *Service) finishPurgeFailure(ctx context.Context, candidate accountdomain.Credential, reason string, alreadyMarked bool) (uint64, bool, error) {
 	reason = strings.TrimSpace(reason)
 	if len(reason) > 400 {
 		reason = reason[:400]
 	}
-	alreadyMarked := strings.HasPrefix(strings.ToLower(strings.TrimSpace(candidate.LastError)), "deletable:")
+	if !alreadyMarked {
+		alreadyMarked = strings.HasPrefix(strings.ToLower(strings.TrimSpace(candidate.LastError)), "deletable:")
+	}
 	// apply 仅删除已通过 dry-run 标为 deletable 的账号，避免一次瞬时失败/超时就硬删。
 	if s.buildProbe.purgeApplyEnabled() && alreadyMarked {
 		if err := s.Delete(ctx, candidate.ID); err != nil {

@@ -618,13 +618,19 @@ func (r *AccountRepository) UpdateTokens(ctx context.Context, id uint64, accessT
 	}
 	if err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var stored accountModel
-		if err := tx.Select("id", "auth_status", "last_error").First(&stored, id).Error; err != nil {
+		if err := tx.Select("id", "enabled", "auth_status", "last_error").First(&stored, id).Error; err != nil {
 			return err
 		}
 		if err := tx.Model(&accountCredentialModel{}).Where("account_id = ?", id).Updates(updates).Error; err != nil {
 			return err
 		}
-		if stored.AuthStatus == string(account.AuthStatusReauthRequired) && strings.Contains(strings.ToLower(stored.LastError), "chat endpoint access denied") {
+		normalizedError := strings.ToLower(strings.TrimSpace(stored.LastError))
+		// 禁用号的 retired/deletable 标记属于安全删除状态机，刷新 AT/RT 时不得清掉，
+		// 否则 purge 会反复“打标”却永远到不了第二轮物理删除。
+		if !stored.Enabled && (strings.HasPrefix(normalizedError, "retired:") || strings.HasPrefix(normalizedError, "deletable:")) {
+			return nil
+		}
+		if stored.AuthStatus == string(account.AuthStatusReauthRequired) && strings.Contains(normalizedError, "chat endpoint access denied") {
 			return nil
 		}
 		return tx.Model(&accountModel{}).Where("id = ?", id).Updates(map[string]any{"auth_status": string(account.AuthStatusActive), "last_error": ""}).Error

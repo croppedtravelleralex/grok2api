@@ -284,6 +284,70 @@ func TestProbeNextBuildChatPurgeDeletesWhenApplyOn(t *testing.T) {
 	}
 }
 
+func TestProbeNextBuildChatPurgeDeletesEvenAfterTokenRefresh(t *testing.T) {
+	database, err := relational.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "build-probe-purge-refresh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewAccountRepository(database)
+	adapter := &buildChatPurgeRefreshAdapter{status: http.StatusForbidden, body: `{"error":{"code":"permission-denied","message":"Access to the chat endpoint is denied"}}`}
+	service := NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+	service.ConfigureBuildProbe(time.Minute, 5*time.Minute, 0)
+	service.ConfigureBuildProbePurgeApply(true)
+
+	credential := createBuildProbeAccount(t, repository, "purge-refresh-loop")
+	credential.Enabled = false
+	credential.LastError = "deletable: previous dry-run failed"
+	credential.EncryptedAccessToken = "access-old"
+	credential.EncryptedRefreshToken = "refresh-old"
+	credential.ExpiresAt = time.Now().Add(-time.Minute)
+	if _, err := repository.Update(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+
+	accountID, found, err := service.ProbeNextBuildChat(context.Background())
+	if err != nil || !found || accountID != credential.ID {
+		t.Fatalf("account=%d found=%v err=%v refreshes=%d", accountID, found, err, adapter.refreshCount)
+	}
+	if adapter.refreshCount == 0 {
+		t.Fatal("expected purge path to refresh credential")
+	}
+	if _, err := repository.Get(context.Background(), credential.ID); err == nil {
+		t.Fatal("expected already-marked deletable account to be deleted after refresh+probe failure")
+	}
+	status, err := service.BuildProbeStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Statistics.Deleted != 1 {
+		t.Fatalf("status=%#v", status)
+	}
+}
+
+type buildChatPurgeRefreshAdapter struct {
+	refreshCount int
+	status       int
+	body         string
+}
+
+func (a *buildChatPurgeRefreshAdapter) Provider() accountdomain.Provider {
+	return accountdomain.ProviderBuild
+}
+func (a *buildChatPurgeRefreshAdapter) Definition() provider.Definition {
+	return provider.Definition{Provider: accountdomain.ProviderBuild, Credential: provider.CredentialSurface{AuthType: accountdomain.AuthTypeOAuth, Refresh: true}, Conversation: provider.ConversationSurface{Responses: true}}
+}
+func (a *buildChatPurgeRefreshAdapter) RefreshCredential(context.Context, accountdomain.Credential) (provider.RefreshedCredential, error) {
+	a.refreshCount++
+	return provider.RefreshedCredential{EncryptedAccessToken: "access-new", EncryptedRefreshToken: "refresh-new", ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+func (a *buildChatPurgeRefreshAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {
+	return &provider.Response{StatusCode: a.status, Status: http.StatusText(a.status), Header: make(http.Header), Body: io.NopCloser(strings.NewReader(a.body))}, nil
+}
+
 func TestProbeNextBuildChatPurgeSkipsManuallyDisabledAccounts(t *testing.T) {
 	service, repository := newBuildChatProbeService(t, http.StatusOK, `{"model":"grok-4.5-build-free"}`)
 	credential := createBuildProbeAccount(t, repository, "manual-disabled")

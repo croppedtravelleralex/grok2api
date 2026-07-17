@@ -335,6 +335,32 @@ func TestUpdateTokensDoesNotReactivateBuildPermissionDeniedAccount(t *testing.T)
 	}
 }
 
+func TestUpdateTokensPreservesDisabledPurgeMarkers(t *testing.T) {
+	ctx := context.Background()
+	repo := NewAccountRepository(openTestDatabase(t))
+	for _, marker := range []string{"deletable: model probe failed", "retired: recovery attempts exhausted"} {
+		credential, _, err := repo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, Name: marker, SourceKey: marker,
+			EncryptedAccessToken: testEncryptedToken, EncryptedRefreshToken: "refresh", AuthStatus: account.AuthStatusActive,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		credential.Enabled = false
+		credential.LastError = marker
+		if _, err := repo.Update(ctx, credential); err != nil {
+			t.Fatal(err)
+		}
+		updated, err := repo.UpdateTokens(ctx, credential.ID, "new-access", "new-refresh", time.Now().Add(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if updated.Enabled || updated.LastError != marker {
+			t.Fatalf("purge marker %q cleared by UpdateTokens: %#v", marker, updated)
+		}
+	}
+}
+
 func TestReimportingReauthBuildAccountClearsStaleObservedModel(t *testing.T) {
 	ctx := context.Background()
 	repo := NewAccountRepository(openTestDatabase(t))
