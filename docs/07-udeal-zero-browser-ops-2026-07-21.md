@@ -27,7 +27,9 @@
 - `GROK2API_BROWSER_BRIDGE_URL=` **空**（compose 用 `${VAR-}` 而非 `${VAR:-default}`，空串才生效）
 - `providerWeb.statsigMode=url`
 - `providerWeb.statsigSignerURL=http://127.0.0.1:8788/sign`
-- `providerWeb.mediaConcurrency=1`
+- `providerWeb.mediaConcurrency=1`（视频）
+- `providerWeb.webConcurrency=2`（chat/Lite；单 sticky 折中）
+- `providerWeb.assetConcurrency=8`（CDN 下图）
 - 本地签名器：宿主机 Python + `nsenter -t $(grok2api pid) -n` 共享容器 netns；脚本 `/tmp/zb_local_signer.py`，启动 `/tmp/start_signer_nsenter.sh`
 - 算法：挑战链得 meta48+fp → 每请求 `METHOD!PATH!COUNTER + obfiowerehiring + fp` 现算票；**忽略** grok2api 传入的 HTML `metaContent`（HTML meta ≠ 签名 meta）
 - 默认 `https://grok.wodf.de/sign` 从 panda 访问被 CF 挡，不可用
@@ -40,8 +42,8 @@
 
 - **`grok_web` 启用 20 个**：原 10 号 `659,661,663,667,669,671,673,674,675,677` + 扩容 `641,642,644,646,647,649,650,652,654,656`；其余 web 号禁用
 - 模型：`grok-imagine-image` / `quality` / `grok-chat-*` **开**；`imagine-image-edit` / `imagine-video` **关**
-- NewAPI：渠道 `#105` 文生图 **status=1**；`#106` 编辑 / `#107` 视频保持 **status=2**
-- abilities：`grok-imagine-image` / `quality` 挂 `#105`、`group=grok`；须 `enabled=true` 且 token 的 `"group"` 含 `grok`
+- NewAPI：渠道 `#105` 文生图测试期 **status=2（关）**；`#106` 编辑 / `#107` 视频保持 **status=2**
+- abilities：`grok-imagine-image` / `quality` 挂 `#105`、`group=grok`；重开时须 `enabled=true` 且 token 的 `"group"` 含 `grok`
 
 ### NewAPI 文生图验收（2026-07-21）
 
@@ -54,15 +56,43 @@
   - token `"group"` 须能打到渠道 group（文生图用 **`grok`**）
 - 可用探测：任意 `group=grok` 且 status=1 的 token（如 id `920`）；canary id `930`（user root / group `grok`）
 
-## 带宽（单口压测）
+## 带宽与文生图载荷（单口压测 + 生产样本）
 
 | 指标 | 值 |
 |------|-----|
 | 下行串行 10MB | ~15.5 Mbps |
 | 下行 4 并发合计 | ~16.5 Mbps（几乎不涨 → 单链路封顶） |
 | 上行 5MB | ~1.54 Mbps（瓶颈） |
+| Lite 出图体积（`media_assets` n=34） | mean **170KB** / p50 **153KB** / 样例 **171.35KB** JPEG |
+| 分辨率 | **784×1168**（或对调，约 1K 竖/横图） |
 
-建议：`mediaConcurrency=1`；生图并行 ≤1；上传窗口 ~512KB；下载 1–2MB。扩吞吐靠 **多条住宅 sticky**，不要同请求换 IP。
+时间估算（单口）：
+
+| 动作 | 估算 |
+|------|------|
+| 下图 171KB @ 15.5 Mbps | ≈ **90ms** → 下图并发可开到 6–8，几乎不吃带宽 |
+| 文生图上行 | 仅 JSON（KB 级），**不是**上行瓶颈 |
+| 图生图上传（同体积 base64≈228KB）@ 1.54 Mbps | ≈ **1.2s** → 同口上传应串行；当前编辑模型已关 |
+| 文生图墙钟 8–20s | 主要在上游 SSE / soft_stop，**不是**带宽 |
+
+调度建议（单条 udeal sticky）：
+
+| 闸门 | 建议 | 说明 |
+|------|------|------|
+| `webConcurrency` | **2**（流水线后建议逐步升到 **8**） | ScopeWeb：chat / Lite Drawing SSE / 刷额度；扩写已拆到 expandGate |
+| `assetConcurrency` | **8** | ScopeWebAsset：CDN 下图；171KB×8 ≪ 15Mbps 链路 |
+| `expandConcurrency` | **2** | ScopeWebExpand：短 prompt 扩写；节点回退 grok_web，同账号 sticky |
+| `mediaConcurrency` | **1** | 仅视频 worker，与文生图无关 |
+
+### 文生图流水线与时序图（同日晚）
+
+- 同步 `/v1/images/generations` 不变；Lite 走 `ImagePipelineScheduler`（固定 10 槽、准入队列 100、扩写池 2、SSE AIMD 2–6 + 错峰、下图池对齐 asset=8）。
+- 账号 lease **在 SSE 出 URL 后早释**，下图不再占账号并发。
+- 管理端：`GET /api/admin/v1/image-timeline?window=30m|1h|6h|12h`；前端左侧「时序图」`/image-timeline` 实时甘特（排队/扩写/SSE/下图分色）。
+- Canary：`GROK2API_GROUPS=2,4,10 python tools/panda_image_conc_canary.py`（输出 P50/P90）。
+- Quality/WS 路径暂不纳入流水线。
+
+说明：代码侧上传是 **整图 base64 一次 POST**（无独立「512KB 上传窗口」旋钮）；下载 `ReadAll` 上限 32MB，对 ~170KB JPEG 无需再砍窗口。扩吞吐靠 **多条住宅 sticky**，不要同请求换 IP。
 
 ## 代理组合（设计结论）
 

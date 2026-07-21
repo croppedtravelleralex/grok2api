@@ -22,7 +22,7 @@
 
 - SQLite/PostgreSQL、内存/Redis 运行时、账号池、模型路由、请求审计和代理出口。
 - Panda 域名入口为 `grokimage.relai.asia`，生产服务由容器运行。
-- Web 与 Web Asset 使用分离的出口作用域；本轮新增各自全局单并发闸门，避免 Webshare/浏览器链路被并发打满，同时避免 WebSocket 与图片下载互相死锁。
+- Web 与 Web Asset 使用分离的出口作用域与可配全局闸门（`webConcurrency` / `assetConcurrency` / `expandConcurrency`）；单 udeal 建议 2 / 8 / 2。Lite 文生图另有 `ImagePipelineScheduler`（10 槽 + SSE AIMD），管理端「时序图」可观测。
 
 ### 核心业务能力
 
@@ -61,8 +61,9 @@
 
 - **Web 主路径已切纯 HTTP（2026-07-21）**：依赖本地签名器进程 + udeal 单口；签名器随 grok2api 重建必须重拉（`start_signer_nsenter.sh`）。
 - Webshare **不可**作 `grok_web`（CF Managed Challenge）；可仅试验 `grok_web_asset` CDN 下图。
-- 单 udeal 上行 ~1.5 Mbps，文生图务必 `mediaConcurrency=1`。
-- 图生图暂关；开启前需额度与冷却策略。
+- 单 udeal：上行 ~1.5 Mbps / 下行 ~15 Mbps；Lite 出图约 **170KB JPEG / 784×1168**。调度建议 `webConcurrency=2`（流水线后可升 8）、`assetConcurrency=8`、`expandConcurrency=2`、`mediaConcurrency=1`；详见 [07](./07-udeal-zero-browser-ops-2026-07-21.md)。
+- Lite 文生图：准入排队 → 扩写池 → SSE AIMD → 下图池；账号 lease 在 SSE 后早释；`/image-timeline` 甘特图。
+- 图生图暂关；开启前需额度与冷却策略，且同口上传应串行。
 
 ## 下一步 3-5 项
 

@@ -20,6 +20,7 @@ import (
 	dashboardapp "github.com/chenyme/grok2api/backend/internal/application/dashboard"
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
 	"github.com/chenyme/grok2api/backend/internal/application/gateway"
+	imagepipelineapp "github.com/chenyme/grok2api/backend/internal/application/imagepipeline"
 	mediaapp "github.com/chenyme/grok2api/backend/internal/application/media"
 	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
 	quotarecoveryapp "github.com/chenyme/grok2api/backend/internal/application/quotarecovery"
@@ -53,6 +54,7 @@ type Application struct {
 	settings      *settingsapp.Service
 	gateway       *gateway.Service
 	media         *mediaapp.Service
+	imagePipeline *imagepipelineapp.Scheduler
 	quotaRecovery *quotarecoveryapp.Service
 	accounts      *accountapp.Service
 	models        *modelapp.Service
@@ -101,6 +103,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	egressRepo := relational.NewEgressRepository(database)
 	mediaJobRepo := relational.NewMediaJobRepository(database)
 	mediaAssetRepo := relational.NewMediaAssetRepository(database)
+	imagePipelineRepo := relational.NewImagePipelineRepository(database)
 	loadedConfig, settingsUpdatedAt, settingsRevision, err := settingsapp.LoadPersisted(ctx, cfg, runtimeSettingsRepo)
 	if err != nil {
 		database.Close()
@@ -155,7 +158,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	}
 	mediaService := mediaapp.NewService(mediaAssetRepo, localMediaStore, refreshLock, mediaConfig(cfg))
 
-	egressManager := infraegress.NewManagerWithConcurrency(egressRepo, cipher, cfg.Provider.Web.WebConcurrency, cfg.Provider.Web.AssetConcurrency)
+	egressManager := infraegress.NewManagerWithConcurrency(egressRepo, cipher, cfg.Provider.Web.WebConcurrency, cfg.Provider.Web.AssetConcurrency, cfg.Provider.Web.ExpandConcurrency)
 	cliAdapter := cliprovider.NewAdapter(cliprovider.Config{BaseURL: cfg.Provider.Build.BaseURL, ClientVersion: cfg.Provider.Build.ClientVersion, ClientIdentifier: cfg.Provider.Build.ClientIdentifier, TokenAuth: cfg.Provider.Build.TokenAuth, UserAgent: cfg.Provider.Build.UserAgent}, cipher)
 	cliAdapter.SetEgress(egressManager)
 	webAdapter := webprovider.NewAdapter(webProviderConfig(cfg), egressManager, cipher, responseRepo, mediaService)
@@ -241,6 +244,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	gatewayService := gateway.NewService(modelService, auditService, accountService, clientKeyService, providers, selector, responseRepo, cfg.Routing.MaxAttempts)
 	gatewayService.SetLogger(logger)
 	gatewayService.ConfigureMedia(mediaJobRepo, cfg.Provider.Web.MediaConcurrency)
+	imagePipeline := imagepipelineapp.NewScheduler(imagePipelineRepo, imagepipelineapp.Config{
+		PipelineSlots: 10, QueueCapacity: 100, ExpandConcurrency: cfg.Provider.Web.ExpandConcurrency,
+		SSEMin: 2, SSEInitial: 3, SSEMax: 6, SSEStagger: 400 * time.Millisecond,
+		DownloadConcurrency: cfg.Provider.Web.AssetConcurrency, Retention: 12 * time.Hour,
+	}, logger)
+	gatewayService.ConfigureImagePipeline(imagePipeline)
 	quotaRecoveryService := quotarecoveryapp.NewService(logger, quotaQueue, accountService, cfg.Provider.Web.RecoveryBackoffBase.Value(), cfg.Provider.Web.RecoveryBackoffMax.Value())
 	quotaRecoveryService.SetBulkPool(syncPool)
 	var notifySettings func(context.Context)
@@ -283,12 +292,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	readiness := func(readyCtx context.Context) httpserver.ReadinessSnapshot {
 		return readinessSnapshot(readyCtx, startup, runtimeHealth, modelRepo, accountRepo, providers)
 	}
-	router := httpserver.New(httpserver.Dependencies{Logger: logger, RequestTimeout: cfg.Server.RequestTimeout.Value(), MaxBodyBytes: cfg.Server.MaxBodyBytes, SecureCookies: cfg.Auth.SecureCookies, SwaggerEnabled: cfg.Server.SwaggerEnabled, PublicAPIBaseURL: cfg.Frontend.PublicAPIBaseURL, FrontendStaticPath: cfg.Frontend.StaticPath, Readiness: readiness, TrafficReady: startup.acceptsTraffic, AdminAuth: adminService, Accounts: accountService, AccountSync: accountSyncService, Models: modelService, ClientKeys: clientKeyService, Audits: auditService, Dashboard: dashboardService, Gateway: gatewayService, Media: mediaService, Settings: settingsService, Egress: egressService})
+	router := httpserver.New(httpserver.Dependencies{Logger: logger, RequestTimeout: cfg.Server.RequestTimeout.Value(), MaxBodyBytes: cfg.Server.MaxBodyBytes, SecureCookies: cfg.Auth.SecureCookies, SwaggerEnabled: cfg.Server.SwaggerEnabled, PublicAPIBaseURL: cfg.Frontend.PublicAPIBaseURL, FrontendStaticPath: cfg.Frontend.StaticPath, Readiness: readiness, TrafficReady: startup.acceptsTraffic, AdminAuth: adminService, Accounts: accountService, AccountSync: accountSyncService, Models: modelService, ClientKeys: clientKeyService, Audits: auditService, Dashboard: dashboardService, Gateway: gatewayService, Media: mediaService, Settings: settingsService, Egress: egressService, ImagePipeline: imagePipeline})
 	server := &http.Server{Addr: cfg.Server.Listen, Handler: router, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: cfg.Server.ReadTimeout.Value(), IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 64 << 10}
 	return &Application{
 		logger: logger, database: database, server: server,
 		audits: auditService, responses: responseRepo, runtime: runtimeStore,
-		settingsBus: settingsBus, settings: settingsService, gateway: gatewayService, media: mediaService, quotaRecovery: quotaRecoveryService, accounts: accountService, models: modelService, clientKeys: clientKeyService,
+		settingsBus: settingsBus, settings: settingsService, gateway: gatewayService, media: mediaService, imagePipeline: imagePipeline, quotaRecovery: quotaRecoveryService, accounts: accountService, models: modelService, clientKeys: clientKeyService,
 		accountRepo: accountRepo, modelRepo: modelRepo, providers: providers, web: webAdapter, startup: startup,
 	}, nil
 }
@@ -445,6 +454,19 @@ func (a *Application) Run(ctx context.Context) error {
 	startBackground("media_cleanup", func(taskCtx context.Context) error {
 		a.media.RunCleanup(taskCtx, func(err error) {
 			a.logger.Warn("media_cleanup_failed", "error", err)
+		})
+		return nil
+	})
+	startBackground("image_pipeline_cleanup", func(taskCtx context.Context) error {
+		a.runPeriodicTask(taskCtx, time.Hour, "image_pipeline_cleanup", func(runCtx context.Context) error {
+			deleted, err := a.imagePipeline.Cleanup(runCtx)
+			if err != nil {
+				return err
+			}
+			if deleted > 0 {
+				a.logger.Info("image_pipeline_cleanup", "deleted", deleted)
+			}
+			return nil
 		})
 		return nil
 	})

@@ -17,6 +17,7 @@ import (
 	fhttp "github.com/bogdanfinn/fhttp"
 	"github.com/bogdanfinn/websocket"
 
+	imagepipelineapp "github.com/chenyme/grok2api/backend/internal/application/imagepipeline"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
@@ -257,6 +258,7 @@ func (a *Adapter) generateLiteImage(ctx context.Context, request provider.ImageG
 	spec, _ := Resolve(request.Model)
 	urls := make([]string, 0, count)
 	revised := ""
+	run := imagepipelineapp.RunFromContext(ctx)
 	for len(urls) < count {
 		value, expanded, err := a.generateLiteImageURL(ctx, request.Credential, spec, request.Prompt)
 		if err != nil {
@@ -276,6 +278,15 @@ func (a *Adapter) generateLiteImage(ctx context.Context, request provider.ImageG
 			revised = expanded
 		}
 		urls = append(urls, value)
+	}
+	// SSE 完成后尽早归还账号并发；下图只占 assetGate / download 池。
+	imagepipelineapp.EarlyAccountRelease(ctx)
+	if run != nil {
+		run.MarkAccountReleased()
+		if err := run.AcquireDownload(ctx); err != nil {
+			return nil, err
+		}
+		defer run.ReleaseDownload()
 	}
 	response, err := a.imageResponse(ctx, request.Credential, urls, nil, count, format, revised)
 	if response != nil {
@@ -300,14 +311,25 @@ func (e *liteUpstreamError) Response() *provider.Response {
 
 func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.Credential, spec ModelSpec, prompt string) (string, string, error) {
 	expanded := strings.TrimSpace(prompt)
+	run := imagepipelineapp.RunFromContext(ctx)
 	if shouldExpandImagePrompt(expanded) {
 		if revised := a.expandImagePrompt(ctx, credential, expanded); revised != "" {
 			expanded = revised
 		}
+	} else if run != nil {
+		run.SkipExpand()
 	}
 	for attempt := 0; attempt < 2; attempt++ {
+		if run != nil {
+			if err := run.AcquireSSE(ctx); err != nil {
+				return "", "", err
+			}
+		}
 		upstream, lease, _, statsigTarget, err := a.openChat(ctx, credential, "", spec, normalizedChatInput{Prompt: "Drawing: " + expanded})
 		if err != nil {
+			if run != nil {
+				run.ReleaseSSE()
+			}
 			return "", "", err
 		}
 		if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
@@ -316,11 +338,17 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 			if upstream.StatusCode == http.StatusForbidden {
 				if attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, statsigTarget) {
 					lease.Release()
+					if run != nil {
+						run.ReleaseSSE()
+					}
 					continue
 				}
 			}
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, upstream.StatusCode, nil)
 			lease.Release()
+			if run != nil {
+				run.ReleaseSSE()
+			}
 			return "", "", &liteUpstreamError{StatusCode: upstream.StatusCode, Status: upstream.Status, Body: body}
 		}
 		firstImage := ""
@@ -336,6 +364,9 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 		if consumeErr != nil && !errors.Is(consumeErr, errLiteImageReady) {
 			if errors.Is(consumeErr, errWebUsageLimit) {
 				lease.Release()
+				if run != nil {
+					run.ReleaseSSE()
+				}
 				response := jsonProviderResponse(http.StatusTooManyRequests, map[string]any{"error": map[string]any{
 					"message": "Grok Imagine 速率限制中，请稍后重试",
 					"type":    "rate_limit_error",
@@ -350,11 +381,17 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 				status = http.StatusForbidden
 				if attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, statsigTarget) {
 					lease.Release()
+					if run != nil {
+						run.ReleaseSSE()
+					}
 					continue
 				}
 			}
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, status, consumeErr)
 			lease.Release()
+			if run != nil {
+				run.ReleaseSSE()
+			}
 			if status == http.StatusForbidden {
 				response := antiBotProviderResponse()
 				body, _ := io.ReadAll(response.Body)
@@ -365,6 +402,9 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 		}
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, http.StatusOK, nil)
 		lease.Release()
+		if run != nil {
+			run.ReleaseSSE()
+		}
 		if firstImage != "" {
 			return firstImage, expanded, nil
 		}
@@ -390,6 +430,9 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 				"upstream_error_code", diagnostics.ErrorCode,
 				"upstream_error", diagnostics.ErrorMessage,
 			)
+			if diagnostics.SoftStop && run != nil {
+				run.MarkSoftStop()
+			}
 			return "", "", fmt.Errorf("Grok Web Lite 响应结束但未解析到最终图片")
 		}
 		// Lite 上游固定生成两张，但每次查询只计一次 Fast 额度；按旧协议取首张并为 n 重复查询。
@@ -410,8 +453,15 @@ func shouldExpandImagePrompt(prompt string) bool {
 }
 
 func (a *Adapter) expandImagePrompt(ctx context.Context, credential account.Credential, prompt string) string {
+	run := imagepipelineapp.RunFromContext(ctx)
+	if run != nil {
+		if err := run.AcquireExpand(ctx); err != nil {
+			return ""
+		}
+		defer run.ReleaseExpand()
+	}
 	message := "Expand the following into a detailed English product photography prompt suitable for text-to-image. Include subject, materials, lighting, camera angle, and background. Reply ONLY with the expanded prompt, no quotes or commentary.\n\n" + prompt
-	upstream, lease, _, _, err := a.openChat(ctx, credential, "", ModelSpec{Mode: "fast"}, normalizedChatInput{Prompt: message, TextOnly: true})
+	upstream, lease, _, _, err := a.openChatWithScope(ctx, credential, "", ModelSpec{Mode: "fast"}, normalizedChatInput{Prompt: message, TextOnly: true}, domainegress.ScopeWebExpand)
 	if err != nil {
 		return ""
 	}

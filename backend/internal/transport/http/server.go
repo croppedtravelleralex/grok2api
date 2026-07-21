@@ -15,6 +15,7 @@ import (
 	dashboardapp "github.com/chenyme/grok2api/backend/internal/application/dashboard"
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
 	"github.com/chenyme/grok2api/backend/internal/application/gateway"
+	imagepipelineapp "github.com/chenyme/grok2api/backend/internal/application/imagepipeline"
 	mediaapp "github.com/chenyme/grok2api/backend/internal/application/media"
 	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
 	settingsapp "github.com/chenyme/grok2api/backend/internal/application/settings"
@@ -24,6 +25,7 @@ import (
 	clientkeyhttp "github.com/chenyme/grok2api/backend/internal/transport/http/clientkey"
 	dashboardhttp "github.com/chenyme/grok2api/backend/internal/transport/http/dashboard"
 	egresshttp "github.com/chenyme/grok2api/backend/internal/transport/http/egress"
+	imagepipelinehttp "github.com/chenyme/grok2api/backend/internal/transport/http/imagepipeline"
 	"github.com/chenyme/grok2api/backend/internal/transport/http/inference"
 	mediahttp "github.com/chenyme/grok2api/backend/internal/transport/http/media"
 	"github.com/chenyme/grok2api/backend/internal/transport/http/middleware"
@@ -44,20 +46,21 @@ type Dependencies struct {
 	PublicAPIBaseURL   string
 	FrontendStaticPath string
 	// Readiness 返回可观测的分层就绪状态。Ready 仅为旧调用方保留。
-	Readiness    func(context.Context) ReadinessSnapshot
-	Ready        func(context.Context) bool
-	TrafficReady func() bool
-	AdminAuth    *adminauthapp.Service
-	Accounts     *accountapp.Service
-	AccountSync  *accountsyncapp.Service
-	Models       *modelapp.Service
-	ClientKeys   *clientkeyapp.Service
-	Audits       *auditapp.Service
-	Dashboard    *dashboardapp.Service
-	Gateway      *gateway.Service
-	Media        *mediaapp.Service
-	Settings     *settingsapp.Service
-	Egress       *egressapp.Service
+	Readiness     func(context.Context) ReadinessSnapshot
+	Ready         func(context.Context) bool
+	TrafficReady  func() bool
+	AdminAuth     *adminauthapp.Service
+	Accounts      *accountapp.Service
+	AccountSync   *accountsyncapp.Service
+	Models        *modelapp.Service
+	ClientKeys    *clientkeyapp.Service
+	Audits        *auditapp.Service
+	Dashboard     *dashboardapp.Service
+	Gateway       *gateway.Service
+	Media         *mediaapp.Service
+	Settings      *settingsapp.Service
+	Egress        *egressapp.Service
+	ImagePipeline *imagepipelineapp.Scheduler
 }
 
 type ReadinessComponent struct {
@@ -142,6 +145,7 @@ func New(deps Dependencies) *gin.Engine {
 	settingshttp.NewHandler(deps.Settings).Register(adminProtected)
 	egresshttp.NewHandler(deps.Egress).Register(adminProtected)
 	mediahttp.NewHandler(deps.Media).RegisterAdmin(adminProtected)
+	imagepipelinehttp.NewHandler(deps.ImagePipeline).Register(adminProtected)
 	systemhttp.NewHandler(deps.PublicAPIBaseURL).Register(adminProtected)
 
 	v1 := router.Group("/v1")

@@ -127,6 +127,7 @@ type WebProviderConfig struct {
 	MediaConcurrency    int      `yaml:"mediaConcurrency"`
 	WebConcurrency      int      `yaml:"webConcurrency"`
 	AssetConcurrency    int      `yaml:"assetConcurrency"`
+	ExpandConcurrency   int      `yaml:"expandConcurrency"`
 	AllowNSFW           bool     `yaml:"allowNSFW"`
 	RecoveryBackoffBase Duration `yaml:"recoveryBackoffBase"`
 	RecoveryBackoffMax  Duration `yaml:"recoveryBackoffMax"`
@@ -253,13 +254,16 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-// NormalizeConcurrencyDefaults 将旧配置中缺失（=0）的 Web/Asset 并发回填为默认值 4。
+// NormalizeConcurrencyDefaults 将旧配置中缺失（=0）的 Web/Asset 并发回填为 udeal 单口推荐值。
 func (c *Config) NormalizeConcurrencyDefaults() {
 	if c.Provider.Web.WebConcurrency == 0 {
-		c.Provider.Web.WebConcurrency = 4
+		c.Provider.Web.WebConcurrency = 2
 	}
 	if c.Provider.Web.AssetConcurrency == 0 {
-		c.Provider.Web.AssetConcurrency = 4
+		c.Provider.Web.AssetConcurrency = 8
+	}
+	if c.Provider.Web.ExpandConcurrency == 0 {
+		c.Provider.Web.ExpandConcurrency = 2
 	}
 }
 
@@ -408,6 +412,9 @@ func (c Config) Validate() error {
 	if c.Provider.Web.AssetConcurrency < 1 || c.Provider.Web.AssetConcurrency > 20 {
 		return errors.New("provider.web Asset 并发必须在 1 到 20 之间")
 	}
+	if c.Provider.Web.ExpandConcurrency < 1 || c.Provider.Web.ExpandConcurrency > 20 {
+		return errors.New("provider.web Expand 并发必须在 1 到 20 之间")
+	}
 	consoleURL, err := url.ParseRequestURI(strings.TrimSpace(c.Provider.Console.BaseURL))
 	if err != nil || consoleURL.Scheme != "https" || consoleURL.Host == "" || consoleURL.User != nil {
 		return errors.New("provider.console.baseURL 必须是无凭据的 HTTPS URL")
@@ -475,7 +482,7 @@ func defaultConfig() Config {
 				QuotaTimeout: Duration(25 * time.Second),
 				ChatTimeout:  Duration(2 * time.Minute), ImageTimeout: Duration(3 * time.Minute),
 				VideoTimeout:     Duration(15 * time.Minute),
-				MediaConcurrency: 4, WebConcurrency: 4, AssetConcurrency: 4,
+				MediaConcurrency: 1, WebConcurrency: 2, AssetConcurrency: 8, ExpandConcurrency: 2,
 				RecoveryBackoffBase: Duration(30 * time.Second),
 				RecoveryBackoffMax:  Duration(30 * time.Minute),
 			},

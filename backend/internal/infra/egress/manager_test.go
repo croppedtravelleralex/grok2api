@@ -158,7 +158,7 @@ func TestWebGateAllowsConfiguredConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManagerWithConcurrency(egressRepositoryTestStub{nodes: []domain.Node{{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1}}}, cipher, 2, 4)
+	manager := NewManagerWithConcurrency(egressRepositoryTestStub{nodes: []domain.Node{{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1}}}, cipher, 2, 4, 2)
 	first, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account-1")
 	if err != nil {
 		t.Fatal(err)

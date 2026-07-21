@@ -13,10 +13,11 @@ const (
 type Scope string
 
 const (
-	ScopeBuild    Scope = "grok_build"
-	ScopeWeb      Scope = "grok_web"
-	ScopeConsole  Scope = "grok_console"
-	ScopeWebAsset Scope = "grok_web_asset"
+	ScopeBuild     Scope = "grok_build"
+	ScopeWeb       Scope = "grok_web"
+	ScopeConsole   Scope = "grok_console"
+	ScopeWebAsset  Scope = "grok_web_asset"
+	ScopeWebExpand Scope = "grok_web_expand" // 仅并发闸门；节点回退到 grok_web
 )
 
 type Node struct {

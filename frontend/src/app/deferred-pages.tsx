@@ -10,6 +10,7 @@ const DashboardPage = lazyNamed(() => import("@/features/dashboard/dashboard-pag
 const ApiDocsPage = lazyNamed(() => import("@/features/docs/api-docs-page"), "ApiDocsPage");
 const ModelsPage = lazyNamed(() => import("@/features/models/models-page"), "ModelsPage");
 const MediaImagesPage = lazyNamed(() => import("@/features/media/media-images-page"), "MediaImagesPage");
+const ImageTimelinePage = lazyNamed(() => import("@/features/image-timeline/image-timeline-page"), "ImageTimelinePage");
 const SettingsPage = lazyNamed(() => import("@/features/settings/settings-page"), "SettingsPage");
 
 function lazyNamed<T extends Record<K, ComponentType>, K extends keyof T>(loader: () => Promise<T>, exportName: K): LazyExoticComponent<T[K]> {
@@ -38,6 +39,10 @@ export function DeferredModelsPage() {
 
 export function DeferredMediaImagesPage() {
   return <DeferredPage page={MediaImagesPage} />;
+}
+
+export function DeferredImageTimelinePage() {
+  return <DeferredPage page={ImageTimelinePage} />;
 }
 
 export function DeferredClientKeysPage() {

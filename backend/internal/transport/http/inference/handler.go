@@ -1144,6 +1144,10 @@ func writeGatewayError(c *gin.Context, err error) {
 	case errors.Is(err, clientkeyapp.ErrBillingLimit):
 		status, code = http.StatusTooManyRequests, "billing_limit_exceeded"
 		message = clientkeyapp.ErrBillingLimit.Error()
+	case errors.Is(err, gateway.ErrImagePipelineFull):
+		status, code = http.StatusTooManyRequests, "image_pipeline_full"
+		message = "生图流水线排队已满，请稍后重试"
+		c.Header("Retry-After", "2")
 	case errors.Is(err, gateway.ErrModelNotFound):
 		status, code = http.StatusNotFound, "model_not_found"
 		message = "模型不存在"

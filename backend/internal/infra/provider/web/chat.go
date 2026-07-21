@@ -274,12 +274,19 @@ func preflightUpstream(source io.ReadCloser) (io.ReadCloser, error) {
 }
 
 func (a *Adapter) openChat(ctx context.Context, credential account.Credential, previousResponseID string, spec ModelSpec, input normalizedChatInput) (*http.Response, *infraegress.Lease, *inferencedomain.WebResponseState, string, error) {
+	return a.openChatWithScope(ctx, credential, previousResponseID, spec, input, domainegress.ScopeWeb)
+}
+
+func (a *Adapter) openChatWithScope(ctx context.Context, credential account.Credential, previousResponseID string, spec ModelSpec, input normalizedChatInput, scope domainegress.Scope) (*http.Response, *infraegress.Lease, *inferencedomain.WebResponseState, string, error) {
+	if scope == "" {
+		scope = domainegress.ScopeWeb
+	}
 	cfg := a.config()
 	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
 		return nil, nil, nil, "", err
 	}
-	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWeb, fmt.Sprintf("%d", credential.ID))
+	lease, err := a.egress.Acquire(ctx, scope, fmt.Sprintf("%d", credential.ID))
 	if err != nil {
 		return nil, nil, nil, "", err
 	}

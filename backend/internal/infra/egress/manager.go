@@ -61,6 +61,7 @@ type Manager struct {
 	nodeLoads  singleflight.Group
 	webGate    chan struct{}
 	assetGate  chan struct{}
+	expandGate chan struct{}
 }
 
 type cachedClient struct {
@@ -75,12 +76,13 @@ type cachedNodeSnapshot struct {
 }
 
 func NewManager(repository repository.EgressRepository, cipher *security.Cipher) *Manager {
-	return NewManagerWithConcurrency(repository, cipher, 1, 4)
+	return NewManagerWithConcurrency(repository, cipher, 1, 4, 2)
 }
 
-// NewManagerWithConcurrency 创建可配置的 Web / Asset 全局并发闸门。
-// webConcurrency 限制 ScopeWeb（对话/Lite 生图/刷额度），assetConcurrency 限制 ScopeWebAsset（下图）。
-func NewManagerWithConcurrency(repository repository.EgressRepository, cipher *security.Cipher, webConcurrency, assetConcurrency int) *Manager {
+// NewManagerWithConcurrency 创建可配置的 Web / Asset / Expand 全局并发闸门。
+// webConcurrency 限制 ScopeWeb（对话/Lite 生图 SSE/刷额度），assetConcurrency 限制 ScopeWebAsset（下图），
+// expandConcurrency 限制 ScopeWebExpand（短 prompt 扩写，节点仍粘滞到 grok_web）。
+func NewManagerWithConcurrency(repository repository.EgressRepository, cipher *security.Cipher, webConcurrency, assetConcurrency, expandConcurrency int) *Manager {
 	if webConcurrency < 1 {
 		webConcurrency = 1
 	}
@@ -93,9 +95,15 @@ func NewManagerWithConcurrency(repository repository.EgressRepository, cipher *s
 	if assetConcurrency > 20 {
 		assetConcurrency = 20
 	}
+	if expandConcurrency < 1 {
+		expandConcurrency = 1
+	}
+	if expandConcurrency > 20 {
+		expandConcurrency = 20
+	}
 	return &Manager{
 		repository: repository, cipher: cipher, clients: make(map[uint64]cachedClient), inflight: make(map[uint64]int), nodes: make(map[domain.Scope]cachedNodeSnapshot),
-		webGate: make(chan struct{}, webConcurrency), assetGate: make(chan struct{}, assetConcurrency),
+		webGate: make(chan struct{}, webConcurrency), assetGate: make(chan struct{}, assetConcurrency), expandGate: make(chan struct{}, expandConcurrency),
 	}
 }
 
@@ -195,8 +203,8 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	}}, true, nil
 }
 
-// acquireScope 将 Grok Web 主请求和图片下载分别限制为有限并发。
-// 两个作用域分离，避免生图持有 WebSocket 时下载结果图片发生自锁。
+// acquireScope 将 Grok Web 主请求、短 prompt 扩写和图片下载分别限制为有限并发。
+// 作用域分离，避免生图持有 SSE 时扩写/下载自锁。
 func (m *Manager) acquireScope(ctx context.Context, scope domain.Scope) (func(), error) {
 	var gate chan struct{}
 	switch scope {
@@ -204,6 +212,8 @@ func (m *Manager) acquireScope(ctx context.Context, scope domain.Scope) (func(),
 		gate = m.webGate
 	case domain.ScopeWebAsset:
 		gate = m.assetGate
+	case domain.ScopeWebExpand:
+		gate = m.expandGate
 	default:
 		return func() {}, nil
 	}
@@ -255,10 +265,15 @@ func (m *Manager) invalidateNodes(scope domain.Scope) {
 }
 
 func fallbackScopes(scope domain.Scope) []domain.Scope {
-	if scope == domain.ScopeWebAsset {
+	switch scope {
+	case domain.ScopeWebAsset:
 		return []domain.Scope{domain.ScopeWebAsset, domain.ScopeWeb}
+	case domain.ScopeWebExpand:
+		// 扩写不单独建节点，粘滞同一账号的 grok_web 出口。
+		return []domain.Scope{domain.ScopeWeb}
+	default:
+		return []domain.Scope{scope}
 	}
-	return []domain.Scope{scope}
 }
 
 func (m *Manager) selectNode(nodes []domain.Node, affinity string) domain.Node {

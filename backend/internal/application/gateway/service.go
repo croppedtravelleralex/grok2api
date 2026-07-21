@@ -19,9 +19,11 @@ import (
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
+	imagepipelineapp "github.com/chenyme/grok2api/backend/internal/application/imagepipeline"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
+	imagedomain "github.com/chenyme/grok2api/backend/internal/domain/imagepipeline"
 	inferencedomain "github.com/chenyme/grok2api/backend/internal/domain/inference"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
@@ -36,6 +38,7 @@ var (
 	ErrResponseAccountUnavailable = errors.New("Response 绑定的上游账号不可用")
 	ErrResponseStateUnsupported   = errors.New("目标模型不支持有状态 Response")
 	ErrConversationUnsupported    = errors.New("目标模型不支持当前对话协议")
+	ErrImagePipelineFull          = errors.New("生图流水线队列已满")
 )
 
 const maxRetryableBodyBytes = 64 << 10
@@ -107,6 +110,7 @@ type Service struct {
 	mediaWorker    int
 	mediaQueueFull atomic.Uint64
 	logger         *slog.Logger
+	imagePipeline  *imagepipelineapp.Scheduler
 }
 
 func (s *Service) ConfigureMedia(repository repository.MediaJobRepository, concurrency int) {
@@ -117,6 +121,10 @@ func (s *Service) ConfigureMedia(repository repository.MediaJobRepository, concu
 	s.mediaWorker = concurrency
 	s.mediaQueue = make(chan string, min(2048, max(64, concurrency*32)))
 	s.mediaQueued = make(map[string]struct{})
+}
+
+func (s *Service) ConfigureImagePipeline(scheduler *imagepipelineapp.Scheduler) {
+	s.imagePipeline = scheduler
 }
 
 func NewService(models routeResolver, audits auditRecorder, accounts *accountapp.Service, clientKeys *clientkeyapp.Service, providers *provider.Registry, selector *Selector, responses repository.ResponseRepository, maxAttempts int) *Service {
@@ -704,8 +712,8 @@ type ImageEditInput struct {
 }
 
 func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput) (*Result, error) {
-	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImage, func(adapter provider.ImageAdapter, credential accountdomain.Credential, upstream string) (*provider.Response, error) {
-		return adapter.GenerateImage(ctx, provider.ImageGenerationRequest{
+	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImage, func(execCtx context.Context, adapter provider.ImageAdapter, credential accountdomain.Credential, upstream string) (*provider.Response, error) {
+		return adapter.GenerateImage(execCtx, provider.ImageGenerationRequest{
 			Credential: credential, RequestID: input.RequestID, Model: upstream, Prompt: input.Prompt, Count: input.Count,
 			Size: input.Size, AspectRatio: input.AspectRatio, Resolution: input.Resolution,
 			ResponseFormat: input.ResponseFormat, Streaming: input.Streaming,
@@ -714,19 +722,50 @@ func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput)
 }
 
 func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result, error) {
-	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImageEdit, func(adapter provider.ImageAdapter, credential accountdomain.Credential, upstream string) (*provider.Response, error) {
-		return adapter.EditImage(ctx, provider.ImageEditRequest{
+	return s.executeImage(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationImageEdit, func(execCtx context.Context, adapter provider.ImageAdapter, credential accountdomain.Credential, upstream string) (*provider.Response, error) {
+		return adapter.EditImage(execCtx, provider.ImageEditRequest{
 			Credential: credential, RequestID: input.RequestID, Model: upstream, Prompt: input.Prompt,
 			ImageURLs: input.ImageURLs, Count: input.Count, Resolution: input.Resolution, ResponseFormat: input.ResponseFormat,
 		})
 	}, false, input.Resolution, input.Count, len(input.ImageURLs))
 }
 
-func (s *Service) executeImage(ctx context.Context, requestID string, key clientkey.Key, publicModel string, operation audit.Operation, execute func(provider.ImageAdapter, accountdomain.Credential, string) (*provider.Response, error), streaming bool, resolution string, requestedCount, inputImageCount int) (*Result, error) {
+func (s *Service) executeImage(ctx context.Context, requestID string, key clientkey.Key, publicModel string, operation audit.Operation, execute func(context.Context, provider.ImageAdapter, accountdomain.Credential, string) (*provider.Response, error), streaming bool, resolution string, requestedCount, inputImageCount int) (*Result, error) {
 	startedAt := time.Now()
 	eventID := newAuditEventID()
+	timing := newGenerationTiming(publicModel, "")
+	var pipelineRun *imagepipelineapp.Run
+	pipelineFinished := false
+	returnedOK := false
+	finishPipeline := func(status imagedomain.Status, errorCode string, softStop bool) {
+		if pipelineRun == nil || pipelineFinished {
+			return
+		}
+		pipelineFinished = true
+		pipelineRun.Finish(status, errorCode, softStop)
+	}
+	defer func() {
+		if !returnedOK && !pipelineFinished && pipelineRun != nil {
+			finishPipeline(imagedomain.StatusFailed, "aborted", false)
+		}
+	}()
+	if s.imagePipeline != nil && operation == audit.OperationImage {
+		run, admitErr := s.imagePipeline.Admit(ctx, imagepipelineapp.AdmitInput{RequestID: requestID, Model: publicModel})
+		if admitErr != nil {
+			if errors.Is(admitErr, imagepipelineapp.ErrQueueFull) {
+				return nil, ErrImagePipelineFull
+			}
+			if errors.Is(admitErr, context.Canceled) || errors.Is(admitErr, context.DeadlineExceeded) {
+				return nil, admitErr
+			}
+			return nil, admitErr
+		}
+		pipelineRun = run
+		ctx = imagepipelineapp.WithRun(ctx, pipelineRun)
+	}
 	routes, err := s.models.GetByPublicIDCandidates(ctx, publicModel)
 	if err != nil {
+		finishPipeline(imagedomain.StatusFailed, "model_not_found", false)
 		return nil, ErrModelNotFound
 	}
 	capability := modeldomain.CapabilityImage
@@ -738,11 +777,14 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 		return ok
 	})
 	if err != nil {
+		finishPipeline(imagedomain.StatusFailed, "route_unavailable", false)
 		return nil, err
 	}
+	timing.provider = route.Provider
 	externalModel := modeldomain.ExternalPublicID(route.Provider, route.PublicID)
 	adapter, ok := s.providers.Images(route.Provider)
 	if !ok {
+		finishPipeline(imagedomain.StatusFailed, "adapter_missing", false)
 		return nil, ErrNoAvailableAccount
 	}
 	pricingModel := s.providers.PricingModel(route.Provider, route.UpstreamModel)
@@ -758,6 +800,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 	if priced {
 		reserved, err = s.clientKeys.ReserveBilling(ctx, key, eventID, reservation.CostInUSDTicks, mediaBillingReservationTTL)
 		if err != nil {
+			finishPipeline(imagedomain.StatusFailed, "billing_reserve_failed", false)
 			return nil, err
 		}
 	}
@@ -776,27 +819,52 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 	var lease *accountLease
 	var credential accountdomain.Credential
 	var response *provider.Response
+	var releaseAccountOnce sync.Once
+	releaseAccount := func() {
+		releaseAccountOnce.Do(func() {
+			if lease != nil {
+				lease.Release()
+			}
+		})
+	}
+	ctx = imagepipelineapp.WithEarlyAccountRelease(ctx, releaseAccount)
 	for attempt := 0; attempt < attempts; attempt++ {
+		selectStart := time.Now()
 		lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, "", excluded, false)
+		timing.markSelection(time.Since(selectStart))
 		if err != nil {
+			finishPipeline(imagedomain.StatusFailed, "no_account", false)
+			timing.finish(s.logger, "no_account")
 			return nil, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
 		}
 		excluded[lease.Credential.ID] = true
+		credStart := time.Now()
 		credential, err = s.accounts.EnsureCredential(ctx, lease.Credential, false)
+		timing.markCredential(time.Since(credStart))
 		if err != nil {
 			s.logger.Error("image_credential_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", lease.Credential.ID, "error", err)
-			lease.Release()
+			releaseAccount()
+			finishPipeline(imagedomain.StatusFailed, "credential_failed", false)
+			timing.finish(s.logger, "credential_failed")
 			return nil, err
 		}
-		response, err = execute(adapter, credential, route.UpstreamModel)
+		if pipelineRun != nil {
+			pipelineRun.SetAccount(credential.ID, credential.Name)
+		}
+		upstreamStart := time.Now()
+		response, err = execute(ctx, adapter, credential, route.UpstreamModel)
+		timing.markUpstream(time.Since(upstreamStart))
 		if err != nil {
 			s.logger.Error("image_upstream_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "error", err)
 			s.selector.MarkFailure(ctx, credential, 0, 0)
-			lease.Release()
+			releaseAccount()
+			finishPipeline(imagedomain.StatusFailed, "upstream_failed", false)
+			timing.finish(s.logger, "upstream_failed")
 			return nil, err
 		}
 		if s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden && attempt == 0 && attempt+1 < attempts {
 			_, _ = readRetryableBody(response.Body)
+			releaseAccountOnce = sync.Once{}
 			lease.Release()
 			delete(excluded, credential.ID)
 			continue
@@ -822,6 +890,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 				s.selector.MarkQuotaStateChanged(credential.Provider)
 			}
 			if attempt+1 < attempts {
+				releaseAccountOnce = sync.Once{}
 				lease.Release()
 				continue
 			}
@@ -838,7 +907,19 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 	var once sync.Once
 	finalize := func(_ Usage, _ string, errorCode string) {
 		once.Do(func() {
-			lease.Release()
+			releaseAccount()
+			softStop := errorCode == "soft_stop" || strings.Contains(strings.ToLower(errorCode), "soft_stop")
+			if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" {
+				finishPipeline(imagedomain.StatusSucceeded, "", softStop)
+				timing.finish(s.logger, "ok")
+			} else {
+				code := errorCode
+				if code == "" {
+					code = fmt.Sprintf("http_%d", response.StatusCode)
+				}
+				finishPipeline(imagedomain.StatusFailed, code, softStop)
+				timing.finish(s.logger, code)
+			}
 			persistCtx, cancel := context.WithTimeout(context.Background(), finalizationTimeout)
 			defer cancel()
 			record := audit.Record{
@@ -890,6 +971,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 		})
 	}
 	finalizationOwnsReservation = true
+	returnedOK = true
 	return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, Finalize: finalize}, nil
 }
 
