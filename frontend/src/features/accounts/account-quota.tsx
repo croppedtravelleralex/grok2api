@@ -121,15 +121,22 @@ export function WebQuota({ windows, locale, tier }: { windows: NonNullable<Accou
   if (weekly) return <WeeklyWebQuota window={weekly} locale={locale} t={t} />;
 
   const fast = windowsByMode.get("fast");
-  if (tier === "basic" && fast) return <WebQuotaMode mode="Fast" window={fast} locale={locale} />;
+  if (tier === "basic" && fast) {
+    return (
+      <div className="w-full min-w-0 space-y-1">
+        <WebQuotaMode mode={t("accounts.quotaFastLiteShared")} window={fast} locale={locale} />
+      </div>
+    );
+  }
   return (
     <div className="grid w-full min-w-0 grid-cols-4 divide-x divide-border/70">
       {visibleWebQuotaModes.map((mode) => {
         const window = windowsByMode.get(mode);
+        const label = mode === "fast" ? t("accounts.quotaFastLiteShared") : formatWebQuotaMode(mode);
         if (!window) {
-          return <div key={mode} className="min-w-0 px-2 first:pl-0 last:pr-0"><div className="flex items-center justify-between gap-1 text-[11px]"><span className="truncate capitalize text-muted-foreground">{mode}</span><span className="text-muted-foreground">-</span></div><div className="mt-1.5 h-1.5 rounded-full bg-muted" /></div>;
+          return <div key={mode} className="min-w-0 px-2 first:pl-0 last:pr-0"><div className="flex items-center justify-between gap-1 text-[11px]"><span className="truncate text-muted-foreground">{label}</span><span className="text-muted-foreground">-</span></div><div className="mt-1.5 h-1.5 rounded-full bg-muted" /></div>;
         }
-        return <WebQuotaMode key={mode} mode={formatWebQuotaMode(mode)} window={window} locale={locale} compact />;
+        return <WebQuotaMode key={mode} mode={label} window={window} locale={locale} compact />;
       })}
     </div>
   );

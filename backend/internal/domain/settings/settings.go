@@ -37,6 +37,8 @@ type ProviderWebConfig struct {
 	ImageTimeout        time.Duration
 	VideoTimeout        time.Duration
 	MediaConcurrency    int
+	WebConcurrency      int
+	AssetConcurrency    int
 	AllowNSFW           bool
 	RecoveryBackoffBase time.Duration
 	RecoveryBackoffMax  time.Duration

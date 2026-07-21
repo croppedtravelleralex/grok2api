@@ -746,6 +746,24 @@ func (r *AccountRepository) UpdateHealth(ctx context.Context, id uint64, failure
 	return r.db.db.WithContext(ctx).Model(&accountModel{}).Where("id = ?", id).Updates(updates).Error
 }
 
+func (r *AccountRepository) GetActiveModelQuotaBlocks(ctx context.Context, accountIDs []uint64, upstreamModel string, now time.Time) (map[uint64]bool, error) {
+	result := make(map[uint64]bool, len(accountIDs))
+	if len(accountIDs) == 0 || strings.TrimSpace(upstreamModel) == "" {
+		return result, nil
+	}
+	var rows []accountModelQuotaBlockModel
+	if err := r.db.db.WithContext(ctx).
+		Select("account_id").
+		Where("account_id IN ? AND upstream_model = ? AND cooldown_until > ?", accountIDs, upstreamModel, now.UTC()).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		result[row.AccountID] = true
+	}
+	return result, nil
+}
+
 func (r *AccountRepository) UpsertModelQuotaBlock(ctx context.Context, value account.ModelQuotaBlock) error {
 	value.UpstreamModel = strings.TrimSpace(value.UpstreamModel)
 	value.Reason = strings.TrimSpace(value.Reason)

@@ -71,7 +71,7 @@ func TestWebChatPricingUsesGrok45(t *testing.T) {
 }
 
 func TestBuildWebChatPayloadMatchesCurrentConversationProtocol(t *testing.T) {
-	payload := buildWebChatPayload("你好", "auto", []string{"file_1"})
+	payload := buildWebChatPayload("你好", "auto", []string{"file_1"}, true)
 	if payload["modeId"] != "auto" || payload["temporary"] != true || payload["disableMemory"] != true {
 		t.Fatalf("payload protocol fields = %#v", payload)
 	}
@@ -546,11 +546,11 @@ func TestGeneratedImageAssetHostsRemainStrict(t *testing.T) {
 
 func TestImageStreamExtensionEventsAndPayloads(t *testing.T) {
 	adapter := &Adapter{assets: imageAssetStoreStub{}}
-	urlItem, err := adapter.imageDataItem(context.Background(), account.Credential{}, imagineImageValue{URL: "https://imgen.x.ai/image.jpg", Blob: "aW1hZ2U="}, "url")
+	urlItem, err := adapter.imageDataItem(context.Background(), account.Credential{}, imagineImageValue{URL: "https://imgen.x.ai/image.jpg", Blob: "aW1hZ2U="}, "url", "")
 	if err != nil || urlItem["url"] != "https://api.example/v1/media/images/img_test" || urlItem["mime_type"] != "image/jpeg" || urlItem["revised_prompt"] != "" {
 		t.Fatalf("url item = %#v, err=%v", urlItem, err)
 	}
-	b64Item, err := adapter.imageDataItem(context.Background(), account.Credential{}, imagineImageValue{Blob: "aW1hZ2U="}, "b64_json")
+	b64Item, err := adapter.imageDataItem(context.Background(), account.Credential{}, imagineImageValue{Blob: "aW1hZ2U="}, "b64_json", "")
 	if err != nil || b64Item["b64_json"] != "aW1hZ2U=" || b64Item["mime_type"] != "image/jpeg" {
 		t.Fatalf("base64 item = %#v, err=%v", b64Item, err)
 	}

@@ -44,6 +44,8 @@ type ProviderWebConfig struct {
 	ImageTimeout            string
 	VideoTimeout            string
 	MediaConcurrency        int
+	WebConcurrency          int
+	AssetConcurrency        int
 	AllowNSFW               bool
 	RecoveryBackoffBase     string
 	RecoveryBackoffMax      string
@@ -116,23 +118,29 @@ type Snapshot struct {
 
 // Service 管理允许在线修改的配置，并向后台任务广播配置变更。
 type Service struct {
-	mu                     sync.RWMutex
-	updateMu               sync.Mutex
-	cfg                    config.Config
-	updatedAt              time.Time
-	revision               uint64
-	activeBufferSize       int
-	activeMediaConcurrency int
-	repository             repository.RuntimeSettingsRepository
-	notify                 func(context.Context)
-	apply                  func(config.Config)
+	mu                       sync.RWMutex
+	updateMu                 sync.Mutex
+	cfg                      config.Config
+	updatedAt                time.Time
+	revision                 uint64
+	activeBufferSize         int
+	activeMediaConcurrency   int
+	activeWebConcurrency     int
+	activeAssetConcurrency   int
+	repository               repository.RuntimeSettingsRepository
+	notify                   func(context.Context)
+	apply                    func(config.Config)
 }
 
 func NewService(cfg config.Config, updatedAt time.Time, revision uint64, repository repository.RuntimeSettingsRepository, notify func(context.Context), apply func(config.Config)) *Service {
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
-	return &Service{cfg: cfg, updatedAt: updatedAt, revision: revision, activeBufferSize: cfg.Audit.BufferSize, activeMediaConcurrency: cfg.Provider.Web.MediaConcurrency, repository: repository, notify: notify, apply: apply}
+	return &Service{
+		cfg: cfg, updatedAt: updatedAt, revision: revision, activeBufferSize: cfg.Audit.BufferSize,
+		activeMediaConcurrency: cfg.Provider.Web.MediaConcurrency, activeWebConcurrency: cfg.Provider.Web.WebConcurrency,
+		activeAssetConcurrency: cfg.Provider.Web.AssetConcurrency, repository: repository, notify: notify, apply: apply,
+	}
 }
 
 // LoadPersisted 将数据库运行设置覆盖到代码默认配置，并执行完整边界校验。
@@ -246,9 +254,11 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		StatsigMode: value.ProviderWeb.StatsigMode, StatsigManualValue: value.ProviderWeb.StatsigManualValue, StatsigSignerURL: value.ProviderWeb.StatsigSignerURL,
 		ChatTimeout: config.Duration(value.ProviderWeb.ChatTimeout), ImageTimeout: config.Duration(value.ProviderWeb.ImageTimeout),
 		VideoTimeout:     config.Duration(value.ProviderWeb.VideoTimeout),
-		MediaConcurrency: value.ProviderWeb.MediaConcurrency, AllowNSFW: value.ProviderWeb.AllowNSFW,
+		MediaConcurrency: value.ProviderWeb.MediaConcurrency, WebConcurrency: value.ProviderWeb.WebConcurrency,
+		AssetConcurrency: value.ProviderWeb.AssetConcurrency, AllowNSFW: value.ProviderWeb.AllowNSFW,
 		RecoveryBackoffBase: config.Duration(value.ProviderWeb.RecoveryBackoffBase), RecoveryBackoffMax: config.Duration(value.ProviderWeb.RecoveryBackoffMax),
 	}
+	base.NormalizeConcurrencyDefaults()
 	if strings.TrimSpace(value.ProviderConsole.BaseURL) != "" {
 		base.Provider.Console = config.ConsoleProviderConfig{
 			BaseURL: value.ProviderConsole.BaseURL, UserAgent: value.ProviderConsole.UserAgent,
@@ -295,7 +305,8 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			StatsigSignerURL: value.Provider.Web.StatsigSignerURL,
 			ChatTimeout:      value.Provider.Web.ChatTimeout.Value(), ImageTimeout: value.Provider.Web.ImageTimeout.Value(),
 			VideoTimeout:     value.Provider.Web.VideoTimeout.Value(),
-			MediaConcurrency: value.Provider.Web.MediaConcurrency, AllowNSFW: value.Provider.Web.AllowNSFW,
+			MediaConcurrency: value.Provider.Web.MediaConcurrency, WebConcurrency: value.Provider.Web.WebConcurrency,
+			AssetConcurrency: value.Provider.Web.AssetConcurrency, AllowNSFW: value.Provider.Web.AllowNSFW,
 			RecoveryBackoffBase: value.Provider.Web.RecoveryBackoffBase.Value(), RecoveryBackoffMax: value.Provider.Web.RecoveryBackoffMax.Value(),
 		},
 		ProviderConsole: settingsdomain.ProviderConsoleConfig{
@@ -332,6 +343,12 @@ func (s *Service) snapshotLocked() Snapshot {
 	if s.cfg.Provider.Web.MediaConcurrency != s.activeMediaConcurrency {
 		restartRequired = append(restartRequired, "providerWeb.mediaConcurrency")
 	}
+	if s.cfg.Provider.Web.WebConcurrency != s.activeWebConcurrency {
+		restartRequired = append(restartRequired, "providerWeb.webConcurrency")
+	}
+	if s.cfg.Provider.Web.AssetConcurrency != s.activeAssetConcurrency {
+		restartRequired = append(restartRequired, "providerWeb.assetConcurrency")
+	}
 	return Snapshot{
 		Config: toEditable(s.cfg),
 		RecommendedProviderBuild: ProviderBuildRecommendation{
@@ -362,6 +379,8 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 		next.Provider.Web.StatsigManualValue = ""
 	}
 	next.Provider.Web.MediaConcurrency = input.ProviderWeb.MediaConcurrency
+	next.Provider.Web.WebConcurrency = input.ProviderWeb.WebConcurrency
+	next.Provider.Web.AssetConcurrency = input.ProviderWeb.AssetConcurrency
 	next.Provider.Web.AllowNSFW = input.ProviderWeb.AllowNSFW
 	next.Provider.Console.BaseURL = strings.TrimSpace(input.ProviderConsole.BaseURL)
 	next.Provider.Console.UserAgent = strings.TrimSpace(input.ProviderConsole.UserAgent)
@@ -424,7 +443,8 @@ func toEditable(cfg config.Config) EditableConfig {
 			StatsigSignerURL: cfg.Provider.Web.StatsigSignerURL,
 			ChatTimeout:      cfg.Provider.Web.ChatTimeout.String(), ImageTimeout: cfg.Provider.Web.ImageTimeout.String(),
 			VideoTimeout:     cfg.Provider.Web.VideoTimeout.String(),
-			MediaConcurrency: cfg.Provider.Web.MediaConcurrency, AllowNSFW: cfg.Provider.Web.AllowNSFW,
+			MediaConcurrency: cfg.Provider.Web.MediaConcurrency, WebConcurrency: cfg.Provider.Web.WebConcurrency,
+			AssetConcurrency: cfg.Provider.Web.AssetConcurrency, AllowNSFW: cfg.Provider.Web.AllowNSFW,
 			RecoveryBackoffBase: cfg.Provider.Web.RecoveryBackoffBase.String(), RecoveryBackoffMax: cfg.Provider.Web.RecoveryBackoffMax.String(),
 		},
 		ProviderConsole: ProviderConsoleConfig{

@@ -125,6 +125,8 @@ type WebProviderConfig struct {
 	ImageTimeout        Duration `yaml:"imageTimeout"`
 	VideoTimeout        Duration `yaml:"videoTimeout"`
 	MediaConcurrency    int      `yaml:"mediaConcurrency"`
+	WebConcurrency      int      `yaml:"webConcurrency"`
+	AssetConcurrency    int      `yaml:"assetConcurrency"`
 	AllowNSFW           bool     `yaml:"allowNSFW"`
 	RecoveryBackoffBase Duration `yaml:"recoveryBackoffBase"`
 	RecoveryBackoffMax  Duration `yaml:"recoveryBackoffMax"`
@@ -244,10 +246,21 @@ func Load(path string) (Config, error) {
 			return Config{}, err
 		}
 	}
+	cfg.NormalizeConcurrencyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// NormalizeConcurrencyDefaults 将旧配置中缺失（=0）的 Web/Asset 并发回填为默认值 4。
+func (c *Config) NormalizeConcurrencyDefaults() {
+	if c.Provider.Web.WebConcurrency == 0 {
+		c.Provider.Web.WebConcurrency = 4
+	}
+	if c.Provider.Web.AssetConcurrency == 0 {
+		c.Provider.Web.AssetConcurrency = 4
+	}
 }
 
 func resolveRelativePaths(cfg *Config, configPath string) error {
@@ -389,6 +402,12 @@ func (c Config) Validate() error {
 	if c.Provider.Web.MediaConcurrency < 1 || c.Provider.Web.MediaConcurrency > 64 {
 		return errors.New("provider.web 媒体并发必须在 1 到 64 之间")
 	}
+	if c.Provider.Web.WebConcurrency < 1 || c.Provider.Web.WebConcurrency > 20 {
+		return errors.New("provider.web Web 并发必须在 1 到 20 之间")
+	}
+	if c.Provider.Web.AssetConcurrency < 1 || c.Provider.Web.AssetConcurrency > 20 {
+		return errors.New("provider.web Asset 并发必须在 1 到 20 之间")
+	}
 	consoleURL, err := url.ParseRequestURI(strings.TrimSpace(c.Provider.Console.BaseURL))
 	if err != nil || consoleURL.Scheme != "https" || consoleURL.Host == "" || consoleURL.User != nil {
 		return errors.New("provider.console.baseURL 必须是无凭据的 HTTPS URL")
@@ -456,8 +475,9 @@ func defaultConfig() Config {
 				QuotaTimeout: Duration(25 * time.Second),
 				ChatTimeout:  Duration(2 * time.Minute), ImageTimeout: Duration(3 * time.Minute),
 				VideoTimeout:     Duration(15 * time.Minute),
-				MediaConcurrency: 4, RecoveryBackoffBase: Duration(30 * time.Second),
-				RecoveryBackoffMax: Duration(30 * time.Minute),
+				MediaConcurrency: 4, WebConcurrency: 4, AssetConcurrency: 4,
+				RecoveryBackoffBase: Duration(30 * time.Second),
+				RecoveryBackoffMax:  Duration(30 * time.Minute),
 			},
 			Console: ConsoleProviderConfig{
 				BaseURL: "https://console.x.ai", UserAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",

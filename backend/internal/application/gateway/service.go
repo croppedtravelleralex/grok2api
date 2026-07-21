@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -800,18 +801,31 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 			delete(excluded, credential.ID)
 			continue
 		}
-		if quotaKind, _ := s.providers.QuotaKind(credential.Provider); quotaKind == provider.QuotaRemoteWindow && response.StatusCode == http.StatusTooManyRequests && lease.QuotaMode != "" {
+		if response.StatusCode == http.StatusTooManyRequests {
 			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
-			exhausted, reconcileErr := s.accounts.ReconcileWebRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
-			s.selector.MarkQuotaStateChanged(credential.Provider)
-			if reconcileErr != nil || !exhausted {
-				s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
+			body, _ := readRetryableBody(response.Body)
+			failure := newHTTPUpstreamFailure(http.StatusTooManyRequests, body, credential.ID, credential.Name)
+			if failure.ModelQuotaExhausted || strings.EqualFold(failure.UpstreamCode, "usage_limit_reached") {
+				modelRetry := retryAfter
+				if modelRetry <= 0 {
+					modelRetry = 15 * time.Minute
+				}
+				s.selector.MarkModelQuotaExhausted(ctx, credential, route.UpstreamModel, modelRetry)
+			}
+			if quotaKind, _ := s.providers.QuotaKind(credential.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode != "" {
+				exhausted, reconcileErr := s.accounts.ReconcileWebRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
+				s.selector.MarkQuotaStateChanged(credential.Provider)
+				if reconcileErr != nil || !exhausted {
+					s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
+				}
+			} else {
+				s.selector.MarkQuotaStateChanged(credential.Provider)
 			}
 			if attempt+1 < attempts {
-				_, _ = readRetryableBody(response.Body)
 				lease.Release()
 				continue
 			}
+			response.Body = io.NopCloser(bytes.NewReader(body))
 		}
 		break
 	}

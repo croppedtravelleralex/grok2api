@@ -168,7 +168,12 @@ func isFreeQuotaExhaustion(text string) bool {
 }
 
 func isModelQuotaExhaustion(text string) bool {
-	return strings.Contains(text, "used all the included free usage for model")
+	return containsAny(text,
+		"used all the included free usage for model",
+		"usage_limit_reached",
+		"usage limit",
+		"rate_limit_exceeded",
+	)
 }
 
 func containsAny(text string, signals ...string) bool {

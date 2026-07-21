@@ -143,6 +143,8 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/accounts/web/convert-to-build", h.convertWebToBuild)
 	router.POST("/accounts/web/sync-to-console", h.syncWebToConsole)
 	router.POST("/accounts/web/refresh-quotas", h.refreshAllWebQuotas)
+	router.GET("/accounts/web-pools", h.webPools)
+	router.POST("/accounts/web-pools/reconcile", h.reconcileWebPools)
 	router.POST("/accounts/console/refresh-quotas", h.refreshAllConsoleQuotas)
 	router.POST("/accounts/refresh-billing", h.refreshAllBilling)
 	router.POST("/accounts/refresh-tokens", h.refreshAllTokens)
@@ -1125,7 +1127,33 @@ func (h *Handler) refreshAllWebQuotas(c *gin.Context) {
 		stream.WriteError("quotaRefreshFailed", "同步 Grok Web 账号额度失败")
 		return
 	}
-	_ = stream.Write("complete", accountBatchResponse{Succeeded: succeeded, Failed: failed})
+	pool, reconcileErr := h.service.ReconcileWebPools(c.Request.Context())
+	if reconcileErr != nil {
+		stream.WriteError("webPoolReconcileFailed", "同步额度后重建 Web 调度池失败")
+		return
+	}
+	_ = stream.Write("complete", gin.H{
+		"succeeded": succeeded, "failed": failed,
+		"webPools": pool,
+	})
+}
+
+func (h *Handler) webPools(c *gin.Context) {
+	pool, err := h.service.WebPools(c.Request.Context())
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "webPoolsFailed", "读取 Web 调度池失败")
+		return
+	}
+	response.Success(c, http.StatusOK, pool)
+}
+
+func (h *Handler) reconcileWebPools(c *gin.Context) {
+	pool, err := h.service.ReconcileWebPools(c.Request.Context())
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "webPoolReconcileFailed", "重建 Web 调度池失败")
+		return
+	}
+	response.Success(c, http.StatusOK, pool)
 }
 
 func (h *Handler) refreshAllConsoleQuotas(c *gin.Context) {

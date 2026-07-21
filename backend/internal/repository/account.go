@@ -49,6 +49,7 @@ type AccountRepository interface {
 	UpdateObservedModel(ctx context.Context, id uint64, model string, observedAt time.Time) error
 	UpdateHealth(ctx context.Context, id uint64, failureCount int, cooldownUntil *time.Time, lastError string, success bool) error
 	UpsertModelQuotaBlock(ctx context.Context, value account.ModelQuotaBlock) error
+	GetActiveModelQuotaBlocks(ctx context.Context, accountIDs []uint64, upstreamModel string, now time.Time) (map[uint64]bool, error)
 	PruneExpiredModelQuotaBlocks(ctx context.Context, now time.Time, limit int) (int64, error)
 	SaveBilling(ctx context.Context, value account.Billing) error
 	GetBilling(ctx context.Context, accountID uint64) (account.Billing, error)

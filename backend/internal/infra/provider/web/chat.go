@@ -64,8 +64,9 @@ type chatMessage struct {
 }
 
 type normalizedChatInput struct {
-	Prompt string
-	Images []string
+	Prompt   string
+	Images   []string
+	TextOnly bool
 }
 
 type parsedChat struct {
@@ -306,7 +307,7 @@ func (a *Adapter) openChat(ctx context.Context, credential account.Credential, p
 		lease.Release()
 		return nil, nil, nil, "", err
 	}
-	payload := buildWebChatPayload(input.Prompt, mode, attachments)
+	payload := buildWebChatPayload(input.Prompt, mode, attachments, !input.TextOnly)
 	if previous != nil {
 		payload["responseId"] = previous.UpstreamParentResponseID
 	}
@@ -379,7 +380,7 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 			}
 			if kind == "image" {
 				rawURL := delta
-				item, imageErr := a.imageDataItem(ctx, credential, imagineImageValue{URL: delta}, "url")
+				item, imageErr := a.imageDataItem(ctx, credential, imagineImageValue{URL: delta}, "url", "")
 				if imageErr != nil {
 					return imageErr
 				}
@@ -441,7 +442,7 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 				if _, exists := archivedImages[rawURL]; exists {
 					continue
 				}
-				item, imageErr := a.imageDataItem(ctx, credential, imagineImageValue{URL: rawURL}, "url")
+				item, imageErr := a.imageDataItem(ctx, credential, imagineImageValue{URL: rawURL}, "url", "")
 				if imageErr != nil {
 					_ = writer.CloseWithError(imageErr)
 					return
@@ -652,7 +653,7 @@ func extractImageURL(part map[string]any) string {
 	return ""
 }
 
-func buildWebChatPayload(message, mode string, attachments []string) map[string]any {
+func buildWebChatPayload(message, mode string, attachments []string, enableImage bool) map[string]any {
 	if attachments == nil {
 		attachments = []string{}
 	}
@@ -660,7 +661,7 @@ func buildWebChatPayload(message, mode string, attachments []string) map[string]
 		"collectionIds": []any{}, "disabledConnectorIds": []any{},
 		"deviceEnvInfo": map[string]any{"darkModeEnabled": false, "devicePixelRatio": 2, "screenHeight": 1328, "screenWidth": 2056, "viewportHeight": 1083, "viewportWidth": 2056},
 		"disableMemory": true, "disableSearch": false, "disableSelfHarmShortCircuit": false,
-		"disableTextFollowUps": false, "enableImageGeneration": true, "enableImageStreaming": true,
+		"disableTextFollowUps": false, "enableImageGeneration": enableImage, "enableImageStreaming": enableImage,
 		"enableSideBySide": true, "fileAttachments": attachments, "forceConcise": false,
 		"forceSideBySide": false, "imageAttachments": []any{}, "imageGenerationCount": 2,
 		"isAsyncChat": false, "message": message, "modeId": mode, "responseMetadata": map[string]any{},
@@ -952,7 +953,7 @@ func applyParsedToolCalls(parsed *parsedChat, configuration toolConfiguration) {
 
 func (a *Adapter) archiveChatImages(ctx context.Context, credential account.Credential, parsed *parsedChat) error {
 	for _, rawURL := range parsed.Images {
-		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: rawURL}, "url")
+		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: rawURL}, "url", "")
 		if err != nil {
 			return err
 		}

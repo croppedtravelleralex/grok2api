@@ -75,9 +75,27 @@ type cachedNodeSnapshot struct {
 }
 
 func NewManager(repository repository.EgressRepository, cipher *security.Cipher) *Manager {
+	return NewManagerWithConcurrency(repository, cipher, 1, 4)
+}
+
+// NewManagerWithConcurrency 创建可配置的 Web / Asset 全局并发闸门。
+// webConcurrency 限制 ScopeWeb（对话/Lite 生图/刷额度），assetConcurrency 限制 ScopeWebAsset（下图）。
+func NewManagerWithConcurrency(repository repository.EgressRepository, cipher *security.Cipher, webConcurrency, assetConcurrency int) *Manager {
+	if webConcurrency < 1 {
+		webConcurrency = 1
+	}
+	if webConcurrency > 20 {
+		webConcurrency = 20
+	}
+	if assetConcurrency < 1 {
+		assetConcurrency = 1
+	}
+	if assetConcurrency > 20 {
+		assetConcurrency = 20
+	}
 	return &Manager{
 		repository: repository, cipher: cipher, clients: make(map[uint64]cachedClient), inflight: make(map[uint64]int), nodes: make(map[domain.Scope]cachedNodeSnapshot),
-		webGate: make(chan struct{}, 1), assetGate: make(chan struct{}, 1),
+		webGate: make(chan struct{}, webConcurrency), assetGate: make(chan struct{}, assetConcurrency),
 	}
 }
 
@@ -177,7 +195,7 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	}}, true, nil
 }
 
-// acquireScope 将 Grok Web 主请求和图片下载分别限制为单并发。
+// acquireScope 将 Grok Web 主请求和图片下载分别限制为有限并发。
 // 两个作用域分离，避免生图持有 WebSocket 时下载结果图片发生自锁。
 func (m *Manager) acquireScope(ctx context.Context, scope domain.Scope) (func(), error) {
 	var gate chan struct{}

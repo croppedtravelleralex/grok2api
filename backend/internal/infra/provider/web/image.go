@@ -256,8 +256,9 @@ func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGener
 func (a *Adapter) generateLiteImage(ctx context.Context, request provider.ImageGenerationRequest, count int, format string) (*provider.Response, error) {
 	spec, _ := Resolve(request.Model)
 	urls := make([]string, 0, count)
+	revised := ""
 	for len(urls) < count {
-		value, err := a.generateLiteImageURL(ctx, request.Credential, spec, request.Prompt)
+		value, expanded, err := a.generateLiteImageURL(ctx, request.Credential, spec, request.Prompt)
 		if err != nil {
 			var upstreamErr *liteUpstreamError
 			if errors.As(err, &upstreamErr) && len(urls) == 0 {
@@ -271,9 +272,12 @@ func (a *Adapter) generateLiteImage(ctx context.Context, request provider.ImageG
 			}
 			return nil, err
 		}
+		if revised == "" {
+			revised = expanded
+		}
 		urls = append(urls, value)
 	}
-	response, err := a.imageResponse(ctx, request.Credential, urls, nil, count, format)
+	response, err := a.imageResponse(ctx, request.Credential, urls, nil, count, format, revised)
 	if response != nil {
 		response.QuotaUnits = count
 	}
@@ -294,11 +298,17 @@ func (e *liteUpstreamError) Response() *provider.Response {
 	return &provider.Response{StatusCode: e.StatusCode, Status: e.Status, Header: jsonHeaders(), Body: io.NopCloser(bytes.NewReader(e.Body))}
 }
 
-func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.Credential, spec ModelSpec, prompt string) (string, error) {
+func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.Credential, spec ModelSpec, prompt string) (string, string, error) {
+	expanded := strings.TrimSpace(prompt)
+	if shouldExpandImagePrompt(expanded) {
+		if revised := a.expandImagePrompt(ctx, credential, expanded); revised != "" {
+			expanded = revised
+		}
+	}
 	for attempt := 0; attempt < 2; attempt++ {
-		upstream, lease, _, statsigTarget, err := a.openChat(ctx, credential, "", spec, normalizedChatInput{Prompt: "Drawing: " + prompt})
+		upstream, lease, _, statsigTarget, err := a.openChat(ctx, credential, "", spec, normalizedChatInput{Prompt: "Drawing: " + expanded})
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
 			body, _ := io.ReadAll(io.LimitReader(upstream.Body, 1<<20))
@@ -311,7 +321,7 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 			}
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, upstream.StatusCode, nil)
 			lease.Release()
-			return "", &liteUpstreamError{StatusCode: upstream.StatusCode, Status: upstream.Status, Body: body}
+			return "", "", &liteUpstreamError{StatusCode: upstream.StatusCode, Status: upstream.Status, Body: body}
 		}
 		firstImage := ""
 		capture := &boundedCapture{limit: 8 << 20}
@@ -333,7 +343,7 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 				}})
 				body, _ := io.ReadAll(response.Body)
 				_ = response.Body.Close()
-				return "", &liteUpstreamError{StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests", Body: body}
+				return "", "", &liteUpstreamError{StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests", Body: body}
 			}
 			status := 0
 			if errors.Is(consumeErr, errWebAntiBot) {
@@ -349,14 +359,14 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 				response := antiBotProviderResponse()
 				body, _ := io.ReadAll(response.Body)
 				_ = response.Body.Close()
-				return "", &liteUpstreamError{StatusCode: status, Status: "403 Forbidden", Body: body}
+				return "", "", &liteUpstreamError{StatusCode: status, Status: "403 Forbidden", Body: body}
 			}
-			return "", consumeErr
+			return "", "", consumeErr
 		}
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, http.StatusOK, nil)
 		lease.Release()
 		if firstImage != "" {
-			return firstImage, nil
+			return firstImage, expanded, nil
 		}
 		if len(parsed.Images) == 0 {
 			parsed.Images = extractMarkdownImages(parsed.Text.String())
@@ -380,12 +390,61 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 				"upstream_error_code", diagnostics.ErrorCode,
 				"upstream_error", diagnostics.ErrorMessage,
 			)
-			return "", fmt.Errorf("Grok Web Lite 响应结束但未解析到最终图片")
+			return "", "", fmt.Errorf("Grok Web Lite 响应结束但未解析到最终图片")
 		}
 		// Lite 上游固定生成两张，但每次查询只计一次 Fast 额度；按旧协议取首张并为 n 重复查询。
-		return parsed.Images[0], nil
+		return parsed.Images[0], expanded, nil
 	}
-	return "", fmt.Errorf("Grok Web Lite 图片签名刷新失败")
+	return "", "", fmt.Errorf("Grok Web Lite 图片签名刷新失败")
+}
+
+func shouldExpandImagePrompt(prompt string) bool {
+	trimmed := strings.TrimSpace(prompt)
+	if trimmed == "" {
+		return false
+	}
+	if len([]rune(trimmed)) < 48 {
+		return true
+	}
+	return len(strings.Fields(trimmed)) < 8
+}
+
+func (a *Adapter) expandImagePrompt(ctx context.Context, credential account.Credential, prompt string) string {
+	message := "Expand the following into a detailed English product photography prompt suitable for text-to-image. Include subject, materials, lighting, camera angle, and background. Reply ONLY with the expanded prompt, no quotes or commentary.\n\n" + prompt
+	upstream, lease, _, _, err := a.openChat(ctx, credential, "", ModelSpec{Mode: "fast"}, normalizedChatInput{Prompt: message, TextOnly: true})
+	if err != nil {
+		return ""
+	}
+	defer lease.Release()
+	if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(upstream.Body, 1<<20))
+		_ = upstream.Body.Close()
+		return ""
+	}
+	parsed, consumeErr := consumeUpstream(upstream.Body, nil)
+	_ = upstream.Body.Close()
+	if consumeErr != nil {
+		return ""
+	}
+	return sanitizeExpandedImagePrompt(parsed.Text.String())
+}
+
+func sanitizeExpandedImagePrompt(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if idx := strings.IndexByte(trimmed, '\n'); idx >= 0 {
+		first := strings.TrimSpace(trimmed[:idx])
+		rest := strings.TrimSpace(trimmed[idx+1:])
+		if first != "" && (rest == "" || strings.HasPrefix(strings.ToLower(rest), "note") || strings.HasPrefix(strings.ToLower(rest), "here")) {
+			trimmed = first
+		}
+	}
+	trimmed = strings.Trim(trimmed, "\"'`")
+	trimmed = strings.TrimSpace(trimmed)
+	if len([]rune(trimmed)) > 800 {
+		runes := []rune(trimmed)
+		trimmed = string(runes[:800])
+	}
+	return trimmed
 }
 
 func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provider.ResponseResourceRequest, input openAIRequest, normalized normalizedChatInput, spec ModelSpec) (*provider.Response, error) {
@@ -418,7 +477,7 @@ func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provide
 	}
 	parsed := parsedChat{ResponseID: responseID, InputTokens: estimateTokens(normalized.Prompt)}
 	for range count {
-		rawURL, err := a.generateLiteImageURL(ctx, request.Credential, spec, normalized.Prompt)
+		rawURL, _, err := a.generateLiteImageURL(ctx, request.Credential, spec, normalized.Prompt)
 		if err != nil {
 			var upstreamErr *liteUpstreamError
 			if errors.As(err, &upstreamErr) && parsed.Text.Len() == 0 {
@@ -426,7 +485,7 @@ func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provide
 			}
 			return nil, err
 		}
-		item, err := a.imageDataItem(ctx, request.Credential, imagineImageValue{URL: rawURL}, format)
+		item, err := a.imageDataItem(ctx, request.Credential, imagineImageValue{URL: rawURL}, format, "")
 		if err != nil {
 			return nil, err
 		}
@@ -447,12 +506,12 @@ func (a *Adapter) streamLiteChatImages(ctx context.Context, writer *io.PipeWrite
 	parsed := parsedChat{ResponseID: responseID, InputTokens: estimateTokens(prompt)}
 	writeStreamStart(writer, "chat", responseID, model, parsed.InputTokens)
 	for range count {
-		rawURL, err := a.generateLiteImageURL(ctx, credential, spec, prompt)
+		rawURL, _, err := a.generateLiteImageURL(ctx, credential, spec, prompt)
 		if err != nil {
 			_ = writer.CloseWithError(err)
 			return
 		}
-		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: rawURL}, format)
+		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: rawURL}, format, "")
 		if err != nil {
 			_ = writer.CloseWithError(err)
 			return
@@ -610,7 +669,7 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 		urls = append(urls, image.URL)
 		blobs = append(blobs, image.Blob)
 	}
-	result, err := a.imageResponse(ctx, request.Credential, urls, blobs, count, format)
+	result, err := a.imageResponse(ctx, request.Credential, urls, blobs, count, format, "")
 	if result != nil {
 		result.QuotaUnits = count
 	}
@@ -645,7 +704,7 @@ func (a *Adapter) bufferedImagineResponse(ctx context.Context, frames [][]byte, 
 		urls = append(urls, image.URL)
 		blobs = append(blobs, image.Blob)
 	}
-	result, err := a.imageResponse(ctx, credential, urls, blobs, count, format)
+	result, err := a.imageResponse(ctx, credential, urls, blobs, count, format, "")
 	if result != nil {
 		result.QuotaUnits = count
 	}
@@ -684,7 +743,7 @@ func (a *Adapter) streamBufferedImagineImages(ctx context.Context, writer *io.Pi
 			if emitted >= count {
 				break
 			}
-			item, err := a.imageDataItem(ctx, credential, image, format)
+			item, err := a.imageDataItem(ctx, credential, image, format, "")
 			if err != nil {
 				writeImagineStreamFailure(writer, streamID, "image_output_error", "图片结果处理失败")
 				_ = writer.CloseWithError(err)
@@ -804,7 +863,7 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("图片编辑完成但没有返回图片")
 	}
-	result, err := a.imageResponse(ctx, request.Credential, urls, nil, count, format)
+	result, err := a.imageResponse(ctx, request.Credential, urls, nil, count, format, "")
 	if result != nil {
 		result.QuotaUnits = count
 	}
@@ -1065,14 +1124,14 @@ func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *eg
 	return nil, fmt.Errorf("Grok Web Statsig 刷新失败")
 }
 
-func (a *Adapter) imageResponse(ctx context.Context, credential account.Credential, urls, blobs []string, count int, format string) (*provider.Response, error) {
+func (a *Adapter) imageResponse(ctx context.Context, credential account.Credential, urls, blobs []string, count int, format, revisedPrompt string) (*provider.Response, error) {
 	data := make([]any, 0, min(count, len(urls)))
 	for index := 0; index < count && index < len(urls); index++ {
 		blob := ""
 		if index < len(blobs) {
 			blob = blobs[index]
 		}
-		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: urls[index], Blob: blob}, format)
+		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: urls[index], Blob: blob}, format, revisedPrompt)
 		if err != nil {
 			return nil, err
 		}
@@ -1081,7 +1140,7 @@ func (a *Adapter) imageResponse(ctx context.Context, credential account.Credenti
 	return jsonProviderResponse(http.StatusOK, map[string]any{"created": time.Now().Unix(), "data": data}), nil
 }
 
-func (a *Adapter) imageDataItem(ctx context.Context, credential account.Credential, image imagineImageValue, format string) (map[string]any, error) {
+func (a *Adapter) imageDataItem(ctx context.Context, credential account.Credential, image imagineImageValue, format, revisedPrompt string) (map[string]any, error) {
 	if a.assets == nil {
 		return nil, fmt.Errorf("图片媒体存储未配置")
 	}
@@ -1101,9 +1160,9 @@ func (a *Adapter) imageDataItem(ctx context.Context, credential account.Credenti
 		return nil, assetErr
 	}
 	if format != "b64_json" {
-		return map[string]any{"url": a.assets.PublicImageURL(asset.ID), "mime_type": asset.MIMEType, "revised_prompt": ""}, nil
+		return map[string]any{"url": a.assets.PublicImageURL(asset.ID), "mime_type": asset.MIMEType, "revised_prompt": revisedPrompt}, nil
 	}
-	return map[string]any{"b64_json": base64.StdEncoding.EncodeToString(raw), "mime_type": asset.MIMEType, "revised_prompt": ""}, nil
+	return map[string]any{"b64_json": base64.StdEncoding.EncodeToString(raw), "mime_type": asset.MIMEType, "revised_prompt": revisedPrompt}, nil
 }
 
 func (a *Adapter) imageBytes(ctx context.Context, credential account.Credential, image imagineImageValue) ([]byte, error) {
@@ -1173,7 +1232,7 @@ func (a *Adapter) streamImagineImages(ctx context.Context, writer *io.PipeWriter
 			if emitted >= count {
 				break
 			}
-			item, err := a.imageDataItem(ctx, credential, image, format)
+			item, err := a.imageDataItem(ctx, credential, image, format, "")
 			if err != nil {
 				writeImagineStreamFailure(writer, streamID, "image_output_error", "图片结果处理失败")
 				_ = writer.CloseWithError(err)

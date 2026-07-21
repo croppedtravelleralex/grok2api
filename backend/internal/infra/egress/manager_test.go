@@ -113,11 +113,12 @@ func TestConfiguredWebNodeKeepsChromeBrowserTransport(t *testing.T) {
 	}
 }
 
-func TestWebRequestsAreSerializedGlobally(t *testing.T) {
+func TestWebGateSerializesWhenCapacityOne(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// NewManager defaults webConcurrency=1.
 	manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1}}}, cipher)
 	first, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account-1")
 	if err != nil {
@@ -150,6 +151,50 @@ func TestWebRequestsAreSerializedGlobally(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("second Web request did not resume after release")
 	}
+}
+
+func TestWebGateAllowsConfiguredConcurrency(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManagerWithConcurrency(egressRepositoryTestStub{nodes: []domain.Node{{ID: 1, Name: "web", Scope: domain.ScopeWeb, Enabled: true, Health: 1}}}, cipher, 2, 4)
+	first, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.Acquire(context.Background(), domain.ScopeWeb, "account-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	acquired := make(chan *Lease, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		lease, acquireErr := manager.Acquire(context.Background(), domain.ScopeWeb, "account-3")
+		if acquireErr != nil {
+			errCh <- acquireErr
+			return
+		}
+		acquired <- lease
+	}()
+	select {
+	case lease := <-acquired:
+		lease.Release()
+		t.Fatal("third Web request bypassed the concurrency=2 gate")
+	case err := <-errCh:
+		t.Fatal(err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	first.Release()
+	select {
+	case lease := <-acquired:
+		lease.Release()
+	case err := <-errCh:
+		t.Fatal(err)
+	case <-time.After(time.Second):
+		t.Fatal("third Web request did not resume after release")
+	}
+	second.Release()
 }
 
 func TestWebGateWaitRespectsContextCancellation(t *testing.T) {
