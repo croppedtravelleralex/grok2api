@@ -94,6 +94,9 @@ func (d *Database) InitializeSchema(ctx context.Context) error {
 	if err := d.ensureConsoleConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移 Console 数据库约束: %w", err)
 	}
+	if err := d.ensureImagePipelineLaneConstraint(ctx); err != nil {
+		return fmt.Errorf("迁移生图流水线 lane 约束: %w", err)
+	}
 	for _, statement := range schemaIndexes {
 		if err := db.Exec(statement).Error; err != nil {
 			return fmt.Errorf("初始化数据库索引: %w", err)
@@ -137,6 +140,37 @@ func (d *Database) ensureConsoleConstraints(ctx context.Context) error {
 			if err := db.Migrator().CreateConstraint(value.model, value.name); err != nil {
 				return fmt.Errorf("创建约束 %s: %w", value.name, err)
 			}
+		}
+		return nil
+	}
+	if d.dialect == "sqlite" {
+		return d.withSQLiteForeignKeysDisabled(ctx, migrate)
+	}
+	return migrate()
+}
+
+// ensureImagePipelineLaneConstraint 允许 lane=-1 表示尚未分配管道槽的排队任务。
+func (d *Database) ensureImagePipelineLaneConstraint(ctx context.Context) error {
+	if !d.db.WithContext(ctx).Migrator().HasTable(&imagePipelineTraceModel{}) {
+		return nil
+	}
+	value := consoleConstraint{model: &imagePipelineTraceModel{}, table: "image_pipeline_traces", name: "chk_image_pipeline_traces_lane"}
+	migrate := func() error {
+		db := d.db.WithContext(ctx)
+		definition, err := d.constraintDefinition(ctx, value)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(definition, "lane >= -1") || strings.Contains(definition, "lane>=-1") {
+			return nil
+		}
+		if definition != "" {
+			if err := db.Migrator().DropConstraint(value.model, value.name); err != nil {
+				return fmt.Errorf("删除旧约束 %s: %w", value.name, err)
+			}
+		}
+		if err := db.Migrator().CreateConstraint(value.model, value.name); err != nil {
+			return fmt.Errorf("创建约束 %s: %w", value.name, err)
 		}
 		return nil
 	}

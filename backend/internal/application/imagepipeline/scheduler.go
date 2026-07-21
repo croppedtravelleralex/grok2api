@@ -170,15 +170,17 @@ func (s *Scheduler) Admit(ctx context.Context, input AdmitInput) (*Run, error) {
 	s.live[traceID] = run
 	s.mu.Unlock()
 
-	if err := s.persistCreate(run.trace); err != nil {
-		s.logger.Warn("image_pipeline_trace_create_failed", "error", err)
-	}
+	// 先占槽再落库，避免 lane=-1 在旧库 CHECK 下写失败；槽位到手后立刻 Create。
 	queueSegID := run.beginSegment(domain.StageQueue, now)
 
 	lane, err := s.acquireSlot(ctx)
 	ended := time.Now().UTC()
 	run.endSegment(queueSegID, domain.StageQueue, ended, outcomeFromErr(err))
 	if err != nil {
+		run.mu.Lock()
+		run.trace.QueueMS = ended.Sub(run.trace.StartedAt).Milliseconds()
+		run.mu.Unlock()
+		// 未分到槽时不落库（旧库 CHECK 拒 lane=-1）；内存 live 仍可被 timeline 合并。
 		run.Finish(domain.StatusCanceled, outcomeFromErr(err), false)
 		return nil, err
 	}
@@ -189,7 +191,9 @@ func (s *Scheduler) Admit(ctx context.Context, input AdmitInput) (*Run, error) {
 	run.trace.QueueMS = ended.Sub(run.trace.StartedAt).Milliseconds()
 	run.holdingSlot = true
 	run.mu.Unlock()
-	_ = s.persistUpdate(run.snapshotTrace())
+	if persistErr := s.persistCreate(run.snapshotTrace()); persistErr != nil {
+		s.logger.Warn("image_pipeline_trace_create_failed", "error", persistErr)
+	}
 	return run, nil
 }
 
