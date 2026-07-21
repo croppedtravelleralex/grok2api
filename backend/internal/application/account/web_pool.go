@@ -40,7 +40,9 @@ type webPoolCandidate struct {
 	cooling  bool
 }
 
-// ReconcileWebPools 按额度把 Web 账号拉进/踢出调度池：图池看 fast>0 且无 Imagine block，对话池看 auto/fast>0；各最多 50。
+// ReconcileWebPools 只做「无额度/冷却出池」：在当前已启用账号里踢掉不合格号。
+// 不自动 enable 任何新号（进池仍由人工/调度脚本控制），避免把未验证出口能力的账号拉进生产池。
+// 图池看 fast>0 且无 Imagine block；对话池看 auto/fast>0；快照各最多 50。
 func (s *Service) ReconcileWebPools(ctx context.Context) (WebPoolSnapshot, error) {
 	now := time.Now().UTC()
 	accounts, _, err := s.accounts.List(ctx, repository.AccountListQuery{
@@ -74,9 +76,13 @@ func (s *Service) ReconcileWebPools(ctx context.Context) (WebPoolSnapshot, error
 		})
 	}
 
-	imageIDs := selectWebPoolIDs(candidates, webImagePoolCap, func(c webPoolCandidate) bool {
-		return c.active && !c.cooling && c.fastRem > 0
-	}, func(a, b webPoolCandidate) bool {
+	imageEligible := func(c webPoolCandidate) bool {
+		return c.enabled && c.active && !c.cooling && c.fastRem > 0
+	}
+	chatEligible := func(c webPoolCandidate) bool {
+		return c.enabled && c.active && !c.cooling && (c.fastRem > 0 || c.autoRem > 0)
+	}
+	imageIDs := selectWebPoolIDs(candidates, webImagePoolCap, imageEligible, func(a, b webPoolCandidate) bool {
 		if a.priority != b.priority {
 			return a.priority > b.priority
 		}
@@ -85,9 +91,7 @@ func (s *Service) ReconcileWebPools(ctx context.Context) (WebPoolSnapshot, error
 		}
 		return a.id < b.id
 	})
-	chatIDs := selectWebPoolIDs(candidates, webChatPoolCap, func(c webPoolCandidate) bool {
-		return c.active && !c.cooling && (c.fastRem > 0 || c.autoRem > 0)
-	}, func(a, b webPoolCandidate) bool {
+	chatIDs := selectWebPoolIDs(candidates, webChatPoolCap, chatEligible, func(a, b webPoolCandidate) bool {
 		if a.priority != b.priority {
 			return a.priority > b.priority
 		}
@@ -98,37 +102,21 @@ func (s *Service) ReconcileWebPools(ctx context.Context) (WebPoolSnapshot, error
 		return a.id < b.id
 	})
 
-	desired := make(map[uint64]struct{}, len(imageIDs)+len(chatIDs))
-	for _, id := range imageIDs {
-		desired[id] = struct{}{}
-	}
-	for _, id := range chatIDs {
-		desired[id] = struct{}{}
-	}
-
-	toEnable := make([]uint64, 0)
+	// 出池：已启用但不具备对话/图任一资格 → disable。绝不自动 enable。
 	toDisable := make([]uint64, 0)
 	enabledNow := make([]uint64, 0)
 	for _, candidate := range candidates {
-		_, want := desired[candidate.id]
-		if want && !candidate.enabled {
-			toEnable = append(toEnable, candidate.id)
-		}
-		if !want && candidate.enabled {
+		keep := candidate.enabled && candidate.active && !candidate.cooling && (candidate.fastRem > 0 || candidate.autoRem > 0)
+		if candidate.enabled && !keep {
 			toDisable = append(toDisable, candidate.id)
+			continue
 		}
-		if want {
+		if keep {
 			enabledNow = append(enabledNow, candidate.id)
 		}
 	}
 
-	enabledFlag := true
 	disabledFlag := false
-	if len(toEnable) > 0 {
-		if _, err := s.accounts.UpdateMany(ctx, toEnable, repository.AccountUpdates{Enabled: &enabledFlag}); err != nil {
-			return WebPoolSnapshot{}, err
-		}
-	}
 	if len(toDisable) > 0 {
 		if _, err := s.accounts.UpdateMany(ctx, toDisable, repository.AccountUpdates{Enabled: &disabledFlag}); err != nil {
 			return WebPoolSnapshot{}, err
@@ -143,7 +131,7 @@ func (s *Service) ReconcileWebPools(ctx context.Context) (WebPoolSnapshot, error
 		ImagePoolIDs: imageIDs, ChatPoolIDs: chatIDs, EnabledIDs: enabledNow,
 		ImagePoolSize: len(imageIDs), ChatPoolSize: len(chatIDs), EnabledCount: len(enabledNow),
 		ImagePoolCap: webImagePoolCap, ChatPoolCap: webChatPoolCap, ReconciledAt: now,
-		EnabledAdded: len(toEnable), EnabledRemoved: len(toDisable),
+		EnabledAdded: 0, EnabledRemoved: len(toDisable),
 	}, nil
 }
 
@@ -183,8 +171,9 @@ func (s *Service) WebPools(ctx context.Context) (WebPoolSnapshot, error) {
 			cooling: cooling || blocks[value.ID],
 		})
 	}
+	// 只读快照同样只在当前 enabled 集合内投影，避免把未进池账号显示成调度位。
 	imageIDs := selectWebPoolIDs(candidates, webImagePoolCap, func(c webPoolCandidate) bool {
-		return c.active && !c.cooling && c.fastRem > 0
+		return c.enabled && c.active && !c.cooling && c.fastRem > 0
 	}, func(a, b webPoolCandidate) bool {
 		if a.priority != b.priority {
 			return a.priority > b.priority
@@ -195,7 +184,7 @@ func (s *Service) WebPools(ctx context.Context) (WebPoolSnapshot, error) {
 		return a.id < b.id
 	})
 	chatIDs := selectWebPoolIDs(candidates, webChatPoolCap, func(c webPoolCandidate) bool {
-		return c.active && !c.cooling && (c.fastRem > 0 || c.autoRem > 0)
+		return c.enabled && c.active && !c.cooling && (c.fastRem > 0 || c.autoRem > 0)
 	}, func(a, b webPoolCandidate) bool {
 		if a.priority != b.priority {
 			return a.priority > b.priority
