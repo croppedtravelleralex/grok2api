@@ -438,14 +438,13 @@ func newBuildProbeStatusResponse(value accountapp.BuildProbeStatus) gin.H {
 		"lastError": value.LastError,
 		"statistics": gin.H{
 			"attempts": value.Statistics.Attempts, "succeeded": value.Statistics.Succeeded, "failed": value.Statistics.Failed,
-			"verified": value.Statistics.Verified, "recovered": value.Statistics.Recovered, "cooledDown": value.Statistics.CooledDown,
-			"quarantined": value.Statistics.Quarantined, "recoveryQueued": value.Statistics.RecoveryQueued,
-			"retired": value.Statistics.Retired, "kept": value.Statistics.Kept, "deletable": value.Statistics.Deletable,
+			"verified": value.Statistics.Verified, "normalOk": value.Statistics.NormalOK, "dispatchOk": value.Statistics.DispatchOK,
+			"cooledDown": value.Statistics.CooledDown, "deletable": value.Statistics.Deletable,
 			"deleted": value.Statistics.Deleted, "consecutiveFailures": value.Statistics.ConsecutiveFailures,
 		},
 		"pools": gin.H{
-			"production": value.Pools.Production, "verification": value.Pools.Verification, "cooldown": value.Pools.Cooldown,
-			"quarantine": value.Pools.Quarantine, "recovery": value.Pools.Recovery, "retired": value.Pools.Retired, "disabled": value.Pools.Disabled,
+			"dispatch": value.Pools.Dispatch, "normal": value.Pools.Normal,
+			"verification": value.Pools.Verification, "delete": value.Pools.Delete,
 		},
 		"recent": recent,
 	}
@@ -1208,7 +1207,7 @@ func newAccountResponse(value accountapp.View) accountResponse {
 }
 
 func accountPool(value accountdomain.Credential) string {
-	return accountapp.AccountPoolAt(value, time.Now().UTC())
+	return accountapp.AccountPoolAt(value, time.Now().UTC(), nil)
 }
 
 func newQuotaResponse(value accountapp.QuotaView) quotaResponse {

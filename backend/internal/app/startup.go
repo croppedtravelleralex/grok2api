@@ -93,9 +93,12 @@ func buildChatProbeIdleInterval() time.Duration {
 	return boundedEnvDuration("GROK2API_BUILD_CHAT_PROBE_IDLE_EVERY", defaultBuildChatProbeIdleInterval, time.Minute, 24*time.Hour)
 }
 
-// buildChatProbePurgeApply 控制安全删除是否真正执行删除；默认关闭，仅标记 deletable。
+// buildChatProbePurgeApply 控制删除池是否真正物理删除；默认开启。
 func buildChatProbePurgeApply() bool {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv("GROK2API_BUILD_SAFE_PURGE_APPLY")))
+	if value == "" {
+		return true
+	}
 	return value == "1" || value == "true" || value == "on" || value == "yes"
 }
 
@@ -498,16 +501,13 @@ func (a *Application) runModelCatalogCatchup(ctx context.Context) {
 	}
 }
 
-// runBuildChatProbe 按稳定顺序循环验证 Build 账号。每次只处理一个账号，
-// 候选池扫空后自动降频，避免空转查询或形成刷新风暴。
+// runBuildChatProbe 启动维护探针循环，并在首次运行前重建索引、迁移死号。
 func (a *Application) runBuildChatProbe(ctx context.Context) {
 	interval := buildChatProbeInterval()
 	if interval <= 0 {
 		if a.accounts != nil {
 			a.accounts.ConfigureBuildProbe(0, 0, 0)
 		}
-		// Supervisor 把后台任务正常返回视为异常退出。关闭探测时保持任务存活，
-		// 直到应用关闭，避免每 30 秒重启并刷 error 日志。
 		<-ctx.Done()
 		return
 	}
@@ -515,6 +515,14 @@ func (a *Application) runBuildChatProbe(ctx context.Context) {
 	initialDelay := buildChatProbeInitialDelay()
 	a.accounts.ConfigureBuildProbe(interval, idleInterval, initialDelay)
 	a.accounts.ConfigureBuildProbePurgeApply(buildChatProbePurgeApply())
+	if migrated, err := a.accounts.MigrateBuildDeadAccountsToDeletePool(ctx); err != nil {
+		a.logger.Warn("build_pool_migrate_failed", "error", err)
+	} else if migrated > 0 {
+		a.logger.Info("build_pool_migrated_deletable", "count", migrated)
+	}
+	if err := a.accounts.RebuildBuildPoolIndex(ctx); err != nil {
+		a.logger.Warn("build_pool_index_rebuild_failed", "error", err)
+	}
 	timer := time.NewTimer(initialDelay)
 	defer timer.Stop()
 	for {
@@ -524,18 +532,54 @@ func (a *Application) runBuildChatProbe(ctx context.Context) {
 		case <-timer.C:
 		}
 		probeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-		accountID, found, err := a.accounts.ProbeNextBuildChat(probeCtx)
+		accountID, found, err := a.accounts.MaintenanceProbeTick(probeCtx)
 		cancel()
 		if err != nil && ctx.Err() == nil {
-			a.logger.Warn("build_chat_capability_probe_failed", "account_id", accountID, "error", err)
+			a.logger.Warn("build_maintenance_probe_failed", "account_id", accountID, "error", err)
 		} else if found {
-			a.logger.Info("build_chat_capability_probe_succeeded", "account_id", accountID)
+			a.logger.Info("build_maintenance_probe_succeeded", "account_id", accountID)
 		}
 		nextInterval := interval
 		if !found {
 			nextInterval = idleInterval
 		}
 		a.accounts.ScheduleBuildProbe(time.Now().UTC().Add(nextInterval))
+		resetTimer(timer, nextInterval)
+	}
+}
+
+// runBuildDispatchProbe 调度池专用探针，与维护探针错开 initialDelay/2。
+func (a *Application) runBuildDispatchProbe(ctx context.Context) {
+	interval := buildChatProbeInterval()
+	if interval <= 0 {
+		<-ctx.Done()
+		return
+	}
+	idleInterval := buildChatProbeIdleInterval()
+	initialDelay := buildChatProbeInitialDelay() / 2
+	if initialDelay <= 0 {
+		initialDelay = 15 * time.Second
+	}
+	timer := time.NewTimer(initialDelay)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		accountID, found, err := a.accounts.DispatchProbeTick(probeCtx)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			a.logger.Warn("build_dispatch_probe_failed", "account_id", accountID, "error", err)
+		} else if found {
+			a.logger.Info("build_dispatch_probe_succeeded", "account_id", accountID)
+		}
+		nextInterval := interval
+		if !found {
+			nextInterval = idleInterval
+		}
 		resetTimer(timer, nextInterval)
 	}
 }

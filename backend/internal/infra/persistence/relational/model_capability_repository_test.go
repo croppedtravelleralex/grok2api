@@ -271,6 +271,9 @@ func TestManualModelRouteBindingsAndRediscovery(t *testing.T) {
 	if _, err := models.GetByPublicID(ctx, created.PublicID); err != nil {
 		t.Fatalf("bound route must be available without a discovery snapshot: %v", err)
 	}
+	if err := accounts.UpdateObservedModel(ctx, first.ID, "grok-4.5-build-free", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
 	candidates, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, created.UpstreamModel, "")
 	if err != nil {
 		t.Fatal(err)

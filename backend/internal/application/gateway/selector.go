@@ -83,6 +83,12 @@ func (l *accountLease) Release() {
 	}
 }
 
+// buildDispatchSource 提供 Build 调度池有序索引，避免 Acquire 全表线性扫。
+type buildDispatchSource interface {
+	OrderedDispatchIDs(limit int) []uint64
+	NoteDispatchSelected(id uint64, at time.Time)
+}
+
 // Selector 实现可替换的 balanced 账号选择策略。
 type Selector struct {
 	accounts       repository.AccountRepository
@@ -99,9 +105,17 @@ type Selector struct {
 	lastSuccessAt  map[uint64]time.Time
 	candidates     map[candidateCacheKey]candidateSnapshot
 	candidateLoads singleflight.Group
+	buildDispatch  buildDispatchSource
 	tierOrders     interface {
 		TierOrder(account.Provider, string) []account.WebTier
 	}
+}
+
+// SetBuildDispatchSource 接入 Build 四池调度索引。
+func (s *Selector) SetBuildDispatchSource(source buildDispatchSource) {
+	s.mu.Lock()
+	s.buildDispatch = source
+	s.mu.Unlock()
 }
 
 func NewSelector(accounts repository.AccountRepository, concurrency repository.ConcurrencyLimiter, sticky repository.StickySessionRepository, tierOrders interface {
@@ -146,13 +160,13 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 	modelCoolingCandidates := 0
 	quotaCandidates := 0
 	var earliestRetry time.Time
-	verifiedBuildPool := hasVerifiedBuildCandidate(provider, values, excluded)
 	for _, candidate := range values {
 		value := candidate.Credential
 		if excluded[value.ID] || value.AuthStatus != account.AuthStatusActive {
 			continue
 		}
-		if verifiedBuildPool && strings.TrimSpace(value.ObservedModel) == "" {
+		// Build：未通过能力探测的号不进真实流量（验证池）。
+		if provider == account.ProviderBuild && strings.TrimSpace(value.ObservedModel) == "" {
 			continue
 		}
 		consideredCandidates++
@@ -240,7 +254,7 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 		if err != nil {
 			return nil, fmt.Errorf("读取会话粘滞状态: %w", err)
 		}
-		if ok {
+				if ok {
 			for _, candidate := range normalCandidates {
 				if candidate.Credential.ID == stickyID {
 					lease, acquireErr := s.claimAccountSlot(ctx, candidate.Credential)
@@ -248,6 +262,14 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 						return nil, acquireErr
 					}
 					if lease != nil {
+						if provider == account.ProviderBuild {
+							s.mu.Lock()
+							source := s.buildDispatch
+							s.mu.Unlock()
+							if source != nil {
+								source.NoteDispatchSelected(candidate.Credential.ID, now)
+							}
+						}
 						lease.Billing = candidate.Billing
 						lease.QuotaMode = effectiveQuotaMode(candidate, quotaMode)
 						return lease, nil
@@ -260,7 +282,9 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 	waitDeadline := time.Now().Add(capacityWait)
 	for {
 		currentTime := time.Now().UTC()
-		if err := s.sortCandidates(ctx, normalCandidates, currentTime, s.resolveTierOrder(provider, upstreamModel)); err != nil {
+		if provider == account.ProviderBuild {
+			normalCandidates = s.orderBuildDispatchCandidates(normalCandidates)
+		} else if err := s.sortCandidates(ctx, normalCandidates, currentTime, s.resolveTierOrder(provider, upstreamModel)); err != nil {
 			return nil, err
 		}
 		for _, candidate := range normalCandidates {
@@ -276,6 +300,14 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 				if err := s.sticky.Set(ctx, stickyKey, candidate.Credential.ID, currentTime.Add(stickyTTL)); err != nil {
 					lease.Release()
 					return nil, fmt.Errorf("写入会话粘滞状态: %w", err)
+				}
+			}
+			if provider == account.ProviderBuild {
+				s.mu.Lock()
+				source := s.buildDispatch
+				s.mu.Unlock()
+				if source != nil {
+					source.NoteDispatchSelected(candidate.Credential.ID, currentTime)
 				}
 			}
 			lease.Billing = candidate.Billing
@@ -295,17 +327,41 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 	}
 }
 
-func hasVerifiedBuildCandidate(provider account.Provider, values []account.RoutingCandidate, excluded map[uint64]bool) bool {
-	if provider != account.ProviderBuild {
-		return false
+func (s *Selector) orderBuildDispatchCandidates(values []account.RoutingCandidate) []account.RoutingCandidate {
+	if len(values) <= 1 {
+		return values
+	}
+	s.mu.Lock()
+	source := s.buildDispatch
+	s.mu.Unlock()
+	if source == nil {
+		return values
+	}
+	orderedIDs := source.OrderedDispatchIDs(len(values) + 8)
+	if len(orderedIDs) == 0 {
+		return values
+	}
+	byID := make(map[uint64]account.RoutingCandidate, len(values))
+	for _, candidate := range values {
+		byID[candidate.Credential.ID] = candidate
+	}
+	result := make([]account.RoutingCandidate, 0, len(values))
+	seen := make(map[uint64]bool, len(values))
+	for _, id := range orderedIDs {
+		candidate, ok := byID[id]
+		if !ok || seen[id] {
+			continue
+		}
+		seen[id] = true
+		result = append(result, candidate)
 	}
 	for _, candidate := range values {
-		credential := candidate.Credential
-		if !excluded[credential.ID] && credential.AuthStatus == account.AuthStatusActive && strings.TrimSpace(credential.ObservedModel) != "" && (!candidate.ModelCapabilityKnown || candidate.SupportsModel) {
-			return true
+		if seen[candidate.Credential.ID] {
+			continue
 		}
+		result = append(result, candidate)
 	}
-	return false
+	return result
 }
 
 // promptCacheStickyKey 将调用方缓存键压缩为固定长度，仅用于本地账号粘滞索引。

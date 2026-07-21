@@ -45,6 +45,7 @@ func TestReadinessKeepsBuildReadyWhenWebIsUnavailable(t *testing.T) {
 		Provider: accountdomain.ProviderBuild, Name: "build-ready", SourceKey: "build-ready",
 		EncryptedAccessToken: "access", EncryptedRefreshToken: "refresh", ExpiresAt: now.Add(time.Hour),
 		Enabled: true, AuthStatus: accountdomain.AuthStatusActive, MaxConcurrent: 1,
+		ObservedModel: "grok-4.5-build-free",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -88,6 +89,7 @@ func TestReadinessRestoresPersistedCooldownWithoutUpstreamProbe(t *testing.T) {
 		Provider: accountdomain.ProviderBuild, Name: "cooling", SourceKey: "cooling",
 		EncryptedAccessToken: "access", EncryptedRefreshToken: "refresh", ExpiresAt: now.Add(time.Hour),
 		Enabled: true, AuthStatus: accountdomain.AuthStatusActive, MaxConcurrent: 1, CooldownUntil: &cooldownUntil,
+		ObservedModel: "grok-4.5-build-free",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -172,8 +174,12 @@ func TestBuildChatProbeSettingsAreDisabledByDefaultAndBounded(t *testing.T) {
 		t.Fatalf("unsafe probe idle interval = %s", got)
 	}
 	t.Setenv("GROK2API_BUILD_SAFE_PURGE_APPLY", "")
+	if !buildChatProbePurgeApply() {
+		t.Fatal("purge apply should default on")
+	}
+	t.Setenv("GROK2API_BUILD_SAFE_PURGE_APPLY", "false")
 	if buildChatProbePurgeApply() {
-		t.Fatal("purge apply should default off")
+		t.Fatal("purge apply false not recognized")
 	}
 	t.Setenv("GROK2API_BUILD_SAFE_PURGE_APPLY", "true")
 	if !buildChatProbePurgeApply() {

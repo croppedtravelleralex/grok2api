@@ -28,6 +28,7 @@ func TestSelectorPrioritizesDueQuotaProbeOnce(t *testing.T) {
 	probe, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "probe", SourceKey: "probe", EncryptedAccessToken: "encrypted", Enabled: true,
 		AuthStatus: account.AuthStatusActive, Priority: 10, MaxConcurrent: 1,
+		ObservedModel: "grok-4.5-build-free",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -35,6 +36,7 @@ func TestSelectorPrioritizesDueQuotaProbeOnce(t *testing.T) {
 	active, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "active", SourceKey: "active", EncryptedAccessToken: "encrypted", Enabled: true,
 		AuthStatus: account.AuthStatusActive, Priority: 200, MaxConcurrent: 1,
+		ObservedModel: "grok-4.5-build-free",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +91,7 @@ func TestSelectorSkipsQuotaProbeBeforeDue(t *testing.T) {
 	value, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "waiting", SourceKey: "waiting", EncryptedAccessToken: "encrypted", Enabled: true,
 		AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
+		ObservedModel: "grok-4.5-build-free",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +169,8 @@ func TestSelectorClaimsPaidBillingProbeAfterPeriodEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	accounts := relational.NewAccountRepository(database)
-	value, _, err := accounts.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "paid", SourceKey: "paid", EncryptedAccessToken: "encrypted", AuthStatus: account.AuthStatusActive, MaxConcurrent: 1})
+	value, _, err := accounts.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "paid", SourceKey: "paid", EncryptedAccessToken: "encrypted", AuthStatus: account.AuthStatusActive, MaxConcurrent: 1, ObservedModel: "grok-4.5-build-free",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,6 +206,7 @@ func TestSelectorOnlyUsesAccountsSupportingRequestedModel(t *testing.T) {
 	unsupported, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "basic", SourceKey: "basic", EncryptedAccessToken: "encrypted", AuthStatus: account.AuthStatusActive,
 		Priority: 500, MaxConcurrent: 1,
+		ObservedModel: "grok-4.5-build-free",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -209,6 +214,7 @@ func TestSelectorOnlyUsesAccountsSupportingRequestedModel(t *testing.T) {
 	supported, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "premium", SourceKey: "premium", EncryptedAccessToken: "encrypted", AuthStatus: account.AuthStatusActive,
 		Priority: 100, MaxConcurrent: 1,
+		ObservedModel: "grok-4.5-build-free",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -254,6 +260,7 @@ func TestSelectorUsesOnlyVerifiedBuildAccountsWhenAvailable(t *testing.T) {
 	verified, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "verified", SourceKey: "verified", EncryptedAccessToken: "encrypted", AuthStatus: account.AuthStatusActive,
 		Priority: 1, MaxConcurrent: 1,
+		ObservedModel: "grok-4.5-build-free",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -358,6 +365,7 @@ func TestSelectorPropagatesConcurrencyStoreFailure(t *testing.T) {
 	if _, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "active", SourceKey: "active", EncryptedAccessToken: "encrypted",
 		AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+		ObservedModel: "grok-4.5-build-free",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -425,6 +433,7 @@ func TestSelectorWaitsBrieflyForAccountCapacity(t *testing.T) {
 	if _, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "capacity", SourceKey: "capacity", EncryptedAccessToken: "encrypted",
 		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+		ObservedModel: "grok-4.5-build-free",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -473,6 +482,7 @@ func TestSelectorAppliesPersistedCooldownOnlyToMatchingModel(t *testing.T) {
 	credential, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
 		Provider: account.ProviderBuild, Name: "model-cooling", SourceKey: "model-cooling", EncryptedAccessToken: "encrypted",
 		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+		ObservedModel: "grok-4.5-build-free",
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -495,9 +495,9 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 		row.ID = existing.ID
 		row.CreatedAt = existing.CreatedAt
 		row.Enabled = existing.Enabled
-		// 自动恢复失败达到上限后只做软退役。管理员显式重导入新凭据时恢复启用，
-		// 既保留账号 ID、关联和审计，又不会让旧死号继续污染生产池。
-		if !existing.Enabled && strings.HasPrefix(strings.ToLower(strings.TrimSpace(existing.LastError)), "retired:") {
+		// 删除池/历史软退役号：管理员显式重导入新凭据时恢复启用。
+		existingErr := strings.ToLower(strings.TrimSpace(existing.LastError))
+		if !existing.Enabled && (strings.HasPrefix(existingErr, "retired:") || strings.HasPrefix(existingErr, "deletable:")) {
 			row.Enabled = true
 		}
 		row.Priority = existing.Priority

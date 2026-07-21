@@ -43,11 +43,13 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	auditRepo := relational.NewAuditRepository(database)
 	responseRepo := relational.NewResponseRepository(database)
 	keyRepo := relational.NewClientKeyRepository(database)
-	first, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "first", SourceKey: "first", EncryptedAccessToken: "one", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 200, MaxConcurrent: 1})
+	first, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "first", SourceKey: "first", EncryptedAccessToken: "one", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 200, MaxConcurrent: 1, ObservedModel: "grok-4.5-build-free",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "second", SourceKey: "second", EncryptedAccessToken: "two", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1})
+	second, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "second", SourceKey: "second", EncryptedAccessToken: "two", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1, ObservedModel: "grok-4.5-build-free",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +293,8 @@ func TestGatewayPreservesRepeatedSystemicForbiddenWithoutCoolingAccounts(t *test
 			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: name,
 			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
 			Priority: 300 - index, MaxConcurrent: 1,
-		})
+		 ObservedModel: "grok-4.5-build-free",
+	})
 		if createErr != nil {
 			t.Fatal(createErr)
 		}
@@ -369,6 +372,7 @@ func TestGatewayQuarantinesBuildPermissionDenialWithoutRefreshing(t *testing.T) 
 		Provider: account.ProviderBuild, Name: "rescue", SourceKey: "rescue",
 		EncryptedAccessToken: "access-old", EncryptedRefreshToken: "refresh-old", ExpiresAt: time.Now().Add(time.Hour),
 		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
+		ObservedModel: "grok-4.5-build-free",
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -18,19 +18,17 @@ type BuildProbeOutcome string
 
 const (
 	BuildProbeModeVerification BuildProbeMode = "verification"
-	BuildProbeModeRecovery     BuildProbeMode = "recovery"
-	BuildProbeModePurge        BuildProbeMode = "purge"
+	BuildProbeModeNormal       BuildProbeMode = "normal"
+	BuildProbeModeDelete       BuildProbeMode = "delete"
+	BuildProbeModeDispatch     BuildProbeMode = "dispatch"
 
-	BuildProbeOutcomeVerified   BuildProbeOutcome = "verified"
-	BuildProbeOutcomeRecovered  BuildProbeOutcome = "recovered"
+	BuildProbeOutcomeVerified  BuildProbeOutcome = "verified"
+	BuildProbeOutcomeNormalOK  BuildProbeOutcome = "normalOk"
+	BuildProbeOutcomeDispatch  BuildProbeOutcome = "dispatchOk"
 	BuildProbeOutcomeCooldown   BuildProbeOutcome = "cooldown"
-	BuildProbeOutcomeQuarantine BuildProbeOutcome = "quarantine"
-	BuildProbeOutcomeRecovery   BuildProbeOutcome = "recovery"
-	BuildProbeOutcomeRetired    BuildProbeOutcome = "retired"
-	BuildProbeOutcomeFailed     BuildProbeOutcome = "failed"
-	BuildProbeOutcomeKept       BuildProbeOutcome = "kept"
-	BuildProbeOutcomeDeletable  BuildProbeOutcome = "deletable"
-	BuildProbeOutcomeDeleted    BuildProbeOutcome = "deleted"
+	BuildProbeOutcomeFailed    BuildProbeOutcome = "failed"
+	BuildProbeOutcomeDeletable BuildProbeOutcome = "deletable"
+	BuildProbeOutcomeDeleted   BuildProbeOutcome = "deleted"
 )
 
 type BuildProbeCurrent struct {
@@ -57,25 +55,19 @@ type BuildProbeStatistics struct {
 	Succeeded           int64
 	Failed              int64
 	Verified            int64
-	Recovered           int64
+	NormalOK            int64
+	DispatchOK          int64
 	CooledDown          int64
-	Quarantined         int64
-	RecoveryQueued      int64
-	Retired             int64
-	Kept                int64
 	Deletable           int64
 	Deleted             int64
 	ConsecutiveFailures int64
 }
 
 type BuildProbePoolSummary struct {
-	Production   int64
+	Dispatch     int64
+	Normal       int64
 	Verification int64
-	Cooldown     int64
-	Quarantine   int64
-	Recovery     int64
-	Retired      int64
-	Disabled     int64
+	Delete       int64
 }
 
 type BuildProbeStatus struct {
@@ -140,53 +132,38 @@ func (s *Service) BuildProbeStatus(ctx context.Context) (BuildProbeStatus, error
 	if err != nil {
 		return status, mapRepositoryError(err)
 	}
-	status.Pools = summarizeBuildProbePools(values, s.now())
+	ids := make([]uint64, 0, len(values))
+	for _, value := range values {
+		ids = append(ids, value.ID)
+	}
+	recoveries, err := s.accounts.GetQuotaRecoveries(ctx, ids)
+	if err != nil {
+		return status, mapRepositoryError(err)
+	}
+	status.Pools = summarizeBuildProbePools(values, recoveries, s.now())
 	return status, nil
 }
 
-func summarizeBuildProbePools(values []accountdomain.Credential, now time.Time) BuildProbePoolSummary {
+func summarizeBuildProbePools(values []accountdomain.Credential, recoveries map[uint64]accountdomain.QuotaRecovery, now time.Time) BuildProbePoolSummary {
 	result := BuildProbePoolSummary{}
 	for _, value := range values {
-		switch AccountPoolAt(value, now) {
-		case "production":
-			result.Production++
-		case "verification":
+		var recovery *accountdomain.QuotaRecovery
+		if item, ok := recoveries[value.ID]; ok {
+			copy := item
+			recovery = &copy
+		}
+		switch AccountPoolAt(value, now, recovery) {
+		case PoolDispatch:
+			result.Dispatch++
+		case PoolNormal:
+			result.Normal++
+		case PoolVerification:
 			result.Verification++
-		case "cooldown":
-			result.Cooldown++
-		case "quarantine":
-			result.Quarantine++
-		case "recovery":
-			result.Recovery++
-		case "retired":
-			result.Retired++
-		case "disabled":
-			result.Disabled++
+		case PoolDelete:
+			result.Delete++
 		}
 	}
 	return result
-}
-
-func AccountPoolAt(value accountdomain.Credential, now time.Time) string {
-	if !value.Enabled {
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(value.LastError)), "retired:") {
-			return "retired"
-		}
-		return "disabled"
-	}
-	if value.AuthStatus == accountdomain.AuthStatusReauthRequired {
-		if value.CooldownUntil != nil && value.CooldownUntil.After(now) {
-			return "recovery"
-		}
-		return "quarantine"
-	}
-	if value.CooldownUntil != nil && value.CooldownUntil.After(now) {
-		return "cooldown"
-	}
-	if value.Provider == accountdomain.ProviderBuild && strings.TrimSpace(value.ObservedModel) == "" {
-		return "verification"
-	}
-	return "production"
 }
 
 func (s *Service) observeBuildProbe(ctx context.Context, candidate accountdomain.Credential, mode BuildProbeMode, run func() (uint64, bool, error)) (uint64, bool, error) {
@@ -199,7 +176,10 @@ func (s *Service) observeBuildProbe(ctx context.Context, candidate accountdomain
 		updated = value
 	}
 	s.buildProbe.finish(updated, mode, startedAt, completedAt, err)
-	if mode == BuildProbeModePurge && (errors.Is(err, errPurgeDeletable) || errors.Is(err, errPurgeDeleted)) {
+	if mode == BuildProbeModeDelete && (errors.Is(err, errPurgeDeletable) || errors.Is(err, errPurgeDeleted)) {
+		return accountID, found, nil
+	}
+	if errors.Is(err, errPurgeDeletable) || errors.Is(err, errPurgeDeleted) {
 		return accountID, found, nil
 	}
 	return accountID, found, err
@@ -256,9 +236,9 @@ func (m *buildProbeMonitor) start(candidate accountdomain.Credential, mode Build
 func (m *buildProbeMonitor) finish(candidate accountdomain.Credential, mode BuildProbeMode, startedAt, completedAt time.Time, probeErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	pool := AccountPoolAt(candidate, completedAt)
-	if mode == BuildProbeModePurge && errors.Is(probeErr, errPurgeDeleted) {
-		pool = "disabled"
+	pool := AccountPoolAt(candidate, completedAt, nil)
+	if errors.Is(probeErr, errPurgeDeleted) {
+		pool = PoolDelete
 	}
 	outcome := buildProbeOutcome(mode, pool, probeErr)
 	errorMessage := ""
@@ -270,41 +250,30 @@ func (m *buildProbeMonitor) finish(candidate accountdomain.Credential, mode Buil
 	}
 	m.statistics.Attempts++
 	switch {
-	case mode == BuildProbeModePurge && outcome == BuildProbeOutcomeKept:
-		m.statistics.Succeeded++
-		m.statistics.Kept++
-		m.statistics.ConsecutiveFailures = 0
-	case mode == BuildProbeModePurge && outcome == BuildProbeOutcomeDeletable:
-		m.statistics.Failed++
-		m.statistics.Deletable++
-		m.statistics.ConsecutiveFailures++
-	case mode == BuildProbeModePurge && outcome == BuildProbeOutcomeDeleted:
+	case errors.Is(probeErr, errPurgeDeleted):
 		m.statistics.Failed++
 		m.statistics.Deleted++
 		m.statistics.ConsecutiveFailures++
-	case mode == BuildProbeModePurge && outcome == BuildProbeOutcomeFailed:
+	case errors.Is(probeErr, errPurgeDeletable) || outcome == BuildProbeOutcomeDeletable:
 		m.statistics.Failed++
+		m.statistics.Deletable++
 		m.statistics.ConsecutiveFailures++
 	case probeErr == nil:
 		m.statistics.Succeeded++
 		m.statistics.ConsecutiveFailures = 0
-		if mode == BuildProbeModeRecovery {
-			m.statistics.Recovered++
-		} else {
+		switch mode {
+		case BuildProbeModeVerification:
 			m.statistics.Verified++
+		case BuildProbeModeNormal:
+			m.statistics.NormalOK++
+		case BuildProbeModeDispatch:
+			m.statistics.DispatchOK++
 		}
 	default:
 		m.statistics.Failed++
 		m.statistics.ConsecutiveFailures++
-		switch outcome {
-		case BuildProbeOutcomeCooldown:
+		if outcome == BuildProbeOutcomeCooldown {
 			m.statistics.CooledDown++
-		case BuildProbeOutcomeQuarantine:
-			m.statistics.Quarantined++
-		case BuildProbeOutcomeRecovery:
-			m.statistics.RecoveryQueued++
-		case BuildProbeOutcomeRetired:
-			m.statistics.Retired++
 		}
 	}
 	result := BuildProbeResult{
@@ -322,36 +291,28 @@ func (m *buildProbeMonitor) finish(candidate accountdomain.Credential, mode Buil
 }
 
 func buildProbeOutcome(mode BuildProbeMode, pool string, probeErr error) BuildProbeOutcome {
-	if mode == BuildProbeModePurge {
-		if probeErr == nil {
-			return BuildProbeOutcomeKept
-		}
-		if errors.Is(probeErr, errPurgeDeleted) {
-			return BuildProbeOutcomeDeleted
-		}
-		if errors.Is(probeErr, errPurgeDeletable) {
+	if errors.Is(probeErr, errPurgeDeleted) {
+		return BuildProbeOutcomeDeleted
+	}
+	if errors.Is(probeErr, errPurgeDeletable) || pool == PoolDelete {
+		if probeErr != nil {
 			return BuildProbeOutcomeDeletable
 		}
-		return BuildProbeOutcomeFailed
 	}
 	if probeErr == nil {
-		if mode == BuildProbeModeRecovery {
-			return BuildProbeOutcomeRecovered
+		switch mode {
+		case BuildProbeModeNormal:
+			return BuildProbeOutcomeNormalOK
+		case BuildProbeModeDispatch:
+			return BuildProbeOutcomeDispatch
+		default:
+			return BuildProbeOutcomeVerified
 		}
-		return BuildProbeOutcomeVerified
 	}
-	switch pool {
-	case "cooldown":
+	if pool == PoolNormal {
 		return BuildProbeOutcomeCooldown
-	case "quarantine":
-		return BuildProbeOutcomeQuarantine
-	case "recovery":
-		return BuildProbeOutcomeRecovery
-	case "retired":
-		return BuildProbeOutcomeRetired
-	default:
-		return BuildProbeOutcomeFailed
 	}
+	return BuildProbeOutcomeFailed
 }
 
 func (m *buildProbeMonitor) snapshot() BuildProbeStatus {

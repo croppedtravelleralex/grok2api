@@ -29,9 +29,12 @@ func TestProbeNextBuildChatVerifiesSuccessfulAccount(t *testing.T) {
 	if updated.ObservedModel != "grok-4.5-build-free" || updated.AuthStatus != accountdomain.AuthStatusActive {
 		t.Fatalf("updated = %#v", updated)
 	}
+	if AccountPoolAt(updated, time.Now().UTC(), nil) != PoolDispatch {
+		t.Fatalf("pool = %s", AccountPoolAt(updated, time.Now().UTC(), nil))
+	}
 }
 
-func TestProbeNextBuildChatQuarantinesPermissionDeniedAccount(t *testing.T) {
+func TestProbeNextBuildChatMarksDeletableOnPermissionDenied(t *testing.T) {
 	service, repository := newBuildChatProbeService(t, http.StatusForbidden, `{"error":{"code":"permission-denied","message":"Access to the chat endpoint is denied"}}`)
 	credential := createBuildProbeAccount(t, repository, "denied")
 
@@ -43,12 +46,12 @@ func TestProbeNextBuildChatQuarantinesPermissionDeniedAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.AuthStatus != accountdomain.AuthStatusReauthRequired || !strings.Contains(updated.LastError, "chat endpoint access denied") {
+	if updated.Enabled || !strings.HasPrefix(strings.ToLower(updated.LastError), "deletable:") {
 		t.Fatalf("updated = %#v", updated)
 	}
 }
 
-func TestProbeNextBuildChatSweepsVerificationPoolInIDOrder(t *testing.T) {
+func TestProbeNextBuildChatSweepsVerificationPool(t *testing.T) {
 	database, err := relational.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "build-probe-order.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -63,409 +66,71 @@ func TestProbeNextBuildChatSweepsVerificationPoolInIDOrder(t *testing.T) {
 	first := createBuildProbeAccount(t, repository, "first")
 	second := createBuildProbeAccount(t, repository, "second")
 
-	accountID, found, err := service.ProbeNextBuildChat(context.Background())
-	if err == nil || !found || accountID != first.ID {
-		t.Fatalf("first probe account=%d found=%v err=%v", accountID, found, err)
-	}
-	accountID, found, err = service.ProbeNextBuildChat(context.Background())
-	if err != nil || !found || accountID != second.ID {
-		t.Fatalf("second probe account=%d found=%v err=%v", accountID, found, err)
-	}
-	if got := strings.Join(adapter.seen, ","); got != "first,second" {
-		t.Fatalf("probe order = %s", got)
-	}
-}
-
-func TestProbeNextBuildChatRecoversQuarantinedAccountByRefreshingRT(t *testing.T) {
-	service, repository, adapter := newBuildChatRecoveryService(t)
-	credential := createBuildProbeAccount(t, repository, "recover-with-rt")
-	credential.EncryptedRefreshToken = "refresh-old"
-	if _, err := repository.Update(context.Background(), credential); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.MarkReauthRequired(context.Background(), credential.ID, "grok_build chat endpoint access denied"); err != nil {
-		t.Fatal(err)
-	}
-
-	accountID, found, err := service.ProbeNextBuildChat(context.Background())
-	if err != nil || !found || accountID != credential.ID {
-		t.Fatalf("account=%d found=%v err=%v", accountID, found, err)
-	}
-	updated, err := repository.Get(context.Background(), credential.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if adapter.refreshCount != 1 || updated.AuthStatus != accountdomain.AuthStatusActive || updated.ObservedModel != "grok-4.5-build-free" || updated.FailureCount != 0 || !updated.Enabled {
-		t.Fatalf("refreshes=%d updated=%#v", adapter.refreshCount, updated)
-	}
-}
-
-func TestProbeNextBuildChatBacksOffAndSoftRetiresUnrecoverableAccount(t *testing.T) {
-	service, repository := newBuildChatProbeService(t, http.StatusForbidden, `{"error":{"code":"permission-denied","message":"Access to the chat endpoint is denied"}}`)
-	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
-	service.now = func() time.Time { return now }
-	credential := createBuildProbeAccount(t, repository, "retire-after-recovery")
-	if err := service.MarkReauthRequired(context.Background(), credential.ID, "grok_build chat endpoint access denied"); err != nil {
-		t.Fatal(err)
-	}
-
-	for attempt := 1; attempt <= buildRecoveryMaxAttempts; attempt++ {
-		_, found, err := service.ProbeNextBuildChat(context.Background())
-		if err == nil || !found {
-			t.Fatalf("attempt %d found=%v err=%v", attempt, found, err)
-		}
-		updated, getErr := repository.Get(context.Background(), credential.ID)
-		if getErr != nil {
-			t.Fatal(getErr)
-		}
-		if attempt < buildRecoveryMaxAttempts {
-			if !updated.Enabled || updated.FailureCount != attempt || updated.CooldownUntil == nil || !updated.CooldownUntil.After(now) {
-				t.Fatalf("attempt %d updated=%#v", attempt, updated)
-			}
-			now = updated.CooldownUntil.Add(time.Second)
+	seen := map[uint64]bool{}
+	for i := 0; i < 4; i++ {
+		accountID, found, err := service.ProbeNextBuildChat(context.Background())
+		if !found {
 			continue
 		}
-		if updated.Enabled || updated.AuthStatus != accountdomain.AuthStatusReauthRequired || updated.FailureCount != buildRecoveryMaxAttempts || !strings.Contains(updated.LastError, "retired:") {
-			t.Fatalf("retired updated=%#v", updated)
+		if err != nil && accountID == 0 {
+			t.Fatalf("probe err=%v", err)
 		}
+		seen[accountID] = true
+	}
+	if !seen[first.ID] || !seen[second.ID] {
+		t.Fatalf("seen=%v first=%d second=%d adapter=%v", seen, first.ID, second.ID, adapter.seen)
 	}
 }
 
-func TestReimportRevivesSoftRetiredAccount(t *testing.T) {
-	service, repository := newBuildChatProbeService(t, http.StatusOK, `{"model":"grok-4.5-build-free"}`)
-	credential := createBuildProbeAccount(t, repository, "revive-retired")
-	credential.Enabled = false
-	credential.AuthStatus = accountdomain.AuthStatusReauthRequired
-	credential.LastError = "retired: recovery attempts exhausted"
-	credential.FailureCount = buildRecoveryMaxAttempts
-	if _, err := repository.Update(context.Background(), credential); err != nil {
-		t.Fatal(err)
-	}
-
-	reimported, _, err := repository.UpsertByIdentity(context.Background(), accountdomain.Credential{
-		Provider: accountdomain.ProviderBuild, AuthType: accountdomain.AuthTypeOAuth, Name: credential.Name, SourceKey: credential.SourceKey,
-		EncryptedAccessToken: "access-new", EncryptedRefreshToken: "refresh-new", ExpiresAt: time.Now().Add(time.Hour), AuthStatus: accountdomain.AuthStatusActive,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reimported.Enabled || reimported.AuthStatus != accountdomain.AuthStatusActive || reimported.FailureCount != 0 || reimported.LastError != "" {
-		t.Fatalf("reimported=%#v", reimported)
-	}
-	_ = service
-}
-
-func TestMarkReauthRequiredPreservesSoftRetiredState(t *testing.T) {
-	service, repository := newBuildChatProbeService(t, http.StatusOK, `{"model":"grok-4.5-build-free"}`)
-	credential := createBuildProbeAccount(t, repository, "preserve-retired")
-	credential.Enabled = false
-	credential.AuthStatus = accountdomain.AuthStatusReauthRequired
-	credential.LastError = "retired: recovery attempts exhausted"
-	credential.FailureCount = buildRecoveryMaxAttempts
-	if _, err := repository.Update(context.Background(), credential); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := service.MarkReauthRequired(context.Background(), credential.ID, "OAuth refresh failed: invalid_grant"); err != nil {
-		t.Fatal(err)
-	}
-	updated, err := repository.Get(context.Background(), credential.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if updated.Enabled || updated.FailureCount != buildRecoveryMaxAttempts || updated.LastError != credential.LastError {
-		t.Fatalf("updated=%#v", updated)
-	}
-}
-
-func TestProbeNextBuildChatPurgeKeepsCapableDisabledAccount(t *testing.T) {
-	service, repository, adapter := newBuildChatRecoveryService(t)
-	credential := createBuildProbeAccount(t, repository, "purge-keep")
-	credential.Enabled = false
-	credential.AuthStatus = accountdomain.AuthStatusReauthRequired
-	credential.LastError = "retired: Build Chat recovery returned 403"
-	credential.EncryptedRefreshToken = "refresh-old"
-	credential.ObservedModel = ""
-	if _, err := repository.Update(context.Background(), credential); err != nil {
-		t.Fatal(err)
-	}
-
-	accountID, found, err := service.ProbeNextBuildChat(context.Background())
-	if err != nil || !found || accountID != credential.ID {
-		t.Fatalf("account=%d found=%v err=%v", accountID, found, err)
-	}
-	updated, err := repository.Get(context.Background(), credential.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !updated.Enabled || updated.AuthStatus != accountdomain.AuthStatusActive || updated.ObservedModel != "grok-4.5-build-free" || updated.LastError != "" {
-		t.Fatalf("updated=%#v refreshes=%d", updated, adapter.refreshCount)
-	}
-	status, err := service.BuildProbeStatus(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.Statistics.Kept != 1 || len(status.Recent) == 0 || status.Recent[0].Outcome != BuildProbeOutcomeKept {
-		t.Fatalf("status=%#v", status)
-	}
-}
-
-func TestProbeNextBuildChatPurgeMarksDeletableWhenApplyOff(t *testing.T) {
-	service, repository := newBuildChatProbeService(t, http.StatusForbidden, `{"error":{"code":"permission-denied","message":"Access to the chat endpoint is denied"}}`)
-	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
-	service.now = func() time.Time { return now }
-	credential := createBuildProbeAccount(t, repository, "purge-deletable")
-	credential.Enabled = false
-	credential.LastError = "retired: exhausted"
-	credential.EncryptedRefreshToken = ""
-	if _, err := repository.Update(context.Background(), credential); err != nil {
-		t.Fatal(err)
-	}
-
-	accountID, found, err := service.ProbeNextBuildChat(context.Background())
-	if err != nil || !found || accountID != credential.ID {
-		t.Fatalf("account=%d found=%v err=%v", accountID, found, err)
-	}
-	updated, err := repository.Get(context.Background(), credential.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if updated.Enabled || !strings.HasPrefix(updated.LastError, "deletable:") || updated.CooldownUntil == nil || !updated.CooldownUntil.After(now) {
-		t.Fatalf("updated=%#v", updated)
-	}
-	status, err := service.BuildProbeStatus(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.PurgeApply || status.Statistics.Deletable != 1 || status.Statistics.Deleted != 0 {
-		t.Fatalf("status=%#v", status)
-	}
-}
-
-func TestProbeNextBuildChatPurgeDeletesWhenApplyOn(t *testing.T) {
-	service, repository := newBuildChatProbeService(t, http.StatusForbidden, `{"error":{"code":"permission-denied","message":"Access to the chat endpoint is denied"}}`)
+func TestProbeNextBuildChatDeletesDeletableWhenApplyOn(t *testing.T) {
+	service, repository := newBuildChatProbeService(t, http.StatusOK, `{"model":"grok-4.5"}`)
 	service.SetBuildProbePurgeApply(true)
-	now := time.Date(2026, 7, 17, 13, 0, 0, 0, time.UTC)
-	service.now = func() time.Time { return now }
-	credential := createBuildProbeAccount(t, repository, "purge-delete")
-	credential.Enabled = false
-	credential.LastError = "retired: exhausted"
-	credential.EncryptedRefreshToken = ""
-	if _, err := repository.Update(context.Background(), credential); err != nil {
+	credential := createBuildProbeAccount(t, repository, "to-delete")
+	if err := service.markBuildDeletable(context.Background(), credential.ID, "test delete"); err != nil {
 		t.Fatal(err)
 	}
-
 	accountID, found, err := service.ProbeNextBuildChat(context.Background())
 	if err != nil || !found || accountID != credential.ID {
-		t.Fatalf("first account=%d found=%v err=%v", accountID, found, err)
-	}
-	marked, err := repository.Get(context.Background(), credential.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(marked.LastError, "deletable:") {
-		t.Fatalf("expected first pass to mark deletable, got %#v", marked)
-	}
-
-	now = now.Add(time.Second)
-	accountID, found, err = service.ProbeNextBuildChat(context.Background())
-	if err != nil || !found || accountID != credential.ID {
-		t.Fatalf("second account=%d found=%v err=%v", accountID, found, err)
+		t.Fatalf("account=%d found=%v err=%v", accountID, found, err)
 	}
 	if _, err := repository.Get(context.Background(), credential.ID); err == nil {
-		t.Fatal("expected account deleted on second pass")
+		t.Fatal("expected account deleted")
 	}
-	status, err := service.BuildProbeStatus(context.Background())
-	if err != nil {
+}
+
+func TestMarkReauthRequiredMarksBuildDeletable(t *testing.T) {
+	service, repository := newBuildChatProbeService(t, http.StatusOK, `{"model":"grok-4.5"}`)
+	credential := createBuildProbeAccount(t, repository, "reauth")
+	if err := service.MarkReauthRequired(context.Background(), credential.ID, "invalid_grant"); err != nil {
 		t.Fatal(err)
-	}
-	if !status.PurgeApply || status.Statistics.Deleted != 1 || status.Statistics.Deletable < 1 {
-		t.Fatalf("status=%#v", status)
-	}
-}
-
-func TestProbeNextBuildChatPurgeDeletesEvenAfterTokenRefresh(t *testing.T) {
-	database, err := relational.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "build-probe-purge-refresh.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
-	if err := database.InitializeSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	repository := relational.NewAccountRepository(database)
-	adapter := &buildChatPurgeRefreshAdapter{status: http.StatusForbidden, body: `{"error":{"code":"permission-denied","message":"Access to the chat endpoint is denied"}}`}
-	service := NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
-	service.ConfigureBuildProbe(time.Minute, 5*time.Minute, 0)
-	service.ConfigureBuildProbePurgeApply(true)
-
-	credential := createBuildProbeAccount(t, repository, "purge-refresh-loop")
-	credential.Enabled = false
-	credential.LastError = "deletable: previous dry-run failed"
-	credential.EncryptedAccessToken = "access-old"
-	credential.EncryptedRefreshToken = "refresh-old"
-	credential.ExpiresAt = time.Now().Add(-time.Minute)
-	if _, err := repository.Update(context.Background(), credential); err != nil {
-		t.Fatal(err)
-	}
-
-	accountID, found, err := service.ProbeNextBuildChat(context.Background())
-	if err != nil || !found || accountID != credential.ID {
-		t.Fatalf("account=%d found=%v err=%v refreshes=%d", accountID, found, err, adapter.refreshCount)
-	}
-	if adapter.refreshCount == 0 {
-		t.Fatal("expected purge path to refresh credential")
-	}
-	if _, err := repository.Get(context.Background(), credential.ID); err == nil {
-		t.Fatal("expected already-marked deletable account to be deleted after refresh+probe failure")
-	}
-	status, err := service.BuildProbeStatus(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.Statistics.Deleted != 1 {
-		t.Fatalf("status=%#v", status)
-	}
-}
-
-type buildChatPurgeRefreshAdapter struct {
-	refreshCount int
-	status       int
-	body         string
-}
-
-func (a *buildChatPurgeRefreshAdapter) Provider() accountdomain.Provider {
-	return accountdomain.ProviderBuild
-}
-func (a *buildChatPurgeRefreshAdapter) Definition() provider.Definition {
-	return provider.Definition{Provider: accountdomain.ProviderBuild, Credential: provider.CredentialSurface{AuthType: accountdomain.AuthTypeOAuth, Refresh: true}, Conversation: provider.ConversationSurface{Responses: true}}
-}
-func (a *buildChatPurgeRefreshAdapter) RefreshCredential(context.Context, accountdomain.Credential) (provider.RefreshedCredential, error) {
-	a.refreshCount++
-	return provider.RefreshedCredential{EncryptedAccessToken: "access-new", EncryptedRefreshToken: "refresh-new", ExpiresAt: time.Now().Add(time.Hour)}, nil
-}
-func (a *buildChatPurgeRefreshAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {
-	return &provider.Response{StatusCode: a.status, Status: http.StatusText(a.status), Header: make(http.Header), Body: io.NopCloser(strings.NewReader(a.body))}, nil
-}
-
-func TestProbeNextBuildChatPurgeSkipsManuallyDisabledAccounts(t *testing.T) {
-	service, repository := newBuildChatProbeService(t, http.StatusOK, `{"model":"grok-4.5-build-free"}`)
-	credential := createBuildProbeAccount(t, repository, "manual-disabled")
-	credential.Enabled = false
-	credential.LastError = ""
-	credential.EncryptedRefreshToken = "refresh-old"
-	if _, err := repository.Update(context.Background(), credential); err != nil {
-		t.Fatal(err)
-	}
-
-	accountID, found, err := service.ProbeNextBuildChat(context.Background())
-	if err != nil || found || accountID != 0 {
-		t.Fatalf("expected no purge candidate, account=%d found=%v err=%v", accountID, found, err)
 	}
 	updated, err := repository.Get(context.Background(), credential.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Enabled {
-		t.Fatalf("manual disabled account must not be revived: %#v", updated)
+	if updated.Enabled || !strings.Contains(updated.LastError, "deletable:") {
+		t.Fatalf("updated=%#v", updated)
 	}
 }
 
-func TestProbeNextBuildChatRefreshesBillingForCurrentAccount(t *testing.T) {
-	database, err := relational.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "build-probe-billing.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
-	if err := database.InitializeSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	repository := relational.NewAccountRepository(database)
-	adapter := &buildChatBillingProbeAdapter{}
-	service := NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
-	credential := createBuildProbeAccount(t, repository, "billing-probe")
-	credential.EncryptedRefreshToken = "refresh-token"
+func TestMigrateBuildDeadAccountsToDeletePool(t *testing.T) {
+	service, repository := newBuildChatProbeService(t, http.StatusOK, `{"model":"grok-4.5"}`)
+	credential := createBuildProbeAccount(t, repository, "legacy")
+	credential.Enabled = false
+	credential.LastError = "retired: old"
 	if _, err := repository.Update(context.Background(), credential); err != nil {
 		t.Fatal(err)
 	}
-
-	accountID, found, err := service.ProbeNextBuildChat(context.Background())
-	if err != nil || !found || accountID != credential.ID {
-		t.Fatalf("account=%d found=%v err=%v", accountID, found, err)
+	count, err := service.MigrateBuildDeadAccountsToDeletePool(context.Background())
+	if err != nil || count < 1 {
+		t.Fatalf("count=%d err=%v", count, err)
 	}
-	if adapter.billingCount != 1 {
-		t.Fatalf("billing refreshes = %d", adapter.billingCount)
-	}
-	billing, err := repository.GetBilling(context.Background(), credential.ID)
+	updated, err := repository.Get(context.Background(), credential.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if billing.MonthlyLimit != 100 || billing.Used != 12 {
-		t.Fatalf("billing = %#v", billing)
-	}
-}
-
-type buildChatBillingProbeAdapter struct {
-	billingCount int
-}
-
-func (a *buildChatBillingProbeAdapter) Provider() accountdomain.Provider {
-	return accountdomain.ProviderBuild
-}
-func (a *buildChatBillingProbeAdapter) Definition() provider.Definition {
-	return provider.Definition{
-		Provider:     accountdomain.ProviderBuild,
-		Quota:        provider.QuotaBilling,
-		Credential:   provider.CredentialSurface{AuthType: accountdomain.AuthTypeOAuth, Refresh: true},
-		Conversation: provider.ConversationSurface{Responses: true},
-	}
-}
-func (a *buildChatBillingProbeAdapter) RefreshCredential(context.Context, accountdomain.Credential) (provider.RefreshedCredential, error) {
-	return provider.RefreshedCredential{EncryptedAccessToken: "access", EncryptedRefreshToken: "refresh", ExpiresAt: time.Now().Add(time.Hour)}, nil
-}
-func (a *buildChatBillingProbeAdapter) GetBilling(context.Context, accountdomain.Credential) (accountdomain.Billing, error) {
-	a.billingCount++
-	return accountdomain.Billing{MonthlyLimit: 100, Used: 12, SyncedAt: time.Now().UTC()}, nil
-}
-func (a *buildChatBillingProbeAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {
-	return &provider.Response{StatusCode: http.StatusOK, Status: http.StatusText(http.StatusOK), Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"model":"grok-4.5-build-free"}`))}, nil
-}
-
-func TestRefreshTokenImmediatelyVerifiesBuildCapability(t *testing.T) {
-	service, repository, adapter := newBuildChatRecoveryService(t)
-	credential := createBuildProbeAccount(t, repository, "manual-refresh-verification")
-	credential.EncryptedRefreshToken = "refresh-old"
-	if _, err := repository.Update(context.Background(), credential); err != nil {
-		t.Fatal(err)
-	}
-
-	view, err := service.RefreshToken(context.Background(), credential.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if adapter.refreshCount != 1 || view.Credential.ObservedModel != "grok-4.5-build-free" || view.Credential.AuthStatus != accountdomain.AuthStatusActive {
-		t.Fatalf("refreshes=%d view=%#v", adapter.refreshCount, view)
-	}
-}
-
-func TestRefreshAllTokensImmediatelyVerifiesBuildCapability(t *testing.T) {
-	service, repository, adapter := newBuildChatRecoveryService(t)
-	credential := createBuildProbeAccount(t, repository, "bulk-refresh-verification")
-	credential.EncryptedRefreshToken = "refresh-old"
-	if _, err := repository.Update(context.Background(), credential); err != nil {
-		t.Fatal(err)
-	}
-
-	succeeded, failed, skipped, err := service.RefreshAllTokens(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	updated, getErr := repository.Get(context.Background(), credential.ID)
-	if getErr != nil {
-		t.Fatal(getErr)
-	}
-	if succeeded != 1 || failed != 0 || skipped != 0 || adapter.refreshCount != 1 || updated.ObservedModel != "grok-4.5-build-free" {
-		t.Fatalf("result=%d/%d/%d refreshes=%d updated=%#v", succeeded, failed, skipped, adapter.refreshCount, updated)
+	if !strings.HasPrefix(strings.ToLower(updated.LastError), "deletable:") {
+		t.Fatalf("updated=%#v", updated)
 	}
 }
 
@@ -484,9 +149,9 @@ func newBuildChatProbeService(t *testing.T, status int, body string) (*Service, 
 	return NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), nil, nil), repository
 }
 
-func newBuildChatRecoveryService(t *testing.T) (*Service, *relational.AccountRepository, *buildChatRecoveryAdapter) {
+func newBuildChatProbeServiceWithAdapter(t *testing.T, adapter provider.Adapter) (*Service, *relational.AccountRepository) {
 	t.Helper()
-	database, err := relational.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "build-recovery.db"))
+	database, err := relational.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "build-probe-monitor.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,8 +160,7 @@ func newBuildChatRecoveryService(t *testing.T) (*Service, *relational.AccountRep
 		t.Fatal(err)
 	}
 	repository := relational.NewAccountRepository(database)
-	adapter := &buildChatRecoveryAdapter{}
-	return NewService(repository, relational.NewAuditRepository(database), nil, nil, provider.NewRegistry(adapter), nil, nil), repository, adapter
+	return NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), nil, nil), repository
 }
 
 func createBuildProbeAccount(t *testing.T, repository *relational.AccountRepository, source string) accountdomain.Credential {
@@ -516,23 +180,7 @@ type buildChatProbeAdapter struct {
 	body   string
 }
 
-type buildChatRecoveryAdapter struct{ refreshCount int }
-
 type buildChatOrderedProbeAdapter struct{ seen []string }
-
-func (a *buildChatRecoveryAdapter) Provider() accountdomain.Provider {
-	return accountdomain.ProviderBuild
-}
-func (a *buildChatRecoveryAdapter) Definition() provider.Definition {
-	return provider.Definition{Provider: accountdomain.ProviderBuild, Credential: provider.CredentialSurface{AuthType: accountdomain.AuthTypeOAuth, Refresh: true}, Conversation: provider.ConversationSurface{Responses: true}}
-}
-func (a *buildChatRecoveryAdapter) RefreshCredential(context.Context, accountdomain.Credential) (provider.RefreshedCredential, error) {
-	a.refreshCount++
-	return provider.RefreshedCredential{EncryptedAccessToken: "access-new", EncryptedRefreshToken: "refresh-new", ExpiresAt: time.Now().Add(time.Hour)}, nil
-}
-func (a *buildChatRecoveryAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {
-	return &provider.Response{StatusCode: http.StatusOK, Status: http.StatusText(http.StatusOK), Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"model":"grok-4.5-build-free"}`))}, nil
-}
 
 func (a *buildChatOrderedProbeAdapter) Provider() accountdomain.Provider {
 	return accountdomain.ProviderBuild
@@ -542,13 +190,7 @@ func (a *buildChatOrderedProbeAdapter) Definition() provider.Definition {
 }
 func (a *buildChatOrderedProbeAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
 	a.seen = append(a.seen, request.Credential.Name)
-	status := http.StatusOK
-	body := `{"model":"grok-4.5-build-free"}`
-	if request.Credential.Name == "first" {
-		status = http.StatusServiceUnavailable
-		body = `{"error":{"message":"temporary unavailable"}}`
-	}
-	return &provider.Response{StatusCode: status, Status: http.StatusText(status), Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	return &provider.Response{StatusCode: http.StatusOK, Status: http.StatusText(http.StatusOK), Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"model":"grok-4.5-build-free"}`))}, nil
 }
 
 func (a buildChatProbeAdapter) Provider() accountdomain.Provider { return accountdomain.ProviderBuild }

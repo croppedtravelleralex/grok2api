@@ -237,6 +237,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	auditService := auditapp.NewService(auditRepo, logger, cfg.Audit.BufferSize, cfg.Audit.BatchSize, cfg.Audit.FlushInterval.Value())
 	dashboardService := dashboardapp.NewService(dashboardRepo)
 	selector := gateway.NewSelector(accountRepo, concurrency, sticky, providers, cfg.Routing.StickyTTL.Value(), cfg.Routing.CooldownBase.Value(), cfg.Routing.CooldownMax.Value(), cfg.Routing.CapacityWait.Value())
+	selector.SetBuildDispatchSource(accountService)
 	gatewayService := gateway.NewService(modelService, auditService, accountService, clientKeyService, providers, selector, responseRepo, cfg.Routing.MaxAttempts)
 	gatewayService.SetLogger(logger)
 	gatewayService.ConfigureMedia(mediaJobRepo, cfg.Provider.Web.MediaConcurrency)
@@ -427,6 +428,10 @@ func (a *Application) Run(ctx context.Context) error {
 	})
 	startBackground("build_chat_capability_probe", func(taskCtx context.Context) error {
 		a.runBuildChatProbe(taskCtx)
+		return nil
+	})
+	startBackground("build_dispatch_probe", func(taskCtx context.Context) error {
+		a.runBuildDispatchProbe(taskCtx)
 		return nil
 	})
 	startBackground("video_recovery", func(taskCtx context.Context) error {

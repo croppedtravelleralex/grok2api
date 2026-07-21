@@ -57,9 +57,9 @@ export function BuildProbePanel({ onCompleted }: BuildProbePanelProps) {
   }
 
   const poolTotal = Object.values(status.pools).reduce((sum, value) => sum + value, 0);
-  const productionPercent = poolTotal > 0 ? Math.round((status.pools.production / poolTotal) * 100) : 0;
-  const handledSuccessfully = status.statistics.verified + status.statistics.recovered + status.statistics.kept;
-  const poolActions = status.statistics.cooledDown + status.statistics.quarantined + status.statistics.recoveryQueued + status.statistics.retired + status.statistics.deletable + status.statistics.deleted;
+  const dispatchPercent = poolTotal > 0 ? Math.round((status.pools.dispatch / poolTotal) * 100) : 0;
+  const handledSuccessfully = status.statistics.verified + status.statistics.normalOk + status.statistics.dispatchOk;
+  const poolActions = status.statistics.cooledDown + status.statistics.deletable + status.statistics.deleted;
   const currentLabel = status.current?.accountName || status.recent[0]?.accountName || t("buildProbe.noAccount");
   const statusLabel = !status.enabled ? t("buildProbe.disabled") : status.running ? t("buildProbe.running") : t("buildProbe.waiting");
 
@@ -113,10 +113,10 @@ export function BuildProbePanel({ onCompleted }: BuildProbePanelProps) {
             <ShieldCheck className="size-5 shrink-0 text-emerald-600" />
           </div>
           <div className="mt-4 flex items-center justify-between text-[11px] text-muted-foreground">
-            <span>{t("buildProbe.productionCoverage")}</span><span className="tabular-nums">{status.pools.production} / {poolTotal} · {productionPercent}%</span>
+            <span>{t("buildProbe.dispatchCoverage")}</span><span className="tabular-nums">{status.pools.dispatch} / {poolTotal} · {dispatchPercent}%</span>
           </div>
           <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
-            <div className="h-full rounded-full bg-emerald-500 transition-[width] duration-500 motion-reduce:transition-none" style={{ width: `${productionPercent}%` }} />
+            <div className="h-full rounded-full bg-emerald-500 transition-[width] duration-500 motion-reduce:transition-none" style={{ width: `${dispatchPercent}%` }} />
           </div>
         </div>
 
@@ -128,13 +128,12 @@ export function BuildProbePanel({ onCompleted }: BuildProbePanelProps) {
         </div>
       </div>
 
-      <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-6">
-        <ProbeMetric label={t("buildProbe.purgeKept")} value={status.statistics.kept} locale={i18n.language} tone="success" />
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <ProbeMetric label={t("buildProbe.purgeDeletable")} value={status.statistics.deletable} locale={i18n.language} tone="warning" />
         <ProbeMetric label={t("buildProbe.purgeDeleted")} value={status.statistics.deleted} locale={i18n.language} tone="danger" />
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-7">
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
         {Object.entries(status.pools).map(([pool, count]) => (
           <div key={pool} className="rounded-md bg-muted/25 px-3 py-2">
             <div className="text-[11px] text-muted-foreground">{t(`buildProbe.pool.${pool}`)}</div>
@@ -172,7 +171,7 @@ function ProbeMetric({ icon, label, value, locale, tone = "default" }: { icon?: 
 }
 
 function OutcomeBadge({ outcome, label }: { outcome: BuildProbeOutcome; label: string }) {
-  const success = outcome === "verified" || outcome === "recovered" || outcome === "kept";
-  const warning = outcome === "cooldown" || outcome === "recovery" || outcome === "deletable";
+  const success = outcome === "verified" || outcome === "normalOk" || outcome === "dispatchOk";
+  const warning = outcome === "cooldown" || outcome === "deletable";
   return <Badge variant={success ? "default" : warning ? "secondary" : "destructive"} className={cn("shrink-0", success && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300", warning && "bg-amber-500/10 text-amber-700 dark:text-amber-300")}>{label}</Badge>;
 }

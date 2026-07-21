@@ -67,7 +67,7 @@ export type AccountDTO = {
   teamId?: string;
   enabled: boolean;
   authStatus: "active" | "reauthRequired";
-  pool: "production" | "verification" | "cooldown" | "quarantine" | "recovery" | "retired" | "disabled";
+  pool: "dispatch" | "normal" | "verification" | "delete";
   recoveryAttempts: number;
   nextRecoveryAt?: string;
   expiresAt?: string;
@@ -142,8 +142,8 @@ export type AccountAnalyticsDTO = {
   points: AccountAnalyticsPointDTO[];
 };
 
-export type BuildProbeMode = "verification" | "recovery" | "purge";
-export type BuildProbeOutcome = "verified" | "recovered" | "cooldown" | "quarantine" | "recovery" | "retired" | "failed" | "kept" | "deletable" | "deleted";
+export type BuildProbeMode = "verification" | "normal" | "delete" | "dispatch";
+export type BuildProbeOutcome = "verified" | "normalOk" | "dispatchOk" | "cooldown" | "failed" | "deletable" | "deleted";
 
 export type BuildProbeStatusDTO = {
   enabled: boolean;
@@ -162,24 +162,18 @@ export type BuildProbeStatusDTO = {
     succeeded: number;
     failed: number;
     verified: number;
-    recovered: number;
+    normalOk: number;
+    dispatchOk: number;
     cooledDown: number;
-    quarantined: number;
-    recoveryQueued: number;
-    retired: number;
-    kept: number;
     deletable: number;
     deleted: number;
     consecutiveFailures: number;
   };
   pools: {
-    production: number;
+    dispatch: number;
+    normal: number;
     verification: number;
-    cooldown: number;
-    quarantine: number;
-    recovery: number;
-    retired: number;
-    disabled: number;
+    delete: number;
   };
   recent: Array<{
     accountId: string;
@@ -251,7 +245,7 @@ const quotaWindowValidator = hasShape({
 const accountValidator = hasShape({
   id: isString, provider: isOneOf("grok_build", "grok_web", "grok_console"), authType: isOneOf("oauth", "sso"), webTier: isOptional(isOneOf("auto", "basic", "super", "heavy")),
   webTierSyncedAt: isOptional(isString), name: isString, email: isOptional(isString), userId: isOptional(isString), teamId: isOptional(isString),
-  enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), pool: isOneOf("production", "verification", "cooldown", "quarantine", "recovery", "retired", "disabled"),
+  enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), pool: isOneOf("dispatch", "normal", "verification", "delete"),
   recoveryAttempts: isNumber, nextRecoveryAt: isOptional(isString), expiresAt: isOptional(isString), refreshable: isBoolean,
   refreshDueAt: isOptional(isString), lastRefreshAt: isOptional(isString), refreshFailureCount: isNumber,
   lastRefreshErrorCode: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
@@ -268,9 +262,9 @@ const decodeAccountSummary = createObjectDecoder<AccountSummaryDTO>("account sum
   recovery: hasShape({ cooldown: isNumber, waitingReset: isNumber, probing: isNumber }),
   issues: hasShape({ disabled: isNumber, reauthRequired: isNumber }),
 });
-const buildProbeModeValidator = isOneOf("verification", "recovery", "purge");
-const buildProbeOutcomeValidator = isOneOf("verified", "recovered", "cooldown", "quarantine", "recovery", "retired", "failed", "kept", "deletable", "deleted");
-const buildProbePoolValidator = isOneOf("production", "verification", "cooldown", "quarantine", "recovery", "retired", "disabled");
+const buildProbeModeValidator = isOneOf("verification", "normal", "delete", "dispatch");
+const buildProbeOutcomeValidator = isOneOf("verified", "normalOk", "dispatchOk", "cooldown", "failed", "deletable", "deleted");
+const buildProbePoolValidator = isOneOf("dispatch", "normal", "verification", "delete");
 const buildProbeCurrentValidator = hasShape({ accountId: isString, accountName: isString, mode: buildProbeModeValidator, startedAt: isString });
 const buildProbeResultValidator = hasShape({
   accountId: isString, accountName: isString, mode: buildProbeModeValidator, outcome: buildProbeOutcomeValidator, pool: buildProbePoolValidator,
@@ -281,10 +275,10 @@ const decodeBuildProbeStatus = createObjectDecoder<BuildProbeStatusDTO>("build p
   startedAt: isOptional(isString), nextRunAt: isOptional(isString), lastCompletedAt: isOptional(isString), lastError: isString,
   current: isOptional(buildProbeCurrentValidator),
   statistics: hasShape({
-    attempts: isNumber, succeeded: isNumber, failed: isNumber, verified: isNumber, recovered: isNumber, cooledDown: isNumber,
-    quarantined: isNumber, recoveryQueued: isNumber, retired: isNumber, kept: isNumber, deletable: isNumber, deleted: isNumber, consecutiveFailures: isNumber,
+    attempts: isNumber, succeeded: isNumber, failed: isNumber, verified: isNumber, normalOk: isNumber, dispatchOk: isNumber, cooledDown: isNumber,
+    deletable: isNumber, deleted: isNumber, consecutiveFailures: isNumber,
   }),
-  pools: hasShape({ production: isNumber, verification: isNumber, cooldown: isNumber, quarantine: isNumber, recovery: isNumber, retired: isNumber, disabled: isNumber }),
+  pools: hasShape({ dispatch: isNumber, normal: isNumber, verification: isNumber, delete: isNumber }),
   recent: isArrayOf(buildProbeResultValidator),
 });
 const accountAnalyticsPointValidator = hasShape({
