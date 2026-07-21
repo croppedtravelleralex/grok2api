@@ -31,13 +31,14 @@ type WebPoolSnapshot struct {
 }
 
 type webPoolCandidate struct {
-	id       uint64
-	priority int
-	fastRem  int
-	autoRem  int
-	enabled  bool
-	active   bool
-	cooling  bool
+	id             uint64
+	priority       int
+	fastRem        int
+	autoRem        int
+	enabled        bool
+	active         bool
+	cooling        bool // 账号级 cooldown_until
+	imagineBlocked bool // grok-imagine-image model block（只挡图池）
 }
 
 // ReconcileWebPools 只做「无额度/冷却出池」：在当前已启用账号里踢掉不合格号。
@@ -68,16 +69,18 @@ func (s *Service) ReconcileWebPools(ctx context.Context) (WebPoolSnapshot, error
 	candidates := make([]webPoolCandidate, 0, len(accounts))
 	for _, value := range accounts {
 		fastRem, autoRem := quotaRemaining(windowsByAccount[value.ID], "fast"), quotaRemaining(windowsByAccount[value.ID], "auto")
-		cooling := value.CooldownUntil != nil && value.CooldownUntil.After(now)
+		accountCooling := value.CooldownUntil != nil && value.CooldownUntil.After(now)
 		candidates = append(candidates, webPoolCandidate{
 			id: value.ID, priority: value.Priority, fastRem: fastRem, autoRem: autoRem,
 			enabled: value.Enabled, active: value.AuthStatus == accountdomain.AuthStatusActive,
-			cooling: cooling || blocks[value.ID],
+			// cooling=账号级冷却；Imagine model block 单独看，只挡图池，不整号出池。
+			cooling: accountCooling,
+			imagineBlocked: blocks[value.ID],
 		})
 	}
 
 	imageEligible := func(c webPoolCandidate) bool {
-		return c.enabled && c.active && !c.cooling && c.fastRem > 0
+		return c.enabled && c.active && !c.cooling && !c.imagineBlocked && c.fastRem > 0
 	}
 	chatEligible := func(c webPoolCandidate) bool {
 		return c.enabled && c.active && !c.cooling && (c.fastRem > 0 || c.autoRem > 0)
@@ -102,7 +105,8 @@ func (s *Service) ReconcileWebPools(ctx context.Context) (WebPoolSnapshot, error
 		return a.id < b.id
 	})
 
-	// 出池：已启用但不具备对话/图任一资格 → disable。绝不自动 enable。
+	// 出池：已启用但 auth 失效 / 账号冷却 / 对话额度耗尽 → disable。绝不自动 enable。
+	// Imagine model block 不触发整号 disable（否则 block 到期后无法自动回池）。
 	toDisable := make([]uint64, 0)
 	enabledNow := make([]uint64, 0)
 	for _, candidate := range candidates {
@@ -164,16 +168,16 @@ func (s *Service) WebPools(ctx context.Context) (WebPoolSnapshot, error) {
 	candidates := make([]webPoolCandidate, 0, len(accounts))
 	for _, value := range accounts {
 		fastRem, autoRem := quotaRemaining(windowsByAccount[value.ID], "fast"), quotaRemaining(windowsByAccount[value.ID], "auto")
-		cooling := value.CooldownUntil != nil && value.CooldownUntil.After(now)
+		accountCooling := value.CooldownUntil != nil && value.CooldownUntil.After(now)
 		candidates = append(candidates, webPoolCandidate{
 			id: value.ID, priority: value.Priority, fastRem: fastRem, autoRem: autoRem,
 			enabled: value.Enabled, active: value.AuthStatus == accountdomain.AuthStatusActive,
-			cooling: cooling || blocks[value.ID],
+			cooling: accountCooling, imagineBlocked: blocks[value.ID],
 		})
 	}
 	// 只读快照同样只在当前 enabled 集合内投影，避免把未进池账号显示成调度位。
 	imageIDs := selectWebPoolIDs(candidates, webImagePoolCap, func(c webPoolCandidate) bool {
-		return c.enabled && c.active && !c.cooling && c.fastRem > 0
+		return c.enabled && c.active && !c.cooling && !c.imagineBlocked && c.fastRem > 0
 	}, func(a, b webPoolCandidate) bool {
 		if a.priority != b.priority {
 			return a.priority > b.priority
