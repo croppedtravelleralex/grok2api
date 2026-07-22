@@ -166,8 +166,8 @@ recent: 以 (dispatch, dispatchOk) 为主
 
 | ID | 标题 | 验收标准 | 状态 |
 | --- | --- | --- | --- |
-| **FP-001** | Selector 热路径去全表：按 `DispatchIndex` 取前 k ID 再批量加载候选 | Build `Acquire` 不再每次全表 `ListEnabled`；压测或单测证明候选加载 ≤k | Todo |
-| **FP-002** | DispatchIndex 写入真实额度（billing/recovery） | Upsert 含 `QuotaKnown/QuotaRemaining`；同 priority 下高剩余优先 | Todo |
+| **FP-001** | Selector 热路径去全表：按 `DispatchIndex` 取前 k ID 再批量加载候选 | Build `Acquire` 不再每次全表 `ListEnabled`；压测或单测证明候选加载 ≤k | **Done** |
+| **FP-002** | DispatchIndex 写入真实额度（billing/recovery） | Upsert 含 `QuotaKnown/QuotaRemaining`；同 priority 下高剩余优先 | **Done** |
 | **FP-003** | 探针 lane 计数进 `build-probe` statistics | API 含 verification/normal/delete/dispatch 尝试次数；验证空时 delete:normal≈3:7 可观测 | **Done**（`statistics.laneAttempts`） |
 | **FP-004** | 删除无用恢复/purge 仓储 API | 移除或标注废弃 `ListRecoveryCandidates`/`ListPurgeCandidates`；全仓无调用 | **Done**（代码已无，2026-07-22 复核） |
 | **FP-005** | 同步过时 backlog 文案 | 更新 BE-005/FE-003/02-current-state 残留「七池/恢复池」描述 | Todo |

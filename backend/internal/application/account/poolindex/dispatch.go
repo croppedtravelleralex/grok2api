@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/google/btree"
 )
 
@@ -45,6 +46,38 @@ func keyOf(entry DispatchEntry) dispatchKey {
 		priority: entry.Priority, quotaRemaining: entry.QuotaRemaining, quotaKnown: entry.QuotaKnown,
 		lastSelectedAt: entry.LastSelectedAt, id: entry.ID,
 	}
+}
+
+// DispatchQuota 从 billing 快照或活跃 recovery 推导调度额度序字段。
+func DispatchQuota(billing *accountdomain.Billing, recovery *accountdomain.QuotaRecovery) (known bool, remaining float64) {
+	if billing != nil {
+		switch {
+		case billing.MonthlyLimit > 0:
+			return true, billing.Remaining()
+		case billing.OnDemandCap > 0:
+			used := billing.OnDemandUsed
+			if used == 0 && billing.CreditUsagePercent > 0 {
+				used = billing.OnDemandCap * billing.CreditUsagePercent / 100
+			}
+			rem := billing.OnDemandCap - used
+			if rem < 0 {
+				rem = 0
+			}
+			return true, rem
+		case billing.PrepaidBalance > 0:
+			return true, billing.PrepaidBalance
+		}
+	}
+	if recovery != nil &&
+		recovery.Status == accountdomain.QuotaRecoveryStatusActive &&
+		recovery.ConfirmedLimit > 0 {
+		rem := float64(recovery.ConfirmedLimit - recovery.ConfirmedUsed)
+		if rem < 0 {
+			rem = 0
+		}
+		return true, rem
+	}
+	return false, 0
 }
 
 type dispatchItem struct {

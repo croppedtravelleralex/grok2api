@@ -45,6 +45,11 @@ func (s *Service) ensurePoolIndexWarm(ctx context.Context) {
 	}
 }
 
+// EnsurePoolIndexWarm 在索引全空时从 DB 重建四池索引（Selector 热路径兜底）。
+func (s *Service) EnsurePoolIndexWarm(ctx context.Context) {
+	s.ensurePoolIndexWarm(ctx)
+}
+
 // RebuildBuildPoolIndex 从数据库重建四池热路径索引。
 func (s *Service) RebuildBuildPoolIndex(ctx context.Context) error {
 	s.initPoolIndex()
@@ -63,6 +68,10 @@ func (s *Service) RebuildBuildPoolIndex(ctx context.Context) error {
 	if err != nil {
 		return mapRepositoryError(err)
 	}
+	billings, err := s.accounts.GetBillings(ctx, ids)
+	if err != nil {
+		return mapRepositoryError(err)
+	}
 	s.buildProbeMu.Lock()
 	s.dispatchIndex = poolindex.NewDispatchIndex()
 	s.verifyHeap = poolindex.NewDueHeap()
@@ -77,7 +86,12 @@ func (s *Service) RebuildBuildPoolIndex(ctx context.Context) error {
 			copy := item
 			recovery = &copy
 		}
-		s.indexAccountLocked(value, recovery, now)
+		var billing *accountdomain.Billing
+		if item, ok := billings[value.ID]; ok {
+			copy := item
+			billing = &copy
+		}
+		s.indexAccountLocked(value, recovery, billing, now)
 	}
 	s.buildProbeMu.Unlock()
 	return nil
@@ -117,7 +131,7 @@ func (s *Service) MigrateBuildDeadAccountsToDeletePool(ctx context.Context) (int
 	return migrated, nil
 }
 
-func (s *Service) indexAccountLocked(value accountdomain.Credential, recovery *accountdomain.QuotaRecovery, now time.Time) {
+func (s *Service) indexAccountLocked(value accountdomain.Credential, recovery *accountdomain.QuotaRecovery, billing *accountdomain.Billing, now time.Time) {
 	s.verifyHeap.Remove(value.ID)
 	s.normalHeap.Remove(value.ID)
 	s.deleteHeap.Remove(value.ID)
@@ -146,8 +160,9 @@ func (s *Service) indexAccountLocked(value accountdomain.Credential, recovery *a
 		if value.LastUsedAt != nil {
 			lastSelected = *value.LastUsedAt
 		}
+		quotaKnown, quotaRemaining := poolindex.DispatchQuota(billing, recovery)
 		s.dispatchIndex.Upsert(poolindex.DispatchEntry{
-			ID: value.ID, Priority: value.Priority, QuotaKnown: false, QuotaRemaining: 0, LastSelectedAt: lastSelected,
+			ID: value.ID, Priority: value.Priority, QuotaKnown: quotaKnown, QuotaRemaining: quotaRemaining, LastSelectedAt: lastSelected,
 		})
 		probeAt := value.UpdatedAt
 		if probeAt.IsZero() {
@@ -177,8 +192,17 @@ func (s *Service) syncAccountIndex(ctx context.Context, id uint64) {
 			recovery = &copy
 		}
 	}
+	var billing *accountdomain.Billing
+	if AccountPoolAt(value, s.now(), recovery) == PoolDispatch {
+		if items, err := s.accounts.GetBillings(ctx, []uint64{id}); err == nil {
+			if item, ok := items[id]; ok {
+				copy := item
+				billing = &copy
+			}
+		}
+	}
 	s.buildProbeMu.Lock()
-	s.indexAccountLocked(value, recovery, s.now())
+	s.indexAccountLocked(value, recovery, billing, s.now())
 	s.buildProbeMu.Unlock()
 }
 
@@ -205,6 +229,14 @@ func AccountPoolAt(value accountdomain.Credential, now time.Time, recovery *acco
 		return PoolNormal
 	}
 	return PoolDispatch
+}
+
+// DueNormalProbeIDs 返回到期普通池账号 ID，供 Selector 合并 quota probe 候选。
+func (s *Service) DueNormalProbeIDs(now time.Time, limit int) []uint64 {
+	s.initPoolIndex()
+	s.buildProbeMu.Lock()
+	defer s.buildProbeMu.Unlock()
+	return s.normalHeap.DueIDs(now, limit)
 }
 
 // OrderedDispatchIDs 返回调度池热路径有序 ID，供 Selector 优先试租约。

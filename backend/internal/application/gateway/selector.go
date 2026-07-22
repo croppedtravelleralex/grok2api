@@ -27,7 +27,9 @@ type accountLease struct {
 const quotaProbeLease = 5 * time.Minute
 const successPersistInterval = 30 * time.Second
 const candidateCacheTTL = time.Second
-const buildDispatchHydrateLimit = 64
+const buildDispatchHydrateInitial = 64
+const buildDispatchHydrateMax = 256
+const buildNormalProbeHydrateLimit = 32
 const modelOutcomeSuccessTTL = 30 * time.Minute
 const modelSoftStopBaseCooldown = 30 * time.Second
 const modelSoftStopMaxCooldown = 5 * time.Minute
@@ -104,7 +106,9 @@ func (l *accountLease) Release() {
 // buildDispatchSource 提供 Build 调度池有序索引，避免 Acquire 全表线性扫。
 type buildDispatchSource interface {
 	OrderedDispatchIDs(limit int) []uint64
+	DueNormalProbeIDs(now time.Time, limit int) []uint64
 	NoteDispatchSelected(id uint64, at time.Time)
+	EnsurePoolIndexWarm(ctx context.Context)
 }
 
 // Selector 实现可替换的 balanced 账号选择策略。
@@ -690,24 +694,73 @@ func (s *Selector) MarkFailure(ctx context.Context, credential account.Credentia
 }
 
 func (s *Selector) loadCandidatesForAcquire(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {
-	if provider == account.ProviderBuild {
-		s.mu.Lock()
-		source := s.buildDispatch
-		s.mu.Unlock()
-		if source != nil {
-			ids := source.OrderedDispatchIDs(buildDispatchHydrateLimit)
-			if len(ids) > 0 {
-				values, err := s.accounts.ListRoutingCandidatesByIDs(ctx, provider, upstreamModel, quotaMode, ids)
-				if err != nil {
-					return nil, err
-				}
-				if len(values) > 0 {
-					return values, nil
-				}
+	if provider != account.ProviderBuild {
+		return s.loadCandidates(ctx, provider, upstreamModel, quotaMode, now)
+	}
+	s.mu.Lock()
+	source := s.buildDispatch
+	s.mu.Unlock()
+	if source == nil {
+		return s.loadCandidates(ctx, provider, upstreamModel, quotaMode, now)
+	}
+	return s.loadBuildCandidatesByIndex(ctx, source, upstreamModel, quotaMode, now)
+}
+
+func (s *Selector) loadBuildCandidatesByIndex(ctx context.Context, source buildDispatchSource, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {
+	batch := buildDispatchHydrateInitial
+	for {
+		dispatchIDs := source.OrderedDispatchIDs(batch)
+		ids := mergeBuildHydrateIDs(dispatchIDs, source.DueNormalProbeIDs(now, buildNormalProbeHydrateLimit))
+		if len(ids) == 0 {
+			source.EnsurePoolIndexWarm(ctx)
+			dispatchIDs = source.OrderedDispatchIDs(batch)
+			ids = mergeBuildHydrateIDs(dispatchIDs, source.DueNormalProbeIDs(now, buildNormalProbeHydrateLimit))
+			if len(ids) == 0 {
+				return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
 			}
 		}
+		values, err := s.accounts.ListRoutingCandidatesByIDs(ctx, account.ProviderBuild, upstreamModel, quotaMode, ids)
+		if err != nil {
+			return nil, err
+		}
+		if len(values) > 0 {
+			return values, nil
+		}
+		if len(dispatchIDs) < batch || batch >= buildDispatchHydrateMax {
+			break
+		}
+		batch = min(batch*2, buildDispatchHydrateMax)
 	}
-	return s.loadCandidates(ctx, provider, upstreamModel, quotaMode, now)
+	return nil, nil
+}
+
+func mergeBuildHydrateIDs(dispatchIDs, probeIDs []uint64) []uint64 {
+	if len(dispatchIDs) == 0 && len(probeIDs) == 0 {
+		return nil
+	}
+	seen := make(map[uint64]struct{}, len(dispatchIDs)+len(probeIDs))
+	merged := make([]uint64, 0, len(dispatchIDs)+len(probeIDs))
+	for _, id := range dispatchIDs {
+		if id == 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		merged = append(merged, id)
+	}
+	for _, id := range probeIDs {
+		if id == 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		merged = append(merged, id)
+	}
+	return merged
 }
 
 func (s *Selector) loadCandidates(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {

@@ -23,8 +23,8 @@
 
 ### 交付物
 
-1. `grok-signer` 镜像（`POST /sign`、`GET /healthz`、`GET /readyz`）
-2. `deploy/panda/docker-compose.yml` 增加 `grok-signer` sidecar
+1. `grok-signer` 镜像（`POST /sign`、`GET /healthz`、`GET /readyz`）— **MVP Done**，见 [signer-sidecar.md](./signer-sidecar.md)
+2. `deploy/panda/docker-compose.yml` 增加 `grok-signer` sidecar — **Done**
 3. `config.yaml`：`statsigSignerURL: http://grok-signer:8788/sign`
 4. L1 健康：pair 存在 + `/sign` 产出 70B base64
 5. L2 就绪：经 udeal egress 对 `POST /rest/rate-limits` 验签被上游接受
@@ -144,3 +144,4 @@ flowchart TB
 | [08-image-pipeline-status-2026-07-22.md](./08-image-pipeline-status-2026-07-22.md) | 生图流水线部署状态 |
 | [09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md](./09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md) | Imagine 接续清单 |
 | [08-build-four-pool-dual-probe-todos-2026-07-22.md](./08-build-four-pool-dual-probe-todos-2026-07-22.md) | 四池 FP-* 全量 |
+| [signer-sidecar.md](./signer-sidecar.md) | Signer sidecar 部署与 env |

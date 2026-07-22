@@ -3,6 +3,8 @@ package poolindex
 import (
 	"testing"
 	"time"
+
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 )
 
 func TestDispatchIndexOrdersByPriorityQuotaAndFairness(t *testing.T) {
@@ -23,6 +25,35 @@ func TestDispatchIndexOrdersByPriorityQuotaAndFairness(t *testing.T) {
 	idx.Remove(2)
 	if idx.Contains(2) || idx.Len() != 2 {
 		t.Fatalf("remove failed len=%d", idx.Len())
+	}
+}
+
+func TestDispatchIndexOrdersByQuotaAtSamePriority(t *testing.T) {
+	idx := NewDispatchIndex()
+	now := time.Unix(1000, 0).UTC()
+	idx.Upsert(DispatchEntry{ID: 1, Priority: 10, QuotaKnown: true, QuotaRemaining: 5, LastSelectedAt: now})
+	idx.Upsert(DispatchEntry{ID: 2, Priority: 10, QuotaKnown: true, QuotaRemaining: 20, LastSelectedAt: now})
+	idx.Upsert(DispatchEntry{ID: 3, Priority: 10, QuotaKnown: false, QuotaRemaining: 0, LastSelectedAt: now})
+	got := idx.Ascend(10)
+	if len(got) != 3 || got[0].ID != 2 || got[1].ID != 1 || got[2].ID != 3 {
+		t.Fatalf("unexpected order: %#v", got)
+	}
+}
+
+func TestDispatchQuotaFromBillingAndRecovery(t *testing.T) {
+	known, remaining := DispatchQuota(&accountdomain.Billing{MonthlyLimit: 100, Used: 25}, nil)
+	if !known || remaining != 75 {
+		t.Fatalf("billing quota = %v %v", known, remaining)
+	}
+	known, remaining = DispatchQuota(nil, &accountdomain.QuotaRecovery{
+		Status: accountdomain.QuotaRecoveryStatusActive, ConfirmedLimit: 1000, ConfirmedUsed: 400,
+	})
+	if !known || remaining != 600 {
+		t.Fatalf("recovery quota = %v %v", known, remaining)
+	}
+	known, remaining = DispatchQuota(nil, nil)
+	if known || remaining != 0 {
+		t.Fatalf("empty quota = %v %v", known, remaining)
 	}
 }
 

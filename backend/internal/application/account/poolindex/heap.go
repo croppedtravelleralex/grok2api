@@ -122,6 +122,26 @@ func (h *DueHeap) PopDue(now time.Time) (id uint64, ok bool) {
 	return item.ID, true
 }
 
+// DueIDs 返回 DueAt <= now 的账号 ID（最多 limit 条），不从堆中移除。
+func (h *DueHeap) DueIDs(now time.Time, limit int) []uint64 {
+	if limit <= 0 {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]uint64, 0, min(limit, len(h.byID)))
+	for id, item := range h.byID {
+		if item.DueAt.After(now) {
+			continue
+		}
+		out = append(out, id)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
 // PopAny 无论是否到期都弹出堆顶（删除池 FIFO 可用 epoch 0）。
 func (h *DueHeap) PopAny() (id uint64, ok bool) {
 	h.mu.Lock()

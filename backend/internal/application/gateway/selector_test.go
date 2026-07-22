@@ -350,6 +350,147 @@ func TestSelectorHonorsWebTierPoolOrderBeforeAccountPriority(t *testing.T) {
 	}
 }
 
+func TestSelectorBuildAcquireAvoidsFullTableList(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "build-index-acquire.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	accounts := relational.NewAccountRepository(database)
+	active, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "dispatch", SourceKey: "dispatch", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
+		ObservedModel: "grok-4.5-build-free",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "other", SourceKey: "other", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 1, MaxConcurrent: 1,
+		ObservedModel: "grok-4.5-build-free",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	counter := &countingAccountRepo{AccountRepository: accounts}
+	dispatch := &stubBuildDispatchSource{dispatchIDs: []uint64{active.ID}}
+	selector := NewSelector(counter, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector.SetBuildDispatchSource(dispatch)
+
+	lease, err := selector.Acquire(ctx, account.ProviderBuild, "grok-test", "", "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.Credential.ID != active.ID {
+		t.Fatalf("lease account = %d, want %d", lease.Credential.ID, active.ID)
+	}
+	if counter.listRoutingCandidatesCalls != 0 {
+		t.Fatalf("ListRoutingCandidates calls = %d, want 0", counter.listRoutingCandidatesCalls)
+	}
+	if counter.listRoutingCandidatesByIDsCalls != 1 {
+		t.Fatalf("ListRoutingCandidatesByIDs calls = %d, want 1", counter.listRoutingCandidatesByIDsCalls)
+	}
+}
+
+func TestSelectorBuildAcquireMergesDueNormalProbeIDs(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "build-normal-probe.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	accounts := relational.NewAccountRepository(database)
+	probe, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "probe", SourceKey: "probe", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 10, MaxConcurrent: 1,
+		ObservedModel: "grok-4.5-build-free",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	due := now.Add(-time.Minute)
+	if err := accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{
+		AccountID: probe.ID, Kind: account.QuotaRecoveryKindFree, Status: account.QuotaRecoveryStatusExhausted,
+		ExhaustedAt: &now, NextProbeAt: &due, LastConfirmedAt: &now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	counter := &countingAccountRepo{AccountRepository: accounts}
+	dispatch := &stubBuildDispatchSource{normalProbeIDs: []uint64{probe.ID}}
+	selector := NewSelector(counter, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector.SetBuildDispatchSource(dispatch)
+
+	lease, err := selector.Acquire(ctx, account.ProviderBuild, "grok-test", "", "", nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.Credential.ID != probe.ID || !lease.QuotaProbe {
+		t.Fatalf("lease = %#v, want due probe account %d", lease, probe.ID)
+	}
+	if counter.listRoutingCandidatesCalls != 0 {
+		t.Fatalf("ListRoutingCandidates calls = %d, want 0", counter.listRoutingCandidatesCalls)
+	}
+	if counter.listRoutingCandidatesByIDsCalls != 1 {
+		t.Fatalf("ListRoutingCandidatesByIDs calls = %d, want 1", counter.listRoutingCandidatesByIDsCalls)
+	}
+}
+
+type countingAccountRepo struct {
+	repository.AccountRepository
+	listRoutingCandidatesCalls       int
+	listRoutingCandidatesByIDsCalls  int
+}
+
+func (c *countingAccountRepo) ListRoutingCandidates(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string) ([]account.RoutingCandidate, error) {
+	c.listRoutingCandidatesCalls++
+	return c.AccountRepository.ListRoutingCandidates(ctx, provider, upstreamModel, quotaMode)
+}
+
+func (c *countingAccountRepo) ListRoutingCandidatesByIDs(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string, ids []uint64) ([]account.RoutingCandidate, error) {
+	c.listRoutingCandidatesByIDsCalls++
+	return c.AccountRepository.ListRoutingCandidatesByIDs(ctx, provider, upstreamModel, quotaMode, ids)
+}
+
+type stubBuildDispatchSource struct {
+	dispatchIDs    []uint64
+	normalProbeIDs []uint64
+	warmCalls      int
+}
+
+func (s *stubBuildDispatchSource) OrderedDispatchIDs(limit int) []uint64 {
+	if limit <= 0 || len(s.dispatchIDs) == 0 {
+		return nil
+	}
+	if len(s.dispatchIDs) <= limit {
+		return append([]uint64(nil), s.dispatchIDs...)
+	}
+	return append([]uint64(nil), s.dispatchIDs[:limit]...)
+}
+
+func (s *stubBuildDispatchSource) DueNormalProbeIDs(time.Time, int) []uint64 {
+	return append([]uint64(nil), s.normalProbeIDs...)
+}
+
+func (s *stubBuildDispatchSource) NoteDispatchSelected(uint64, time.Time) {}
+
+func (s *stubBuildDispatchSource) EnsurePoolIndexWarm(context.Context) {
+	s.warmCalls++
+}
+
 func TestSelectorPropagatesConcurrencyStoreFailure(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-runtime-error.db"))
