@@ -4,7 +4,7 @@ services:
   grok-signer:
     container_name: grok-signer
     build:
-      context: ../../signer
+      context: ./signer
     image: grok-signer:latest
     environment:
       TZ: Asia/Shanghai
@@ -13,8 +13,7 @@ services:
       SIGNER_PROBE_PROXY: "${SIGNER_PROBE_PROXY:-}"
     volumes:
       - /root/.secrets/grok-signer-pair:/run/secrets/signer-pair:ro
-    ports:
-      - "127.0.0.1:8788:8788"
+    # 仅容器网络内访问；避免与宿主机 8788（历史 nsenter signer）冲突。
     restart: unless-stopped
     init: true
     cpus: "0.25"
