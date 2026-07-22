@@ -35,7 +35,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		PipelineSlots: 10, QueueCapacity: 100, ExpandConcurrency: 2,
-		SSEMin: 2, SSEInitial: 3, SSEMax: 6, SSEStagger: 400 * time.Millisecond,
+		SSEMin: 1, SSEInitial: 1, SSEMax: 6, SSEStagger: 400 * time.Millisecond,
 		DownloadConcurrency: 8, Retention: 12 * time.Hour,
 	}
 }

@@ -97,7 +97,7 @@ func (r *memRepo) DeleteOlderThan(_ context.Context, before time.Time) (int64, e
 
 func TestNormalizeConfig(t *testing.T) {
 	cfg := normalizeConfig(Config{})
-	if cfg.PipelineSlots != 10 || cfg.ExpandConcurrency != 2 || cfg.SSEInitial != 3 {
+	if cfg.PipelineSlots != 10 || cfg.ExpandConcurrency != 2 || cfg.SSEMin != 1 || cfg.SSEInitial != 1 {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -186,6 +186,21 @@ func TestAIMDDecreaseOnSoftStop(t *testing.T) {
 	snap := s.Snapshot()
 	if snap.SSETarget >= 4 {
 		t.Fatalf("expected AIMD decrease, target=%d", snap.SSETarget)
+	}
+}
+
+func TestDefaultAIMDStartsAtOneAndFallsBackToOneOnSoftStop(t *testing.T) {
+	s := NewScheduler(newMemRepo(), DefaultConfig(), nil)
+	if target := s.Snapshot().SSETarget; target != 1 {
+		t.Fatalf("默认 SSE target=%d，期望从单并发开始", target)
+	}
+
+	s.mu.Lock()
+	s.sseTarget = 2
+	s.mu.Unlock()
+	s.recordOutcome(outcomeSample{ok: false, softStop: true, totalMS: 7000, at: time.Now()})
+	if target := s.Snapshot().SSETarget; target != 1 {
+		t.Fatalf("soft-stop 后 SSE target=%d，期望回退到 1", target)
 	}
 }
 
