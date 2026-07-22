@@ -782,8 +782,6 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 	for id, value := range s.lastSelectedAt {
 		lastSelected[id] = value
 	}
-	s.mu.Unlock()
-	remaining := make(map[uint64]float64, len(values))
 	modelRanks := make(map[uint64]int, len(values))
 	upstreamModel = strings.TrimSpace(upstreamModel)
 	for key, outcome := range s.modelOutcomes {
@@ -829,6 +827,8 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 		if !batched {
 			var err error
 			current, err = s.concurrency.Current(ctx, key)
+	s.mu.Unlock()
+	remaining := make(map[uint64]float64, len(values))
 			if err != nil {
 				return fmt.Errorf("读取账号并发租约: %w", err)
 			}
@@ -861,8 +861,6 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 		if leftTier != rightTier {
 			return leftTier < rightTier
 		}
-		if left.Priority != right.Priority {
-			return left.Priority > right.Priority
 		leftRank, leftKnown := modelRanks[left.ID]
 		if !leftKnown {
 			leftRank = 1
@@ -896,6 +894,8 @@ func (s *Selector) resolveTierOrder(provider account.Provider, upstreamModel str
 	if s.tierOrders == nil {
 		return nil
 	}
+		if left.Priority != right.Priority {
+			return left.Priority > right.Priority
 	return s.tierOrders.TierOrder(provider, upstreamModel)
 }
 
