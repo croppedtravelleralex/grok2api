@@ -862,11 +862,20 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 		response, err = execute(ctx, adapter, credential, route.UpstreamModel)
 		timing.markUpstream(time.Since(upstreamStart))
 		if err != nil {
-			s.logger.Error("image_upstream_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "error", err)
-			s.selector.MarkFailure(ctx, credential, 0, 0)
+			retry, errorCode, softStop := imageExecutionErrorPolicy(err, attempt, attempts)
+			if softStop {
+				s.logger.Warn("image_upstream_soft_stop", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "attempt", attempt+1)
+			} else {
+				s.logger.Error("image_upstream_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "error", err)
+				s.selector.MarkFailure(ctx, credential, 0, 0)
+			}
 			releaseAccount()
-			finishPipeline(imagedomain.StatusFailed, "upstream_failed", false)
-			timing.finish(s.logger, "upstream_failed")
+			if retry {
+				releaseAccountOnce = sync.Once{}
+				continue
+			}
+			finishPipeline(imagedomain.StatusFailed, errorCode, softStop)
+			timing.finish(s.logger, errorCode)
 			return nil, err
 		}
 		if s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden && attempt == 0 && attempt+1 < attempts {
@@ -980,6 +989,13 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 	finalizationOwnsReservation = true
 	returnedOK = true
 	return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, Finalize: finalize}, nil
+}
+
+func imageExecutionErrorPolicy(err error, attempt, attempts int) (retry bool, errorCode string, softStop bool) {
+	if errors.Is(err, provider.ErrImageSoftStop) {
+		return attempt+1 < attempts, "soft_stop", true
+	}
+	return false, "upstream_failed", false
 }
 
 func (s *Service) cancelBillingReservation(eventID string) {

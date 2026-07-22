@@ -433,6 +433,9 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 			if diagnostics.SoftStop && run != nil {
 				run.MarkSoftStop()
 			}
+			if diagnostics.SoftStop {
+				return "", "", fmt.Errorf("%w: Grok Web Lite 响应结束但未解析到最终图片", provider.ErrImageSoftStop)
+			}
 			return "", "", fmt.Errorf("Grok Web Lite 响应结束但未解析到最终图片")
 		}
 		// Lite 上游固定生成两张，但每次查询只计一次 Fast 额度；按旧协议取首张并为 n 重复查询。

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -43,13 +44,11 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	auditRepo := relational.NewAuditRepository(database)
 	responseRepo := relational.NewResponseRepository(database)
 	keyRepo := relational.NewClientKeyRepository(database)
-	first, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "first", SourceKey: "first", EncryptedAccessToken: "one", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 200, MaxConcurrent: 1, ObservedModel: "grok-4.5-build-free",
-	})
+	first, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "first", SourceKey: "first", EncryptedAccessToken: "one", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 200, MaxConcurrent: 1, ObservedModel: "grok-4.5-build-free"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "second", SourceKey: "second", EncryptedAccessToken: "two", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1, ObservedModel: "grok-4.5-build-free",
-	})
+	second, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "second", SourceKey: "second", EncryptedAccessToken: "two", ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1, ObservedModel: "grok-4.5-build-free"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,6 +147,24 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	missing.Finalize(Usage{}, "", "")
 	if _, err := responseRepo.Get(ctx, "resp-next", clientKey.ID, time.Now().UTC()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("stale ownership err = %v", err)
+	}
+}
+
+func TestImageExecutionErrorPolicyRetriesSoftStop(t *testing.T) {
+	err := fmt.Errorf("%w: upstream ended without an image", provider.ErrImageSoftStop)
+	retry, code, softStop := imageExecutionErrorPolicy(err, 0, 3)
+	if !retry || code != "soft_stop" || !softStop {
+		t.Fatalf("首次 soft-stop policy=(retry=%v code=%q softStop=%v)", retry, code, softStop)
+	}
+
+	retry, code, softStop = imageExecutionErrorPolicy(err, 2, 3)
+	if retry || code != "soft_stop" || !softStop {
+		t.Fatalf("末次 soft-stop policy=(retry=%v code=%q softStop=%v)", retry, code, softStop)
+	}
+
+	retry, code, softStop = imageExecutionErrorPolicy(errors.New("transport failed"), 0, 3)
+	if retry || code != "upstream_failed" || softStop {
+		t.Fatalf("普通错误 policy=(retry=%v code=%q softStop=%v)", retry, code, softStop)
 	}
 }
 
@@ -293,8 +310,8 @@ func TestGatewayPreservesRepeatedSystemicForbiddenWithoutCoolingAccounts(t *test
 			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: name,
 			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
 			Priority: 300 - index, MaxConcurrent: 1,
-		 ObservedModel: "grok-4.5-build-free",
-	})
+			ObservedModel: "grok-4.5-build-free",
+		})
 		if createErr != nil {
 			t.Fatal(createErr)
 		}
