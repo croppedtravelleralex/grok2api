@@ -31,6 +31,7 @@ const modelOutcomeSuccessTTL = 30 * time.Minute
 const modelSoftStopBaseCooldown = 30 * time.Second
 const modelSoftStopMaxCooldown = 5 * time.Minute
 const modelOutcomeRetention = time.Hour
+const webLiteImageUpstreamModel = "grok-imagine-image"
 
 type candidateSnapshot struct {
 	values    []account.RoutingCandidate
@@ -245,7 +246,7 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 			return nil, err
 		}
 		for _, candidate := range probeCandidates {
-			lease, err := s.claimAccountSlot(ctx, candidate.Credential)
+			lease, err := s.claimAccountSlot(ctx, candidate.Credential, upstreamModel)
 			if err != nil {
 				return nil, err
 			}
@@ -274,7 +275,7 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 				if ok {
 			for _, candidate := range normalCandidates {
 				if candidate.Credential.ID == stickyID {
-					lease, acquireErr := s.claimAccountSlot(ctx, candidate.Credential)
+					lease, acquireErr := s.claimAccountSlot(ctx, candidate.Credential, upstreamModel)
 					if acquireErr != nil {
 						return nil, acquireErr
 					}
@@ -305,7 +306,7 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 			return nil, err
 		}
 		for _, candidate := range normalCandidates {
-			lease, err := s.claimAccountSlot(ctx, candidate.Credential)
+			lease, err := s.claimAccountSlot(ctx, candidate.Credential, upstreamModel)
 			if err != nil {
 				return nil, err
 			}
@@ -423,7 +424,7 @@ func (s *Selector) AcquirePinned(ctx context.Context, provider account.Provider,
 					}
 					return nil, &SelectionUnavailableError{Reason: SelectionQuotaExhausted, RetryAfter: retryAfter}
 				}
-				lease, err := s.acquirePinnedCapacity(ctx, value)
+				lease, err := s.acquirePinnedCapacity(ctx, value, upstreamModel)
 				if err != nil {
 					return nil, err
 				}
@@ -451,7 +452,7 @@ func (s *Selector) AcquirePinned(ctx context.Context, provider account.Provider,
 				return nil, &SelectionUnavailableError{Reason: SelectionQuotaExhausted, RetryAfter: retryAfter}
 			}
 		}
-		lease, err := s.acquirePinnedCapacity(ctx, value)
+		lease, err := s.acquirePinnedCapacity(ctx, value, upstreamModel)
 		if err != nil {
 			return nil, err
 		}
@@ -680,11 +681,8 @@ func (s *Selector) invalidateCandidates(provider account.Provider) {
 	}
 }
 
-func (s *Selector) claimAccountSlot(ctx context.Context, value account.Credential) (*accountLease, error) {
-	limit := value.MaxConcurrent
-	if limit <= 0 {
-		limit = account.DefaultMaxConcurrent
-	}
+func (s *Selector) claimAccountSlot(ctx context.Context, value account.Credential, upstreamModel string) (*accountLease, error) {
+	limit := accountConcurrencyLimit(value, upstreamModel)
 	release, acquired, err := s.concurrency.Acquire(ctx, fmt.Sprintf("account:%d", value.ID), limit)
 	if err != nil {
 		return nil, fmt.Errorf("获取账号并发租约: %w", err)
@@ -701,11 +699,21 @@ func (s *Selector) claimAccountSlot(ctx context.Context, value account.Credentia
 	}}, nil
 }
 
-func (s *Selector) acquirePinnedCapacity(ctx context.Context, value account.Credential) (*accountLease, error) {
+func accountConcurrencyLimit(value account.Credential, upstreamModel string) int {
+	if strings.EqualFold(strings.TrimSpace(upstreamModel), webLiteImageUpstreamModel) {
+		return 1
+	}
+	if value.MaxConcurrent > 0 {
+		return value.MaxConcurrent
+	}
+	return account.DefaultMaxConcurrent
+}
+
+func (s *Selector) acquirePinnedCapacity(ctx context.Context, value account.Credential, upstreamModel string) (*accountLease, error) {
 	_, _, _, capacityWait := s.routingConfig()
 	deadline := time.Now().Add(capacityWait)
 	for {
-		lease, err := s.claimAccountSlot(ctx, value)
+		lease, err := s.claimAccountSlot(ctx, value, upstreamModel)
 		if err != nil || lease != nil {
 			return lease, err
 		}

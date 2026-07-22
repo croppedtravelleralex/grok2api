@@ -508,6 +508,68 @@ func TestSelectorWaitsBrieflyForAccountCapacity(t *testing.T) {
 	}
 }
 
+func TestSelectorSerializesWebLiteImagePerAccount(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "web-lite-account-capacity.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	preferred, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierBasic,
+		Name: "preferred", SourceKey: "preferred", EncryptedAccessToken: "encrypted", Enabled: true,
+		AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alternate, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierBasic,
+		Name: "alternate", SourceKey: "alternate", EncryptedAccessToken: "encrypted", Enabled: true,
+		AuthStatus: account.AuthStatusActive, Priority: 50, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector.MarkModelSuccess(preferred.ID, "grok-imagine-image")
+
+	first, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "", "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+	if first.Credential.ID != preferred.ID {
+		t.Fatalf("first account = %d, want preferred %d", first.Credential.ID, preferred.ID)
+	}
+
+	second, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "", "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Release()
+	if second.Credential.ID != alternate.ID {
+		t.Fatalf("second account = %d, want alternate %d", second.Credential.ID, alternate.ID)
+	}
+}
+
+func TestAccountConcurrencyLimitOnlySerializesWebLiteImage(t *testing.T) {
+	credential := account.Credential{MaxConcurrent: 4}
+	if got := accountConcurrencyLimit(credential, "grok-imagine-image"); got != 1 {
+		t.Fatalf("Lite image limit = %d, want 1", got)
+	}
+	if got := accountConcurrencyLimit(credential, "grok-chat-fast"); got != 4 {
+		t.Fatalf("chat limit = %d, want configured 4", got)
+	}
+	if got := accountConcurrencyLimit(account.Credential{}, "grok-chat-fast"); got != account.DefaultMaxConcurrent {
+		t.Fatalf("default chat limit = %d, want %d", got, account.DefaultMaxConcurrent)
+	}
+}
+
 func TestSelectorAppliesPersistedCooldownOnlyToMatchingModel(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "model-cooldown.db"))
