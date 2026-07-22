@@ -21,7 +21,10 @@ read_password() {
 
 api() {
   local method="$1" path="$2" body="${3:-}"
-  local args=(-sS -X "$method" -H "Accept: application/json" -H "Authorization: Bearer $TOKEN")
+  local args=(-sS -X "$method" -H "Accept: application/json")
+  if [[ -n "${TOKEN:-}" ]]; then
+    args+=(-H "Authorization: Bearer $TOKEN")
+  fi
   [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" -d "$body")
   curl "${args[@]}" "$BASE$path"
 }
@@ -30,17 +33,17 @@ TOKEN=$(api POST /auth/login "{\"username\":\"admin\",\"password\":\"$(read_pass
 
 # V4/V6: web-probe API 六池 + 双探针状态
 PROBE=$(api GET /accounts/web-probe)
-echo "$PROBE" | python3 - <<'PY'
+echo "$PROBE" | python3 -c "
 import json, sys
-data = json.load(sys.stdin).get("data", {})
-pools = data.get("pools", {})
-for lane in ("image", "chat"):
+data = json.load(sys.stdin).get('data', {})
+pools = data.get('pools', {})
+for lane in ('image', 'chat'):
     counts = pools.get(lane, {})
-    for key in ("dispatch", "recovery", "dead"):
+    for key in ('dispatch', 'recovery', 'dead'):
         if key not in counts:
-            raise SystemExit(f"missing pools.{lane}.{key}")
-print("pools_ok")
-PY
+            raise SystemExit(f'missing pools.{lane}.{key}')
+print('pools_ok')
+"
 pass "V4/V6 web-probe API 返回六池结构"
 
 # V5: 预算 governor 字段存在且 maxProbeLevel 合法
