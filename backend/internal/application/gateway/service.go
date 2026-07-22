@@ -46,6 +46,7 @@ const responseOwnershipTTL = 30 * 24 * time.Hour
 const finalizationTimeout = 5 * time.Second
 const textBillingReservationTTL = 2 * time.Hour
 const mediaBillingReservationTTL = 24 * time.Hour
+const webLiteSoftStopAttempts = 6
 
 var freeQuotaUsagePattern = regexp.MustCompile(`(?i)tokens\s*\(actual/limit\)\s*:\s*([0-9]+)\s*/\s*([0-9]+)`)
 
@@ -818,10 +819,11 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 		}
 	}()
 	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
-	attempts := int(s.maxAttempts.Load())
-	if attempts <= 0 {
-		attempts = 3
+	configuredAttempts := int(s.maxAttempts.Load())
+	if configuredAttempts <= 0 {
+		configuredAttempts = 3
 	}
+	attempts := imageExecutionAttemptLimit(route.Provider, operation, configuredAttempts)
 	excluded := make(map[uint64]bool)
 	var lease *accountLease
 	var credential accountdomain.Credential
@@ -864,6 +866,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 		if err != nil {
 			retry, errorCode, softStop := imageExecutionErrorPolicy(err, attempt, attempts)
 			if softStop {
+				s.selector.MarkModelSoftStop(credential.ID, route.UpstreamModel)
 				s.logger.Warn("image_upstream_soft_stop", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "attempt", attempt+1)
 			} else {
 				s.logger.Error("image_upstream_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "error", err)
@@ -872,6 +875,21 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 			releaseAccount()
 			if retry {
 				releaseAccountOnce = sync.Once{}
+				delay := imageSoftStopRetryDelay(attempt)
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					finishPipeline(imagedomain.StatusCanceled, "retry_canceled", softStop)
+					timing.finish(s.logger, "retry_canceled")
+					return nil, ctx.Err()
+				case <-timer.C:
+				}
 				continue
 			}
 			finishPipeline(imagedomain.StatusFailed, errorCode, softStop)
@@ -905,7 +923,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 			} else {
 				s.selector.MarkQuotaStateChanged(credential.Provider)
 			}
-			if attempt+1 < attempts {
+			if attempt+1 < configuredAttempts {
 				releaseAccountOnce = sync.Once{}
 				lease.Release()
 				continue
@@ -926,6 +944,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 			releaseAccount()
 			softStop := errorCode == "soft_stop" || strings.Contains(strings.ToLower(errorCode), "soft_stop")
 			if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" {
+				s.selector.MarkModelSuccess(accountID, route.UpstreamModel)
 				finishPipeline(imagedomain.StatusSucceeded, "", softStop)
 				timing.finish(s.logger, "ok")
 			} else {
@@ -996,6 +1015,19 @@ func imageExecutionErrorPolicy(err error, attempt, attempts int) (retry bool, er
 		return attempt+1 < attempts, "soft_stop", true
 	}
 	return false, "upstream_failed", false
+}
+
+func imageExecutionAttemptLimit(providerValue accountdomain.Provider, operation audit.Operation, configured int) int {
+	configured = max(1, configured)
+	if providerValue == accountdomain.ProviderWeb && operation == audit.OperationImage {
+		return max(configured, webLiteSoftStopAttempts)
+	}
+	return configured
+}
+
+func imageSoftStopRetryDelay(attempt int) time.Duration {
+	delay := time.Second << min(max(0, attempt), 2)
+	return min(delay, 4*time.Second)
 }
 
 func (s *Service) cancelBillingReservation(eventID string) {

@@ -168,6 +168,24 @@ func TestImageExecutionErrorPolicyRetriesSoftStop(t *testing.T) {
 	}
 }
 
+func TestImageExecutionAttemptLimitOnlyExpandsWebLiteSoftStopBudget(t *testing.T) {
+	if got := imageExecutionAttemptLimit(account.ProviderWeb, audit.OperationImage, 3); got != 6 {
+		t.Fatalf("Web Lite attempt limit=%d, want 6", got)
+	}
+	if got := imageExecutionAttemptLimit(account.ProviderBuild, audit.OperationImage, 3); got != 3 {
+		t.Fatalf("Build image attempt limit=%d, want 3", got)
+	}
+	if got := imageExecutionAttemptLimit(account.ProviderWeb, audit.OperationImageEdit, 3); got != 3 {
+		t.Fatalf("Web edit attempt limit=%d, want 3", got)
+	}
+	if got := imageSoftStopRetryDelay(0); got != time.Second {
+		t.Fatalf("first soft-stop delay=%s, want 1s", got)
+	}
+	if got := imageSoftStopRetryDelay(4); got != 4*time.Second {
+		t.Fatalf("capped soft-stop delay=%s, want 4s", got)
+	}
+}
+
 func TestSelectConversationRouteRespectsClientKeyAcrossSharedPublicModel(t *testing.T) {
 	registry := provider.NewRegistry(&failoverAdapter{}, statelessConsoleAdapter{})
 	service := &Service{

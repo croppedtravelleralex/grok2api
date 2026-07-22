@@ -27,6 +27,10 @@ type accountLease struct {
 const quotaProbeLease = 5 * time.Minute
 const successPersistInterval = 30 * time.Second
 const candidateCacheTTL = time.Second
+const modelOutcomeSuccessTTL = 30 * time.Minute
+const modelSoftStopBaseCooldown = 30 * time.Second
+const modelSoftStopMaxCooldown = 5 * time.Minute
+const modelOutcomeRetention = time.Hour
 
 type candidateSnapshot struct {
 	values    []account.RoutingCandidate
@@ -37,6 +41,18 @@ type candidateCacheKey struct {
 	provider      account.Provider
 	upstreamModel string
 	quotaMode     string
+}
+
+type modelOutcomeKey struct {
+	accountID     uint64
+	upstreamModel string
+}
+
+type modelOutcome struct {
+	lastSuccessAt       time.Time
+	lastSoftStopAt      time.Time
+	softStopUntil       time.Time
+	consecutiveSoftStop int
 }
 
 type SelectionUnavailableReason string
@@ -104,6 +120,7 @@ type Selector struct {
 	lastSelectedAt map[uint64]time.Time
 	lastSuccessAt  map[uint64]time.Time
 	candidates     map[candidateCacheKey]candidateSnapshot
+	modelOutcomes  map[modelOutcomeKey]modelOutcome
 	candidateLoads singleflight.Group
 	buildDispatch  buildDispatchSource
 	tierOrders     interface {
@@ -125,7 +142,7 @@ func NewSelector(accounts repository.AccountRepository, concurrency repository.C
 	if len(capacityWait) > 0 && capacityWait[0] > 0 {
 		wait = capacityWait[0]
 	}
-	return &Selector{accounts: accounts, concurrency: concurrency, sticky: sticky, tierOrders: tierOrders, stickyTTL: stickyTTL, cooldownBase: cooldownBase, cooldownMax: cooldownMax, capacityWait: wait, leaseWake: make(chan struct{}), lastSelectedAt: make(map[uint64]time.Time), lastSuccessAt: make(map[uint64]time.Time), candidates: make(map[candidateCacheKey]candidateSnapshot)}
+	return &Selector{accounts: accounts, concurrency: concurrency, sticky: sticky, tierOrders: tierOrders, stickyTTL: stickyTTL, cooldownBase: cooldownBase, cooldownMax: cooldownMax, capacityWait: wait, leaseWake: make(chan struct{}), lastSelectedAt: make(map[uint64]time.Time), lastSuccessAt: make(map[uint64]time.Time), modelOutcomes: make(map[modelOutcomeKey]modelOutcome), candidates: make(map[candidateCacheKey]candidateSnapshot)}
 }
 
 func (s *Selector) UpdateConfig(stickyTTL, cooldownBase, cooldownMax time.Duration, capacityWait ...time.Duration) {
@@ -224,7 +241,7 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 		return nil, &SelectionUnavailableError{Reason: reason, RetryAfter: retryDelay(now, earliestRetry)}
 	}
 	if len(probeCandidates) > 0 {
-		if err := s.sortCandidates(ctx, probeCandidates, now, s.resolveTierOrder(provider, upstreamModel)); err != nil {
+		if err := s.sortCandidates(ctx, probeCandidates, now, s.resolveTierOrder(provider, upstreamModel), upstreamModel); err != nil {
 			return nil, err
 		}
 		for _, candidate := range probeCandidates {
@@ -284,7 +301,7 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 		currentTime := time.Now().UTC()
 		if provider == account.ProviderBuild {
 			normalCandidates = s.orderBuildDispatchCandidates(normalCandidates)
-		} else if err := s.sortCandidates(ctx, normalCandidates, currentTime, s.resolveTierOrder(provider, upstreamModel)); err != nil {
+		} else if err := s.sortCandidates(ctx, normalCandidates, currentTime, s.resolveTierOrder(provider, upstreamModel), upstreamModel); err != nil {
 			return nil, err
 		}
 		for _, candidate := range normalCandidates {
@@ -529,6 +546,51 @@ func (s *Selector) MarkPaidQuotaExhausted(ctx context.Context, credential accoun
 func (s *Selector) MarkQuotaStateChanged(provider account.Provider) { s.invalidateCandidates(provider) }
 
 // ConsumeQuota 将成功请求的本地额度变化应用到候选快照，避免为单账号变化清空整个 Provider 缓存。
+// MarkModelSoftStop 只记录进程内的模型级退避，不修改账号全局健康或其他模型的调度资格。
+func (s *Selector) MarkModelSoftStop(accountID uint64, upstreamModel string) {
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if accountID == 0 || upstreamModel == "" {
+		return
+	}
+	now := time.Now().UTC()
+	key := modelOutcomeKey{accountID: accountID, upstreamModel: upstreamModel}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.modelOutcomes == nil {
+		s.modelOutcomes = make(map[modelOutcomeKey]modelOutcome)
+	}
+	value := s.modelOutcomes[key]
+	if value.lastSoftStopAt.IsZero() || now.Sub(value.lastSoftStopAt) > modelOutcomeSuccessTTL || value.lastSuccessAt.After(value.lastSoftStopAt) {
+		value.consecutiveSoftStop = 0
+	}
+	value.consecutiveSoftStop++
+	cooldown := modelSoftStopBaseCooldown
+	for count := 1; count < value.consecutiveSoftStop && cooldown < modelSoftStopMaxCooldown; count++ {
+		cooldown *= 2
+	}
+	if cooldown > modelSoftStopMaxCooldown {
+		cooldown = modelSoftStopMaxCooldown
+	}
+	value.lastSoftStopAt = now
+	value.softStopUntil = now.Add(cooldown)
+	s.modelOutcomes[key] = value
+}
+
+// MarkModelSuccess 让近期验证成功的账号在同模型中优先，同时清除它的 soft-stop 退避。
+func (s *Selector) MarkModelSuccess(accountID uint64, upstreamModel string) {
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if accountID == 0 || upstreamModel == "" {
+		return
+	}
+	key := modelOutcomeKey{accountID: accountID, upstreamModel: upstreamModel}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.modelOutcomes == nil {
+		s.modelOutcomes = make(map[modelOutcomeKey]modelOutcome)
+	}
+	s.modelOutcomes[key] = modelOutcome{lastSuccessAt: time.Now().UTC()}
+}
+
 func (s *Selector) ConsumeQuota(provider account.Provider, accountID uint64, mode string, amount int) {
 	if accountID == 0 || mode == "" || mode == "weekly" || amount <= 0 {
 		return
@@ -714,7 +776,7 @@ func retryDelay(now, retryAt time.Time) time.Duration {
 	return retryAt.Sub(now)
 }
 
-func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingCandidate, now time.Time, tierOrder []account.WebTier) error {
+func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingCandidate, now time.Time, tierOrder []account.WebTier, upstreamModel string) error {
 	s.mu.Lock()
 	lastSelected := make(map[uint64]time.Time, len(s.lastSelectedAt))
 	for id, value := range s.lastSelectedAt {
@@ -722,6 +784,29 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 	}
 	s.mu.Unlock()
 	remaining := make(map[uint64]float64, len(values))
+	modelRanks := make(map[uint64]int, len(values))
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	for key, outcome := range s.modelOutcomes {
+		latest := outcome.lastSuccessAt
+		if outcome.lastSoftStopAt.After(latest) {
+			latest = outcome.lastSoftStopAt
+		}
+		if !latest.IsZero() && now.Sub(latest) > modelOutcomeRetention {
+			delete(s.modelOutcomes, key)
+			continue
+		}
+		if key.upstreamModel != upstreamModel {
+			continue
+		}
+		switch {
+		case now.Before(outcome.softStopUntil):
+			modelRanks[key.accountID] = 2
+		case !outcome.lastSuccessAt.IsZero() && now.Sub(outcome.lastSuccessAt) <= modelOutcomeSuccessTTL:
+			modelRanks[key.accountID] = 0
+		default:
+			modelRanks[key.accountID] = 1
+		}
+	}
 	fresh := make(map[uint64]bool, len(values))
 	inFlight := make(map[uint64]int, len(values))
 	concurrencyKeys := make([]string, 0, len(values))
@@ -778,6 +863,17 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 		}
 		if left.Priority != right.Priority {
 			return left.Priority > right.Priority
+		leftRank, leftKnown := modelRanks[left.ID]
+		if !leftKnown {
+			leftRank = 1
+		}
+		rightRank, rightKnown := modelRanks[right.ID]
+		if !rightKnown {
+			rightRank = 1
+		}
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
 		}
 		if fresh[left.ID] != fresh[right.ID] {
 			return fresh[left.ID]

@@ -397,11 +397,51 @@ func TestSelectorUsesBatchConcurrencySnapshot(t *testing.T) {
 		{Credential: account.Credential{ID: 1, Priority: 1}},
 		{Credential: account.Credential{ID: 2, Priority: 1}},
 	}
-	if err := selector.sortCandidates(context.Background(), values, time.Now().UTC(), nil); err != nil {
+	if err := selector.sortCandidates(context.Background(), values, time.Now().UTC(), nil, "model"); err != nil {
 		t.Fatal(err)
 	}
 	if limiter.batchCalls != 1 || limiter.currentCalls != 0 || values[0].Credential.ID != 2 {
 		t.Fatalf("batchCalls=%d currentCalls=%d values=%#v", limiter.batchCalls, limiter.currentCalls, values)
+	}
+}
+
+func TestSelectorRanksRecentModelSuccessBeforeUnknownAndSoftStop(t *testing.T) {
+	selector := &Selector{
+		concurrency:    memory.NewConcurrencyLimiter(),
+		lastSelectedAt: make(map[uint64]time.Time),
+	}
+	model := "grok-imagine-image"
+	selector.MarkModelSoftStop(1, model)
+	selector.MarkModelSuccess(2, model)
+	values := []account.RoutingCandidate{
+		{Credential: account.Credential{ID: 1, Priority: 1}},
+		{Credential: account.Credential{ID: 2, Priority: 1}},
+		{Credential: account.Credential{ID: 3, Priority: 1}},
+	}
+	if err := selector.sortCandidates(context.Background(), values, time.Now().UTC(), nil, model); err != nil {
+		t.Fatal(err)
+	}
+	got := []uint64{values[0].Credential.ID, values[1].Credential.ID, values[2].Credential.ID}
+	if got[0] != 2 || got[1] != 3 || got[2] != 1 {
+		t.Fatalf("model outcome order=%v, want [2 3 1]", got)
+	}
+}
+
+func TestSelectorModelOutcomeDoesNotAffectOtherModels(t *testing.T) {
+	selector := &Selector{
+		concurrency:    memory.NewConcurrencyLimiter(),
+		lastSelectedAt: make(map[uint64]time.Time),
+	}
+	selector.MarkModelSoftStop(1, "grok-imagine-image")
+	values := []account.RoutingCandidate{
+		{Credential: account.Credential{ID: 1, Priority: 1}},
+		{Credential: account.Credential{ID: 2, Priority: 1}},
+	}
+	if err := selector.sortCandidates(context.Background(), values, time.Now().UTC(), nil, "grok-fast"); err != nil {
+		t.Fatal(err)
+	}
+	if values[0].Credential.ID != 1 {
+		t.Fatalf("other model order=%v, want account 1 unchanged", []uint64{values[0].Credential.ID, values[1].Credential.ID})
 	}
 }
 
