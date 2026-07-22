@@ -9,11 +9,8 @@
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
 | 账号列表 `pool` 空串导致 invalidResponse | **Done** | `pool` 仅 Build 返回；`omitempty` + 前端 optional |
-| Imagine 额度 + modelStates 代码 | **本地 Done** | 工作区未提交 |
-| FP-003 lane 计数 | **Done** | `statistics.laneAttempts` |
-| `go test ./...` + `pnpm build` | **通过** | 部署前门禁 |
-
-**下一步**：整理提交（Imagine/modelStates + pool 修复 + FP-003），触发 CI/GHCR。
+| Imagine 额度 + modelStates 代码 | **已提交** | `73e4ab2` |
+| FP-001 / FP-002 / Signer sidecar | **已提交** | `ca31ec8` |
 
 ---
 
