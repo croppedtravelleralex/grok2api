@@ -244,11 +244,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	gatewayService := gateway.NewService(modelService, auditService, accountService, clientKeyService, providers, selector, responseRepo, cfg.Routing.MaxAttempts)
 	gatewayService.SetLogger(logger)
 	gatewayService.ConfigureMedia(mediaJobRepo, cfg.Provider.Web.MediaConcurrency)
-	imagePipeline := imagepipelineapp.NewScheduler(imagePipelineRepo, imagepipelineapp.Config{
-		PipelineSlots: 10, QueueCapacity: 100, ExpandConcurrency: cfg.Provider.Web.ExpandConcurrency,
-		SSEMin: 2, SSEInitial: 3, SSEMax: 6, SSEStagger: 400 * time.Millisecond,
-		DownloadConcurrency: cfg.Provider.Web.AssetConcurrency, Retention: 12 * time.Hour,
-	}, logger)
+	imagePipelineConfig := imagepipelineapp.DefaultConfig()
+	imagePipelineConfig.ExpandConcurrency = cfg.Provider.Web.ExpandConcurrency
+	imagePipelineConfig.DownloadConcurrency = cfg.Provider.Web.AssetConcurrency
+	imagePipeline := imagepipelineapp.NewScheduler(imagePipelineRepo, imagePipelineConfig, logger)
 	gatewayService.ConfigureImagePipeline(imagePipeline)
 	quotaRecoveryService := quotarecoveryapp.NewService(logger, quotaQueue, accountService, cfg.Provider.Web.RecoveryBackoffBase.Value(), cfg.Provider.Web.RecoveryBackoffMax.Value())
 	quotaRecoveryService.SetBulkPool(syncPool)
