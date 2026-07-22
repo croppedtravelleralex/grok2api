@@ -10,10 +10,11 @@
 - 后端为 Go 网关，前端为 React/Vite 管理端，支持 Grok Build、Web、Console 三个账号池。
 - Panda 为低资源生产机：**禁止在其上编译/构建**；标准链为本地改测 → GitHub 上传（Actions/GHCR）→ Panda 仅 `pull` 运行。
 - **Build（2026-07-22）**：四池主路径已上线；生产快照约 `dispatch≈211 / normal=2 / verification=0 / delete=0`。已做/未做全量盘点与 FP-* 待办见 [08-build-four-pool-dual-probe-todos-2026-07-22.md](./08-build-four-pool-dual-probe-todos-2026-07-22.md)。
-- **Web（2026-07-21）**：已可用——关 browser-bridge + 本地零浏览器签名器（`127.0.0.1:8788/sign`）+ LA 住宅 egress `70.39.164.200:30000`；详见 [07-udeal-zero-browser-ops-2026-07-21.md](./07-udeal-zero-browser-ops-2026-07-21.md)。
+- **Web（2026-07-22）**：Lite 主路径已切纯 HTTP——关 browser-bridge + 本地 signer（`127.0.0.1:8788/sign`）+ 单住宅出口；文本与 Lite 均有 200 证据。当前生产镜像为 `5da879fc…15295` / `613a305`。
 - Web 调度当前 **20 个账号**进池：`641,642,644,646,647,649,650,652,654,656` + `659,661,663,667,669,671,673,674,675,677`；文生图开、图生图/视频关；NewAPI 渠道 `#105` 已启用。
 - NewAPI `#105` BaseURL：`http://grok2api:8000`（容器直连，避开 CF；需 `new-api` 加入 `grok2api_default` 网络）。
 - **NewAPI 文生图已验收**：同机 e2e 曾 **200**（约 7–11s），媒体 URL 落在 `https://grokimage.relai.asia/v1/media/images/...`（token 须 `group=grok`、DB key 48 位无连字符、无 `sk-` 前缀）；池薄时仍会 `429 usage_limit`。
+- **10 并发状态**：10 槽/100 queue、Expand 2、SSE AIMD 1→6、Download 8 已部署；这表示 10 个客户端请求可同时进入流水线，不表示单出口同时发 10 条 SSE。最终单请求仍连续 `usage_limit_reached`，所以 4/10 生产档未运行，10/10 成功尚未验收。
 - NewAPI 图片名称仍为 `grok-imagine-image` / `quality` / `edit`；edit/video 渠道保持 disabled。
 
 ## 已完成功能
@@ -51,6 +52,8 @@
 - 历史（2026-07-16）七池/恢复/软退役模型已废弃；上线后以四池 API 快照为准观察 `delete` 下降与 `dispatch` 稳定。
 - `invalid_grant` / `access_denied` 不再进入长期恢复队列；≤1～2 个维护周期内应物理删除。
 - Web 路径事实见 [07](./07-udeal-zero-browser-ops-2026-07-21.md)。
+- Web Imagine 的三类失败必须分开：流水线满为本地 429；`usage_limit_reached` 为上游真实 429；SSE `isSoftStop=true` 常对外表现为 502。单请求也会 soft-stop，双账号并发不是必要触发条件。
+- 近期成功账号优先曾导致两条并发 Lite 请求拿到同一账号；已把同账号 Lite 并发固定为 1。复验中并发请求使用不同账号，不再出现 `too many requests in progress`。
 
 ## 进行中事项
 
@@ -59,19 +62,20 @@
 
 ## 已知阻塞与风险
 
-- **Web 主路径架构已切纯 HTTP，但生产验收未通过（2026-07-22）**：当前依赖本地签名器进程 + udeal 单口；旧镜像 80 次 Lite 请求为 80/80 上游 403。本轮已改为每请求生成新票并修复 trace/调度，尚待新镜像按 1→2→4→10 canary 验收。签名器随 grok2api 重建仍须重拉（`start_signer_nsenter.sh`）。
+- **Web 主路径架构已切纯 HTTP，但 10/10 生产验收未通过（2026-07-22）**：当前依赖 Panda `/tmp` signer + 单住宅出口。fresh browser matched pair 已消除 code 7；最终两次单请求分别 27.04s/34.97s 后返回真实 429，因此按门禁停止，未运行 2/4/10。
+- signer 静态索引已从 `[31,16,43,8]` 漂移到 `[38,33,24,32]`；更严重的是 8 分钟动态 challenge 重算会生成服务端不接受的 pair。当前临时使用一次性 Chrome 捕获的 matched seed+HEX，并把刷新窗口放宽到 24h。signer 仍未镜像化，也没有“真实签名被上游接受”的强健康检查。
 - Webshare **不可**作 `grok_web`（CF Managed Challenge）；可仅试验 `grok_web_asset` CDN 下图。
-- 单 udeal：上行 ~1.5 Mbps / 下行 ~15 Mbps；Lite 出图约 **170KB JPEG / 784×1168**。调度建议 `webConcurrency=2`（流水线后可升 8）、`assetConcurrency=8`、`expandConcurrency=2`、`mediaConcurrency=1`；详见 [07](./07-udeal-zero-browser-ops-2026-07-21.md)。
+- 单住宅出口：上行 ~1.5 Mbps / 下行 ~15 Mbps；Lite 出图约 **170KB JPEG / 784×1168**。当前保持 `webConcurrency=2`、`assetConcurrency=8`、`expandConcurrency=2`、`mediaConcurrency=1`，SSE target 从 1 上探；账号接受率恢复前不得把 web/SSE 下限抬高。
 - Lite 文生图：准入排队 → 扩写池 → SSE AIMD → 下图池；账号 lease 在 SSE 后早释；`/image-timeline` 甘特图。
 - 图生图暂关；开启前需额度与冷却策略，且同口上传应串行。
 
 ## 下一步 3-5 项
 
-1. 观察生产四池快照与探针 `deleted` 计数。
-2. 确认外挂 probe 日志出现 `skipped_build` 且不再刷新 Build。
-3. `grok_web_asset` 挂高带宽口做下图 canary。
-4. 将 zb 签名器做成 compose 旁路服务（避免 nsenter 手工）。
-5. 正式 `http_reverse` 进镜像仍待做。
+1. 对 Web dispatch 账号做低速、逐号 Lite 能力 canary，建立至少 10 个 fresh 模型成功证据；不要用聊天 active 代替生图可用。
+2. 将 signer 做成 compose sidecar：自动发现模块/索引、保存 matched pair、重建后强制真实 `/rest/modes` 验证，失败不放量。
+3. 账号池达标后重新从 1→2→4→10 执行生产门禁，并记录 success/P50/P90/max/soft-stop/429。
+4. `grok_web_asset` 挂高带宽口做下图 canary；上行握手/上传仍保持同出口。
+5. 继续观察 Build 四池快照与探针 `deleted` 计数。
 
 ## 与 README 或旧文档的不一致处
 

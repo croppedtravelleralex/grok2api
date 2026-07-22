@@ -37,6 +37,25 @@
 - Web 浏览器身份：代理、SSO/clearance、UA、平台和浏览器 profile 必须保持一致；桥接停止通常是失败后的保护结果，不能当作 403 根因。
 - Web 全量额度刷新：必须走独立单并发池，先单账号 canary，禁止直接全量重跑。
 
+## 纯 HTTP Lite 生图运维
+
+- 范围只包括 `grok-imagine-image` Lite 文生图；Quality/WS、Edit 和 Video 不得借“10 并发”名义一起开启。
+- 10 并发口径是 10 个客户端请求进入 10 个 pipeline slots。生产基线为 queue=100、Expand=2、SSE AIMD `1→6`、Download=8；单出口不得直接硬开 10 条 SSE。
+- 同账号 Lite 生图并发必须为 1。若日志出现 `You have too many requests in progress`，先查两条 trace 是否拿到同一 account ID，不要误判为账号额度 429。
+- 失败分类：`ErrImagePipelineFull` 是本地 429；`usage_limit_reached` 是上游真实 429；`isSoftStop=true` 是无图终止，常映射为 502。三者的处理和指标必须分开。
+- soft-stop 只做模型级降权，不污染账号全局健康或其他模型；成功偏好、未知、soft-stop 的排序也只作用于当前模型。
+
+部署/重建顺序：
+
+1. 运行 Panda preflight，备份 `/opt/grok2api/.env`，只通过 GHCR digest pull/up 主服务。
+2. 重拉 `/tmp/start_signer_nsenter.sh`；不要在包含 `zb_local_signer.py` 字样的 SSH 父命令里执行其内部 `pkill -f`，避免匹配父进程自杀。
+3. 确认 signer module/x-values。2026-07-22 当前值为 `[38,33,24,32]`，旧值 `[31,16,43,8]` 不可继续使用。
+4. signer `/healthz` 200 只证明进程存活。必须先用一个真实 `/rest/modes` 或 Lite 请求验证 code 7；所有账号 4–6 秒 403 时优先查 matched seed+HEX，不要刷新全账号池。
+5. 动态 challenge 生成的 pair 已出现“本地 refresh_ok、上游 code 7”；当前临时使用一次性 Chrome 捕获的真实 digest pair，抽钥后请求期仍为纯 HTTP。不得把 seed、HEX、SSO、Cookie 写入日志或文档。
+6. Canary 严格 `1→2→4→10`，每档前重新 preflight。上一级成功率未达标或出现健康/资源停止线，立即停止升档。
+
+每档至少记录 success/total、wall、P50/P90/max、HTTP 状态、soft-stop/429 数、trace 匿名账号数量、queue/expand/SSE/download timing、SSE target、容器资源和 health。不得把“10 槽已部署”描述为“10/10 已成功”。
+
 ## 更新纪律
 
 - 新事实更新 [02-current-state.md](./02-current-state.md)。
