@@ -28,6 +28,7 @@ type WebPoolSnapshot struct {
 	ReconciledAt   time.Time `json:"reconciledAt"`
 	EnabledAdded   int       `json:"enabledAdded"`
 	EnabledRemoved int       `json:"enabledRemoved"`
+	ThreePools     WebThreePoolsPublic `json:"threePools,omitempty"`
 }
 
 type webPoolCandidate struct {
@@ -133,11 +134,12 @@ func (s *Service) ReconcileWebPools(ctx context.Context) (WebPoolSnapshot, error
 	}
 
 	sort.Slice(enabledNow, func(i, j int) bool { return enabledNow[i] < enabledNow[j] })
+	threePools, _ := s.SummarizeWebThreePoolsForSnapshot(ctx)
 	return WebPoolSnapshot{
 		ImagePoolIDs: imageIDs, ChatPoolIDs: chatIDs, EnabledIDs: enabledNow,
 		ImagePoolSize: len(imageIDs), ChatPoolSize: len(chatIDs), EnabledCount: len(enabledNow),
 		ImagePoolCap: webImagePoolCap, ChatPoolCap: webChatPoolCap, ReconciledAt: now,
-		EnabledAdded: 0, EnabledRemoved: len(toDisable),
+		EnabledAdded: 0, EnabledRemoved: len(toDisable), ThreePools: threePools,
 	}, nil
 }
 
@@ -202,10 +204,12 @@ func (s *Service) WebPools(ctx context.Context) (WebPoolSnapshot, error) {
 		return a.id < b.id
 	})
 	sort.Slice(enabled, func(i, j int) bool { return enabled[i] < enabled[j] })
+	threePools, _ := s.SummarizeWebThreePoolsForSnapshot(ctx)
 	return WebPoolSnapshot{
 		ImagePoolIDs: imageIDs, ChatPoolIDs: chatIDs, EnabledIDs: enabled,
 		ImagePoolSize: len(imageIDs), ChatPoolSize: len(chatIDs), EnabledCount: len(enabled),
 		ImagePoolCap: webImagePoolCap, ChatPoolCap: webChatPoolCap, ReconciledAt: now,
+		ThreePools: threePools,
 	}, nil
 }
 

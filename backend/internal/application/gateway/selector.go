@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"golang.org/x/sync/singleflight"
@@ -111,6 +112,13 @@ type buildDispatchSource interface {
 	EnsurePoolIndexWarm(ctx context.Context)
 }
 
+// webDispatchSource 提供 Web 双轨调度池有序索引。
+type webDispatchSource interface {
+	OrderedWebDispatchIDs(lane accountapp.WebLane, limit int) []uint64
+	NoteWebDispatchSelected(lane accountapp.WebLane, id uint64, at time.Time)
+	EnsureWebPoolIndexWarm(ctx context.Context)
+}
+
 // Selector 实现可替换的 balanced 账号选择策略。
 type Selector struct {
 	accounts       repository.AccountRepository
@@ -129,6 +137,7 @@ type Selector struct {
 	candidates     map[candidateCacheKey]candidateSnapshot
 	candidateLoads singleflight.Group
 	buildDispatch  buildDispatchSource
+	webDispatch    webDispatchSource
 	tierOrders     interface {
 		TierOrder(account.Provider, string) []account.WebTier
 	}
@@ -138,6 +147,13 @@ type Selector struct {
 func (s *Selector) SetBuildDispatchSource(source buildDispatchSource) {
 	s.mu.Lock()
 	s.buildDispatch = source
+	s.mu.Unlock()
+}
+
+// SetWebDispatchSource 接入 Web 双轨三池调度索引。
+func (s *Selector) SetWebDispatchSource(source webDispatchSource) {
+	s.mu.Lock()
+	s.webDispatch = source
 	s.mu.Unlock()
 }
 
@@ -295,6 +311,14 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 								source.NoteDispatchSelected(candidate.Credential.ID, now)
 							}
 						}
+						if provider == account.ProviderWeb {
+							s.mu.Lock()
+							source := s.webDispatch
+							s.mu.Unlock()
+							if source != nil {
+								source.NoteWebDispatchSelected(accountapp.ResolveWebAcquireLane(upstreamModel, quotaMode), candidate.Credential.ID, now)
+							}
+						}
 						lease.Billing = candidate.Billing
 						lease.QuotaMode = effectiveQuotaMode(candidate, quotaMode)
 						return lease, nil
@@ -333,6 +357,14 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 				s.mu.Unlock()
 				if source != nil {
 					source.NoteDispatchSelected(candidate.Credential.ID, currentTime)
+				}
+			}
+			if provider == account.ProviderWeb {
+				s.mu.Lock()
+				source := s.webDispatch
+				s.mu.Unlock()
+				if source != nil {
+					source.NoteWebDispatchSelected(accountapp.ResolveWebAcquireLane(upstreamModel, quotaMode), candidate.Credential.ID, currentTime)
 				}
 			}
 			lease.Billing = candidate.Billing
@@ -694,16 +726,52 @@ func (s *Selector) MarkFailure(ctx context.Context, credential account.Credentia
 }
 
 func (s *Selector) loadCandidatesForAcquire(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {
-	if provider != account.ProviderBuild {
-		return s.loadCandidates(ctx, provider, upstreamModel, quotaMode, now)
+	if provider == account.ProviderBuild {
+		s.mu.Lock()
+		source := s.buildDispatch
+		s.mu.Unlock()
+		if source == nil {
+			return s.loadCandidates(ctx, provider, upstreamModel, quotaMode, now)
+		}
+		return s.loadBuildCandidatesByIndex(ctx, source, upstreamModel, quotaMode, now)
 	}
-	s.mu.Lock()
-	source := s.buildDispatch
-	s.mu.Unlock()
-	if source == nil {
-		return s.loadCandidates(ctx, provider, upstreamModel, quotaMode, now)
+	if provider == account.ProviderWeb {
+		s.mu.Lock()
+		source := s.webDispatch
+		s.mu.Unlock()
+		if source == nil {
+			return s.loadCandidates(ctx, provider, upstreamModel, quotaMode, now)
+		}
+		lane := accountapp.ResolveWebAcquireLane(upstreamModel, quotaMode)
+		return s.loadWebCandidatesByIndex(ctx, source, lane, upstreamModel, quotaMode, now)
 	}
-	return s.loadBuildCandidatesByIndex(ctx, source, upstreamModel, quotaMode, now)
+	return s.loadCandidates(ctx, provider, upstreamModel, quotaMode, now)
+}
+
+func (s *Selector) loadWebCandidatesByIndex(ctx context.Context, source webDispatchSource, lane accountapp.WebLane, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {
+	batch := buildDispatchHydrateInitial
+	for {
+		dispatchIDs := source.OrderedWebDispatchIDs(lane, batch)
+		if len(dispatchIDs) == 0 {
+			source.EnsureWebPoolIndexWarm(ctx)
+			dispatchIDs = source.OrderedWebDispatchIDs(lane, batch)
+			if len(dispatchIDs) == 0 {
+				return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
+			}
+		}
+		values, err := s.accounts.ListRoutingCandidatesByIDs(ctx, account.ProviderWeb, upstreamModel, quotaMode, dispatchIDs)
+		if err != nil {
+			return nil, err
+		}
+		if len(values) > 0 {
+			return values, nil
+		}
+		if len(dispatchIDs) < batch || batch >= buildDispatchHydrateMax {
+			break
+		}
+		batch = min(batch*2, buildDispatchHydrateMax)
+	}
+	return nil, nil
 }
 
 func (s *Selector) loadBuildCandidatesByIndex(ctx context.Context, source buildDispatchSource, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {

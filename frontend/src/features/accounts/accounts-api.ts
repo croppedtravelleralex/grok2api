@@ -156,6 +156,69 @@ export type AccountAnalyticsDTO = {
   points: AccountAnalyticsPointDTO[];
 };
 
+export type WebProbeLane = "image" | "chat";
+export type WebProbeMode = "dispatch" | "recoveryVerify" | "recoveryCooldown" | "dead";
+export type WebProbeOutcome = "dispatchOk" | "recoveryOk" | "deadOk" | "cooldown" | "failed";
+
+export type WebProbeStatusDTO = {
+  enabled: boolean;
+  running: boolean;
+  intervalSeconds: number;
+  idleIntervalSeconds: number;
+  initialDelaySeconds: number;
+  startedAt?: string;
+  nextRunAt?: string;
+  lastCompletedAt?: string;
+  lastError: string;
+  current?: { accountId: string; accountName: string; lane: WebProbeLane; mode: WebProbeMode; startedAt: string };
+  statistics: {
+    attempts: number;
+    succeeded: number;
+    failed: number;
+    dispatchOk: number;
+    recoveryOk: number;
+    deadOk: number;
+    cooledDown: number;
+    consecutiveFailures: number;
+    laneAttempts?: {
+      imageDispatch: number;
+      chatDispatch: number;
+      imageRecoveryVerify: number;
+      chatRecoveryVerify: number;
+      imageRecoveryCooldown: number;
+      chatRecoveryCooldown: number;
+      imageDead: number;
+      chatDead: number;
+    };
+  };
+  pools: {
+    image: { dispatch: number; recovery: number; dead: number };
+    chat: { dispatch: number; recovery: number; dead: number };
+  };
+  budget: {
+    litePerAccountPerDay: number;
+    chatPerAccountPerDay: number;
+    liteGlobalPerHour: number;
+    liteGlobalUsedHour: number;
+    pipelineActiveSlots: number;
+    pipelineTotalSlots: number;
+    pipelineLoadPercent: number;
+    maxProbeLevel: string;
+  };
+  recent: Array<{
+    accountId: string;
+    accountName: string;
+    lane: WebProbeLane;
+    mode: WebProbeMode;
+    outcome: WebProbeOutcome;
+    pool: string;
+    error: string;
+    startedAt: string;
+    completedAt: string;
+    durationMs: number;
+  }>;
+};
+
 export type BuildProbeMode = "verification" | "normal" | "delete" | "dispatch";
 export type BuildProbeOutcome = "verified" | "normalOk" | "dispatchOk" | "cooldown" | "failed" | "deletable" | "deleted";
 
@@ -303,6 +366,34 @@ const decodeBuildProbeStatus = createObjectDecoder<BuildProbeStatusDTO>("build p
   pools: hasShape({ dispatch: isNumber, normal: isNumber, verification: isNumber, delete: isNumber }),
   recent: isArrayOf(buildProbeResultValidator),
 });
+const webProbeLaneValidator = isOneOf("image", "chat");
+const webProbeModeValidator = isOneOf("dispatch", "recoveryVerify", "recoveryCooldown", "dead");
+const webProbeOutcomeValidator = isOneOf("dispatchOk", "recoveryOk", "deadOk", "cooldown", "failed");
+const webProbePoolCountsValidator = hasShape({ dispatch: isNumber, recovery: isNumber, dead: isNumber });
+const webProbeCurrentValidator = hasShape({ accountId: isString, accountName: isString, lane: webProbeLaneValidator, mode: webProbeModeValidator, startedAt: isString });
+const webProbeResultValidator = hasShape({
+  accountId: isString, accountName: isString, lane: webProbeLaneValidator, mode: webProbeModeValidator, outcome: webProbeOutcomeValidator,
+  pool: isString, error: isString, startedAt: isString, completedAt: isString, durationMs: isNumber,
+});
+const decodeWebProbeStatus = createObjectDecoder<WebProbeStatusDTO>("web probe status", {
+  enabled: isBoolean, running: isBoolean, intervalSeconds: isNumber, idleIntervalSeconds: isNumber, initialDelaySeconds: isNumber,
+  startedAt: isOptional(isString), nextRunAt: isOptional(isString), lastCompletedAt: isOptional(isString), lastError: isString,
+  current: isOptional(webProbeCurrentValidator),
+  statistics: hasShape({
+    attempts: isNumber, succeeded: isNumber, failed: isNumber, dispatchOk: isNumber, recoveryOk: isNumber, deadOk: isNumber,
+    cooledDown: isNumber, consecutiveFailures: isNumber,
+    laneAttempts: isOptional(hasShape({
+      imageDispatch: isNumber, chatDispatch: isNumber, imageRecoveryVerify: isNumber, chatRecoveryVerify: isNumber,
+      imageRecoveryCooldown: isNumber, chatRecoveryCooldown: isNumber, imageDead: isNumber, chatDead: isNumber,
+    })),
+  }),
+  pools: hasShape({ image: webProbePoolCountsValidator, chat: webProbePoolCountsValidator }),
+  budget: hasShape({
+    litePerAccountPerDay: isNumber, chatPerAccountPerDay: isNumber, liteGlobalPerHour: isNumber, liteGlobalUsedHour: isNumber,
+    pipelineActiveSlots: isNumber, pipelineTotalSlots: isNumber, pipelineLoadPercent: isNumber, maxProbeLevel: isString,
+  }),
+  recent: isArrayOf(webProbeResultValidator),
+});
 const accountAnalyticsPointValidator = hasShape({
   bucketAt: isString, provider: isOneOf("grok_build", "grok_web", "grok_console"), total: isNumber, available: isNumber,
   cooldown: isNumber, waitingReset: isNumber, probing: isNumber, disabled: isNumber, reauthRequired: isNumber,
@@ -363,6 +454,10 @@ export function getBuildProbeStatus(): Promise<BuildProbeStatusDTO> {
 
 export function updateBuildProbePurgeApply(purgeApply: boolean): Promise<BuildProbeStatusDTO> {
   return apiRequest("/api/admin/v1/accounts/build-probe", { method: "PATCH", body: { purgeApply } }, decodeBuildProbeStatus);
+}
+
+export function getWebProbeStatus(): Promise<WebProbeStatusDTO> {
+  return apiRequest("/api/admin/v1/accounts/web-probe", {}, decodeWebProbeStatus);
 }
 
 export function updateAccount(id: string, input: AccountUpdateInput): Promise<AccountDTO> {

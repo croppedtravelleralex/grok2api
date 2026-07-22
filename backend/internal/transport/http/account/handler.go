@@ -132,6 +132,8 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/accounts/analytics", h.analytics)
 	router.GET("/accounts/build-probe", h.buildProbeStatus)
 	router.PATCH("/accounts/build-probe", h.updateBuildProbe)
+	router.GET("/accounts/web-probe", h.webProbeStatus)
+	router.PATCH("/accounts/web-probe", h.webProbeStatus)
 	router.GET("/accounts/export", h.exportCredentials)
 	router.GET("/accounts/:id", h.get)
 	router.POST("/accounts/device/start", h.startDevice)
@@ -479,6 +481,69 @@ func newBuildProbeStatusResponse(value accountapp.BuildProbeStatus) gin.H {
 		result["current"] = gin.H{
 			"accountId": strconv.FormatUint(value.Current.AccountID, 10), "accountName": value.Current.AccountName,
 			"mode": value.Current.Mode, "startedAt": value.Current.StartedAt,
+		}
+	}
+	return result
+}
+
+func (h *Handler) webProbeStatus(c *gin.Context) {
+	value, err := h.service.WebProbeStatus(c.Request.Context())
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "webProbeStatusFailed", "读取 Web 探针状态失败")
+		return
+	}
+	response.Success(c, http.StatusOK, newWebProbeStatusResponse(value))
+}
+
+func newWebProbeStatusResponse(value accountapp.WebProbeStatus) gin.H {
+	recent := make([]gin.H, 0, len(value.Recent))
+	for _, item := range value.Recent {
+		recent = append(recent, gin.H{
+			"accountId": strconv.FormatUint(item.AccountID, 10), "accountName": item.AccountName,
+			"lane": item.Lane, "mode": item.Mode, "outcome": item.Outcome, "pool": item.Pool, "error": item.Error,
+			"startedAt": item.StartedAt, "completedAt": item.CompletedAt, "durationMs": item.Duration.Milliseconds(),
+		})
+	}
+	result := gin.H{
+		"enabled": value.Enabled, "running": value.Running,
+		"intervalSeconds": int(value.Interval.Seconds()), "idleIntervalSeconds": int(value.IdleInterval.Seconds()), "initialDelaySeconds": int(value.InitialDelay.Seconds()),
+		"lastError": value.LastError,
+		"statistics": gin.H{
+			"attempts": value.Statistics.Attempts, "succeeded": value.Statistics.Succeeded, "failed": value.Statistics.Failed,
+			"dispatchOk": value.Statistics.DispatchOK, "recoveryOk": value.Statistics.RecoveryOK, "deadOk": value.Statistics.DeadOK,
+			"cooledDown": value.Statistics.CooledDown, "consecutiveFailures": value.Statistics.ConsecutiveFailures,
+			"laneAttempts": gin.H{
+				"imageDispatch": value.Statistics.LaneAttempts.ImageDispatch, "chatDispatch": value.Statistics.LaneAttempts.ChatDispatch,
+				"imageRecoveryVerify": value.Statistics.LaneAttempts.ImageRecoveryVerify, "chatRecoveryVerify": value.Statistics.LaneAttempts.ChatRecoveryVerify,
+				"imageRecoveryCooldown": value.Statistics.LaneAttempts.ImageRecoveryCooldown, "chatRecoveryCooldown": value.Statistics.LaneAttempts.ChatRecoveryCooldown,
+				"imageDead": value.Statistics.LaneAttempts.ImageDead, "chatDead": value.Statistics.LaneAttempts.ChatDead,
+			},
+		},
+		"pools": gin.H{
+			"image": gin.H{"dispatch": value.Pools.Image.Dispatch, "recovery": value.Pools.Image.Recovery, "dead": value.Pools.Image.Dead},
+			"chat":  gin.H{"dispatch": value.Pools.Chat.Dispatch, "recovery": value.Pools.Chat.Recovery, "dead": value.Pools.Chat.Dead},
+		},
+		"budget": gin.H{
+			"litePerAccountPerDay": value.Budget.LitePerAccountPerDay, "chatPerAccountPerDay": value.Budget.ChatPerAccountPerDay,
+			"liteGlobalPerHour": value.Budget.LiteGlobalPerHour, "liteGlobalUsedHour": value.Budget.LiteGlobalUsedHour,
+			"pipelineActiveSlots": value.Budget.PipelineActiveSlots, "pipelineTotalSlots": value.Budget.PipelineTotalSlots,
+			"pipelineLoadPercent": value.Budget.PipelineLoadPercent, "maxProbeLevel": value.Budget.MaxProbeLevel,
+		},
+		"recent": recent,
+	}
+	if value.StartedAt != nil {
+		result["startedAt"] = value.StartedAt
+	}
+	if value.NextRunAt != nil {
+		result["nextRunAt"] = value.NextRunAt
+	}
+	if value.LastCompletedAt != nil {
+		result["lastCompletedAt"] = value.LastCompletedAt
+	}
+	if value.Current != nil {
+		result["current"] = gin.H{
+			"accountId": strconv.FormatUint(value.Current.AccountID, 10), "accountName": value.Current.AccountName,
+			"lane": value.Current.Lane, "mode": value.Current.Mode, "startedAt": value.Current.StartedAt,
 		}
 	}
 	return result

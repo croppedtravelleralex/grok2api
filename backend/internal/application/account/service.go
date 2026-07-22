@@ -246,6 +246,12 @@ type Service struct {
 	deleteHeap            *poolindex.DueHeap
 	dispatchProbeHeap     *poolindex.DueHeap
 	maintenanceDRR        *poolindex.DRRScheduler
+	webProbeMu            sync.Mutex
+	webProbe              *webProbeMonitor
+	webProbeBudget        *webProbeBudgetGovernor
+	webImageLane          webLaneIndex
+	webChatLane           webLaneIndex
+	webProbeLaneCursor    int
 	logger                *slog.Logger
 	now                   func() time.Time
 }
@@ -1898,7 +1904,7 @@ func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) 
 // QueueQuotaRefresh 在成功调用后异步同步远端窗口额度；当前 Web Free 账号同步 Chat 模式。
 func (s *Service) QueueQuotaRefresh(id uint64, mode string) {
 	mode = strings.TrimSpace(mode)
-	if id == 0 || (mode != "" && mode != "weekly" && !isWebChatQuotaMode(mode)) {
+	if id == 0 || (mode != "" && mode != "weekly" && mode != "imagine" && !isWebChatQuotaMode(mode)) {
 		return
 	}
 	key := strconv.FormatUint(id, 10) + ":" + mode

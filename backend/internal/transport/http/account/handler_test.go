@@ -381,6 +381,36 @@ func TestBuildProbeStatusRouteReturnsPoolStatisticsWithoutNullTimes(t *testing.T
 	}
 }
 
+func TestWebProbeStatusRouteReturnsSixPoolSummary(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "web-probe-status.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewAccountRepository(database)
+	service := accountapp.NewService(repository, nil, nil, nil, provider.NewRegistry(), nil, nil)
+	if _, _, err := repository.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO, Name: "web-1", SourceKey: "web-1",
+		EncryptedAccessToken: "token", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	NewHandler(service, nil).Register(router.Group("/api/admin/v1"))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/v1/accounts/web-probe", nil)
+	router.ServeHTTP(recorder, request)
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK || !strings.Contains(body, `"image"`) || !strings.Contains(body, `"chat"`) || !strings.Contains(body, `"maxProbeLevel"`) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, body)
+	}
+}
+
 func TestAccountSyncPipelineUsesFinalQueuedTotal(t *testing.T) {
 	syncer := &accountProgressSynchronizerStub{}
 	handler := NewHandler(nil, syncer)

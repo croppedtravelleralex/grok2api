@@ -24,6 +24,13 @@ PASSWORD_CANDIDATES = [
 ]
 # Build 由进程内 DispatchProbe + MaintenanceProbe 接管。
 SKIP_PROVIDERS = {"grok_build", "build"}
+# Web 三池双探针由进程内调度/维护探针接管；外挂仅保留 token 续期，不做 quota refresh。
+WEB_IN_PROCESS_PROBE = os.environ.get("GROK2API_WEB_IN_PROCESS_PROBE", "1").lower() not in {
+    "0",
+    "false",
+    "off",
+    "no",
+}
 
 
 def read_password() -> str:
@@ -113,7 +120,9 @@ def probe_account(token: str, account_id: int, provider: str) -> dict:
     out = {"account_id": account_id, "provider": provider, "steps": []}
     steps = [("refresh_token", f"/accounts/{account_id}/refresh-token")]
     if provider in {"grok_web", "web"}:
-        steps.append(("refresh_web_quota", f"/accounts/{account_id}/web/refresh-quota"))
+        # 进程内 web_dispatch_probe + web_maintenance_probe 负责 L0/L1/L2；外挂不再 refresh-quota。
+        if not WEB_IN_PROCESS_PROBE:
+            steps.append(("refresh_web_quota", f"/accounts/{account_id}/refresh-quota"))
     else:
         steps.append(("refresh_billing", f"/accounts/{account_id}/refresh-billing"))
     for step, path in steps:

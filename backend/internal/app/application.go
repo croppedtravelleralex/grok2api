@@ -241,6 +241,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	dashboardService := dashboardapp.NewService(dashboardRepo)
 	selector := gateway.NewSelector(accountRepo, concurrency, sticky, providers, cfg.Routing.StickyTTL.Value(), cfg.Routing.CooldownBase.Value(), cfg.Routing.CooldownMax.Value(), cfg.Routing.CapacityWait.Value())
 	selector.SetBuildDispatchSource(accountService)
+	selector.SetWebDispatchSource(accountService)
 	gatewayService := gateway.NewService(modelService, auditService, accountService, clientKeyService, providers, selector, responseRepo, cfg.Routing.MaxAttempts)
 	gatewayService.SetLogger(logger)
 	gatewayService.ConfigureMedia(mediaJobRepo, cfg.Provider.Web.MediaConcurrency)
@@ -249,6 +250,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	imagePipelineConfig.DownloadConcurrency = cfg.Provider.Web.AssetConcurrency
 	imagePipeline := imagepipelineapp.NewScheduler(imagePipelineRepo, imagePipelineConfig, logger)
 	gatewayService.ConfigureImagePipeline(imagePipeline)
+	accountService.SetWebProbePipelineOccupancy(func() (int, int) {
+		snap := imagePipeline.Snapshot()
+		return snap.ActiveSlots, snap.PipelineSlots
+	})
 	quotaRecoveryService := quotarecoveryapp.NewService(logger, quotaQueue, accountService, cfg.Provider.Web.RecoveryBackoffBase.Value(), cfg.Provider.Web.RecoveryBackoffMax.Value())
 	quotaRecoveryService.SetBulkPool(syncPool)
 	var notifySettings func(context.Context)
@@ -440,6 +445,14 @@ func (a *Application) Run(ctx context.Context) error {
 	})
 	startBackground("build_dispatch_probe", func(taskCtx context.Context) error {
 		a.runBuildDispatchProbe(taskCtx)
+		return nil
+	})
+	startBackground("web_dispatch_probe", func(taskCtx context.Context) error {
+		a.runWebDispatchProbe(taskCtx)
+		return nil
+	})
+	startBackground("web_maintenance_probe", func(taskCtx context.Context) error {
+		a.runWebMaintenanceProbe(taskCtx)
 		return nil
 	})
 	startBackground("video_recovery", func(taskCtx context.Context) error {

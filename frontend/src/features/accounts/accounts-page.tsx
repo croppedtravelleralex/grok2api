@@ -69,6 +69,7 @@ import {
 import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/account-quota";
 import { AccountTrends } from "@/features/accounts/account-trends";
 import { BuildProbePanel } from "@/features/accounts/build-probe-panel";
+import { WebProbePanel } from "@/features/accounts/web-probe-panel";
 
 function isAbortError(error: unknown): boolean {
   return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
@@ -607,6 +608,7 @@ export function AccountsPage() {
           </TabsList>
         </Tabs>
         {provider === "grok_build" ? <BuildProbePanel onCompleted={() => { void accountsQuery.refetch(); void summaryQuery.refetch(); }} /> : null}
+        {provider === "grok_web" ? <WebProbePanel onCompleted={() => { void accountsQuery.refetch(); void summaryQuery.refetch(); }} /> : null}
         <input
           ref={fileInputRef}
           type="file"

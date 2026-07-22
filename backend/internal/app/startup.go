@@ -102,6 +102,29 @@ func buildChatProbePurgeApply() bool {
 	return value == "1" || value == "true" || value == "on" || value == "yes"
 }
 
+func webProbeInterval() time.Duration {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("GROK2API_WEB_PROBE_EVERY")))
+	if value == "" {
+		value = "30s"
+	}
+	if value == "0" || value == "off" || value == "disabled" {
+		return 0
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed < 15*time.Second || parsed > 24*time.Hour {
+		return 30 * time.Second
+	}
+	return parsed
+}
+
+func webProbeInitialDelay() time.Duration {
+	return boundedEnvDuration("GROK2API_WEB_PROBE_INITIAL_DELAY", defaultBuildChatProbeInitialDelay, 10*time.Second, 24*time.Hour)
+}
+
+func webProbeIdleInterval() time.Duration {
+	return boundedEnvDuration("GROK2API_WEB_PROBE_IDLE_EVERY", 5*time.Minute, time.Minute, 24*time.Hour)
+}
+
 type startupReport struct {
 	StartedAt                time.Time
 	CompletedAt              *time.Time
@@ -575,6 +598,80 @@ func (a *Application) runBuildDispatchProbe(ctx context.Context) {
 			a.logger.Warn("build_dispatch_probe_failed", "account_id", accountID, "error", err)
 		} else if found {
 			a.logger.Info("build_dispatch_probe_succeeded", "account_id", accountID)
+		}
+		nextInterval := interval
+		if !found {
+			nextInterval = idleInterval
+		}
+		resetTimer(timer, nextInterval)
+	}
+}
+
+// runWebDispatchProbe Web 调度探针：L0 only，图/聊两轨交替。
+func (a *Application) runWebDispatchProbe(ctx context.Context) {
+	interval := webProbeInterval()
+	if interval <= 0 {
+		<-ctx.Done()
+		return
+	}
+	idleInterval := webProbeIdleInterval()
+	initialDelay := webProbeInitialDelay() / 2
+	if initialDelay <= 0 {
+		initialDelay = 15 * time.Second
+	}
+	a.accounts.ConfigureWebProbe(interval, idleInterval, initialDelay)
+	if err := a.accounts.RebuildWebPoolIndex(ctx); err != nil {
+		a.logger.Warn("web_pool_index_rebuild_failed", "error", err)
+	}
+	timer := time.NewTimer(initialDelay)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		accountID, found, err := a.accounts.WebDispatchProbeTick(probeCtx)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			a.logger.Warn("web_dispatch_probe_failed", "account_id", accountID, "error", err)
+		} else if found {
+			a.logger.Info("web_dispatch_probe_succeeded", "account_id", accountID)
+		}
+		nextInterval := interval
+		if !found {
+			nextInterval = idleInterval
+		}
+		a.accounts.ScheduleWebProbe(time.Now().UTC().Add(nextInterval))
+		resetTimer(timer, nextInterval)
+	}
+}
+
+// runWebMaintenanceProbe Web 维护探针：DRR + L0/L1/L2。
+func (a *Application) runWebMaintenanceProbe(ctx context.Context) {
+	interval := webProbeInterval()
+	if interval <= 0 {
+		<-ctx.Done()
+		return
+	}
+	idleInterval := webProbeIdleInterval()
+	initialDelay := webProbeInitialDelay()
+	timer := time.NewTimer(initialDelay)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		accountID, found, err := a.accounts.WebMaintenanceProbeTick(probeCtx)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			a.logger.Warn("web_maintenance_probe_failed", "account_id", accountID, "error", err)
+		} else if found {
+			a.logger.Info("web_maintenance_probe_succeeded", "account_id", accountID)
 		}
 		nextInterval := interval
 		if !found {
