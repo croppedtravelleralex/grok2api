@@ -805,6 +805,8 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 			modelRanks[key.accountID] = 1
 		}
 	}
+	s.mu.Unlock()
+	remaining := make(map[uint64]float64, len(values))
 	fresh := make(map[uint64]bool, len(values))
 	inFlight := make(map[uint64]int, len(values))
 	concurrencyKeys := make([]string, 0, len(values))
@@ -827,8 +829,6 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 		if !batched {
 			var err error
 			current, err = s.concurrency.Current(ctx, key)
-	s.mu.Unlock()
-	remaining := make(map[uint64]float64, len(values))
 			if err != nil {
 				return fmt.Errorf("读取账号并发租约: %w", err)
 			}
@@ -872,6 +872,8 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 		if leftRank != rightRank {
 			return leftRank < rightRank
 		}
+		if left.Priority != right.Priority {
+			return left.Priority > right.Priority
 		}
 		if fresh[left.ID] != fresh[right.ID] {
 			return fresh[left.ID]
@@ -894,8 +896,6 @@ func (s *Selector) resolveTierOrder(provider account.Provider, upstreamModel str
 	if s.tierOrders == nil {
 		return nil
 	}
-		if left.Priority != right.Priority {
-			return left.Priority > right.Priority
 	return s.tierOrders.TierOrder(provider, upstreamModel)
 }
 
