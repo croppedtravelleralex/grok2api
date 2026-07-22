@@ -11,8 +11,10 @@
 | 账号列表 `pool` 空串导致 invalidResponse | **Done** | `pool` 仅 Build 返回；`omitempty` + 前端 optional |
 | Imagine 额度 + modelStates 代码 | **已提交** | `73e4ab2` |
 | FP-001 / FP-002 / Signer sidecar | **已提交** | `ca31ec8` |
+| FP-003 lane 计数 | **Done** | `statistics.laneAttempts`（含于 `73e4ab2`） |
+| `go test ./...` + signer 单测 | **通过** | 已 push，待 CI/GHCR |
 
----
+**下一步**：CI 通过后 Panda 部署 signer + 新 digest → 单账号 Imagine 闭环 → 逐号 canary。
 
 ## 阶段 1 — Signer 产品化（阻塞项，先于 Imagine 部署）
 
