@@ -61,6 +61,14 @@ type BuildProbeStatistics struct {
 	Deletable           int64
 	Deleted             int64
 	ConsecutiveFailures int64
+	LaneAttempts        BuildProbeLaneAttempts
+}
+
+type BuildProbeLaneAttempts struct {
+	Verification int64
+	Normal       int64
+	Delete       int64
+	Dispatch     int64
 }
 
 type BuildProbePoolSummary struct {
@@ -249,6 +257,16 @@ func (m *buildProbeMonitor) finish(candidate accountdomain.Credential, mode Buil
 		}
 	}
 	m.statistics.Attempts++
+	switch mode {
+	case BuildProbeModeVerification:
+		m.statistics.LaneAttempts.Verification++
+	case BuildProbeModeNormal:
+		m.statistics.LaneAttempts.Normal++
+	case BuildProbeModeDelete:
+		m.statistics.LaneAttempts.Delete++
+	case BuildProbeModeDispatch:
+		m.statistics.LaneAttempts.Dispatch++
+	}
 	switch {
 	case errors.Is(probeErr, errPurgeDeleted):
 		m.statistics.Failed++

@@ -363,6 +363,49 @@ class HealthCleanupTest(unittest.TestCase):
         finally:
             release_bootstrap.set()
 
+    def test_sign_rejects_unauthorized(self):
+        app = _load_app()
+        app.authorized = lambda: False
+        with self.assertRaises(RuntimeError):
+            app.sign()
+
+    def test_sign_rejects_missing_path(self):
+        app = _load_app()
+        app.authorized = lambda: True
+        app.json_body = lambda: {"method": "POST", "cookie": "sso=x"}
+        with self.assertRaises(RuntimeError):
+            app.sign()
+
+    def test_sign_returns_statsig_id(self):
+        app = _load_app()
+        driver = _Driver()
+        driver.execute_async_script = lambda *_args: {
+            "statsigId": "sig-test-abc",
+            "path": "/rest/app-chat/conversations/new",
+            "method": "POST",
+        }
+        session = app.BrowserSession(driver, "direct://", "https://grok.com/")
+        app.SESSIONS["sign-only"] = session
+        app.authorized = lambda: True
+        app.json_body = lambda: {
+            "path": "/rest/app-chat/conversations/new",
+            "method": "POST",
+            "cookie": "sso=x",
+            "timeoutMs": 1000,
+        }
+        app.acquire_session = lambda *_args, **_kwargs: session
+        app._terminate_orphaned_browser_processes = lambda: None
+        app.os.environ["BRIDGE_REUSE_SESSIONS"] = "true"
+        try:
+            payload = app.sign()
+        finally:
+            app.os.environ.pop("BRIDGE_REUSE_SESSIONS", None)
+
+        self.assertEqual(
+            '{"statsigId":"sig-test-abc","path":"/rest/app-chat/conversations/new","method":"POST"}',
+            payload,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

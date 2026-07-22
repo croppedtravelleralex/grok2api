@@ -92,6 +92,15 @@ func TestSyncQuotaCorrectsStoredSuperFromFreshWebQuota(t *testing.T) {
 		switch request.URL.Path {
 		case "/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig":
 			http.Error(writer, "not available", http.StatusNotFound)
+		case "/rest/usage/free-usage-gates":
+			if request.Method != http.MethodGet {
+				t.Errorf("free usage gates method = %s", request.Method)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"chat":    map[string]string{"allowance": "20", "remaining": "19"},
+				"imagine": map[string]string{"allowance": "12", "remaining": "7"},
+			})
 		case "/rest/rate-limits":
 			var payload struct {
 				ModelName string `json:"modelName"`
@@ -136,7 +145,21 @@ func TestSyncQuotaCorrectsStoredSuperFromFreshWebQuota(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Tier != account.WebTierBasic || len(snapshot.Windows) != 2 || snapshot.Windows[0].Mode != "auto" || snapshot.Windows[0].Total != 7 || snapshot.Windows[1].Mode != "fast" || snapshot.Windows[1].Total != 30 {
+	if snapshot.Tier != account.WebTierBasic || len(snapshot.Windows) != 3 || snapshot.Windows[0].Mode != "auto" || snapshot.Windows[0].Total != 7 || snapshot.Windows[1].Mode != "fast" || snapshot.Windows[1].Total != 30 {
 		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	imagine := snapshot.Windows[2]
+	if imagine.Mode != "imagine" || imagine.Total != 12 || imagine.Remaining != 7 || imagine.WindowSeconds != 0 || imagine.ResetAt != nil || imagine.Source != account.QuotaSourceUpstream {
+		t.Fatalf("imagine window = %#v", imagine)
+	}
+}
+
+func TestLiteImageUsesIndependentImagineQuotaMode(t *testing.T) {
+	adapter := &Adapter{}
+	if got := adapter.QuotaMode("grok-imagine-image"); got != imagineQuotaMode {
+		t.Fatalf("Lite image quota mode = %q, want %q", got, imagineQuotaMode)
+	}
+	if got := adapter.QuotaMode("grok-chat-fast"); got != "fast" {
+		t.Fatalf("chat quota mode = %q, want fast", got)
 	}
 }

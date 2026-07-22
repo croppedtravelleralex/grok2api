@@ -1,9 +1,10 @@
 import type { TFunction } from "i18next";
 import { Info } from "lucide-react";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { AccountDTO, BillingDTO, QuotaDTO } from "@/features/accounts/accounts-api";
+import type { AccountDTO, BillingDTO, ModelStateDTO, ModelStateStatus, QuotaDTO } from "@/features/accounts/accounts-api";
 import { cn } from "@/shared/lib/cn";
 import { formatDateTime, formatNumber } from "@/shared/lib/format";
 
@@ -113,36 +114,79 @@ export function ConsoleQuota({ windows, locale }: { windows: NonNullable<Account
   return <WebQuotaMode mode="Console" window={window} locale={locale} />;
 }
 
-export function WebQuota({ windows, locale, tier }: { windows: NonNullable<AccountDTO["quotaWindows"]>; locale: string; tier?: AccountDTO["webTier"] }) {
+export function WebQuota({ windows, modelStates = [], locale, tier }: { windows: NonNullable<AccountDTO["quotaWindows"]>; modelStates?: NonNullable<AccountDTO["modelStates"]>; locale: string; tier?: AccountDTO["webTier"] }) {
   const { t } = useTranslation();
-  if (windows.length === 0) return <span className="text-xs text-muted-foreground">{t("accounts.quotaNotSynced")}</span>;
   const windowsByMode = new Map(windows.map((window) => [window.mode, window]));
   const weekly = windowsByMode.get("weekly");
-  if (weekly) return <WeeklyWebQuota window={weekly} locale={locale} t={t} />;
-
   const fast = windowsByMode.get("fast");
-  if (tier === "basic" && fast) {
-    return (
-      <div className="w-full min-w-0 space-y-1">
-        <WebQuotaMode mode={t("accounts.quotaFastLiteShared")} window={fast} locale={locale} />
+  let primaryQuota: ReactNode;
+  if (weekly) {
+    primaryQuota = <WeeklyWebQuota window={weekly} locale={locale} t={t} />;
+  } else if (tier === "basic" && fast) {
+    primaryQuota = <WebQuotaMode mode={t("accounts.quotaFastLiteShared")} window={fast} locale={locale} />;
+  } else if (windows.length === 0) {
+    primaryQuota = <span className="text-xs text-muted-foreground">{t("accounts.quotaNotSynced")}</span>;
+  } else {
+    primaryQuota = (
+      <div className="grid w-full min-w-0 grid-cols-4 divide-x divide-border/70">
+        {visibleWebQuotaModes.map((mode) => {
+          const window = windowsByMode.get(mode);
+          const label = mode === "fast" ? t("accounts.quotaFastLiteShared") : formatWebQuotaMode(mode);
+          if (!window) {
+            return <div key={mode} className="min-w-0 px-2 first:pl-0 last:pr-0"><div className="flex items-center justify-between gap-1 text-[11px]"><span className="truncate text-muted-foreground">{label}</span><span className="text-muted-foreground">-</span></div><div className="mt-1.5 h-1.5 rounded-full bg-muted" /></div>;
+          }
+          return <WebQuotaMode key={mode} mode={label} window={window} locale={locale} compact />;
+        })}
       </div>
     );
   }
+  const imagineWindow = windowsByMode.get("imagine");
+  const imagineState = modelStates.find((state) => state.upstreamModel === "grok-imagine-image");
   return (
-    <div className="grid w-full min-w-0 grid-cols-4 divide-x divide-border/70">
-      {visibleWebQuotaModes.map((mode) => {
-        const window = windowsByMode.get(mode);
-        const label = mode === "fast" ? t("accounts.quotaFastLiteShared") : formatWebQuotaMode(mode);
-        if (!window) {
-          return <div key={mode} className="min-w-0 px-2 first:pl-0 last:pr-0"><div className="flex items-center justify-between gap-1 text-[11px]"><span className="truncate text-muted-foreground">{label}</span><span className="text-muted-foreground">-</span></div><div className="mt-1.5 h-1.5 rounded-full bg-muted" /></div>;
-        }
-        return <WebQuotaMode key={mode} mode={label} window={window} locale={locale} compact />;
-      })}
+    <div className="w-full min-w-0 space-y-2">
+      {primaryQuota}
+      <ImagineModelState state={imagineState} window={imagineWindow} locale={locale} />
     </div>
   );
 }
 
 type WebQuotaWindow = NonNullable<AccountDTO["quotaWindows"]>[number];
+
+function ImagineModelState({ state, window, locale }: { state?: ModelStateDTO; window?: WebQuotaWindow; locale: string }) {
+  const { t } = useTranslation();
+  const status = state?.status ?? "unknown";
+  const quota = window && window.total > 0
+    ? t("modelState.remaining", { remaining: formatNumber(window.remaining, locale, 0), total: formatNumber(window.total, locale, 0) })
+    : t("modelState.limitUnknown");
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="flex min-w-0 items-center justify-between gap-2 border-t border-border/60 pt-1.5 text-[11px]">
+          <span className="shrink-0 text-muted-foreground">{t("modelState.imagine")}</span>
+          <span className="min-w-0 truncate tabular-nums text-muted-foreground">{quota}</span>
+          <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 font-medium", modelStateClass(status))}>{t(`modelState.status.${status}`)}</span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent>
+        <div>{t(`modelState.status.${status}`)}</div>
+        <div className="text-muted-foreground">{window?.resetAt ? t("accounts.quotaResetAt", { time: formatDateTime(window.resetAt, locale) }) : t("modelState.noReset")}</div>
+        {window?.total === 0 && window.remaining === 0 ? <div className="text-muted-foreground">{t("modelState.zeroUnknown")}</div> : null}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function modelStateClass(status: ModelStateStatus): string {
+  switch (status) {
+    case "available": return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300";
+    case "quota_available": return "bg-sky-500/15 text-sky-700 dark:text-sky-300";
+    case "soft_stop": return "bg-amber-500/15 text-amber-700 dark:text-amber-300";
+    case "quota_exhausted":
+    case "auth_failed":
+    case "signature_failed": return "bg-destructive/15 text-destructive";
+    default: return "bg-muted text-muted-foreground";
+  }
+}
 
 function WeeklyWebQuota({ window, locale, t }: { window: WebQuotaWindow; locale: string; t: TFunction }) {
   const usedPercent = Math.max(0, Math.min(100, window.usagePercent));

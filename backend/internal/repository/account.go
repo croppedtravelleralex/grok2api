@@ -25,12 +25,11 @@ type AccountRepository interface {
 	List(ctx context.Context, query AccountListQuery) ([]account.Credential, int64, error)
 	Summarize(ctx context.Context, now time.Time) ([]AccountSummary, error)
 	ListEnabled(ctx context.Context, provider account.Provider) ([]account.Credential, error)
-	ListRecoveryCandidates(ctx context.Context, provider account.Provider, now time.Time, limit int) ([]account.Credential, error)
-	ListPurgeCandidates(ctx context.Context, provider account.Provider, now time.Time, limit int) ([]account.Credential, error)
 	ListEnabledAccountIDs(ctx context.Context, provider account.Provider, refreshableOnly bool) ([]uint64, error)
 	ListUnlinkedWebAccountIDs(ctx context.Context, limit int) ([]uint64, error)
 	HasActive(ctx context.Context, provider account.Provider) (bool, error)
 	ListRoutingCandidates(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string) ([]account.RoutingCandidate, error)
+	ListRoutingCandidatesByIDs(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string, ids []uint64) ([]account.RoutingCandidate, error)
 	Get(ctx context.Context, id uint64) (account.Credential, error)
 	LinkWebToBuild(ctx context.Context, webAccountID, buildAccountID uint64) error
 	GetBillings(ctx context.Context, accountIDs []uint64) (map[uint64]account.Billing, error)
@@ -51,6 +50,8 @@ type AccountRepository interface {
 	UpsertModelQuotaBlock(ctx context.Context, value account.ModelQuotaBlock) error
 	GetActiveModelQuotaBlocks(ctx context.Context, accountIDs []uint64, upstreamModel string, now time.Time) (map[uint64]bool, error)
 	PruneExpiredModelQuotaBlocks(ctx context.Context, now time.Time, limit int) (int64, error)
+	SaveModelState(ctx context.Context, value account.ModelState) error
+	GetModelStates(ctx context.Context, accountIDs []uint64) (map[uint64][]account.ModelState, error)
 	SaveBilling(ctx context.Context, value account.Billing) error
 	GetBilling(ctx context.Context, accountID uint64) (account.Billing, error)
 	GetQuotaRecovery(ctx context.Context, accountID uint64) (account.QuotaRecovery, error)

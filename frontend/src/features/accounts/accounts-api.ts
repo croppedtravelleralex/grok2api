@@ -67,7 +67,7 @@ export type AccountDTO = {
   teamId?: string;
   enabled: boolean;
   authStatus: "active" | "reauthRequired";
-  pool: "dispatch" | "normal" | "verification" | "delete";
+  pool?: "dispatch" | "normal" | "verification" | "delete";
   recoveryAttempts: number;
   nextRecoveryAt?: string;
   expiresAt?: string;
@@ -91,6 +91,20 @@ export type AccountDTO = {
   billing?: BillingDTO;
   quota: QuotaDTO;
   quotaWindows?: Array<{ mode: string; remaining: number; total: number; usagePercent: number; breakdown?: Array<{ productCode: number; usagePercent: number }>; windowSeconds: number; resetAt?: string; syncedAt?: string; source: "default" | "estimated" | "upstream" }>;
+  modelStates?: ModelStateDTO[];
+};
+
+export type ModelStateStatus = "unknown" | "quota_available" | "available" | "soft_stop" | "quota_exhausted" | "auth_failed" | "signature_failed";
+
+export type ModelStateDTO = {
+  upstreamModel: string;
+  status: ModelStateStatus;
+  reason?: string;
+  consecutiveFailures: number;
+  lastAttemptAt?: string;
+  lastSuccessAt?: string;
+  cooldownUntil?: string;
+  updatedAt?: string;
 };
 
 export type AccountUpdateInput = {
@@ -242,16 +256,23 @@ const quotaWindowValidator = hasShape({
   mode: isString, remaining: isNumber, total: isNumber, usagePercent: isNumber, breakdown: isOptional(isArrayOf(quotaBreakdownValidator)),
   windowSeconds: isNumber, resetAt: isOptional(isString), syncedAt: isOptional(isString), source: isOneOf("default", "estimated", "upstream"),
 });
+const modelStateValidator = hasShape({
+  upstreamModel: isString,
+  status: isOneOf("unknown", "quota_available", "available", "soft_stop", "quota_exhausted", "auth_failed", "signature_failed"),
+  reason: isOptional(isString), consecutiveFailures: isNumber, lastAttemptAt: isOptional(isString),
+  lastSuccessAt: isOptional(isString), cooldownUntil: isOptional(isString), updatedAt: isOptional(isString),
+});
 const accountValidator = hasShape({
   id: isString, provider: isOneOf("grok_build", "grok_web", "grok_console"), authType: isOneOf("oauth", "sso"), webTier: isOptional(isOneOf("auto", "basic", "super", "heavy")),
   webTierSyncedAt: isOptional(isString), name: isString, email: isOptional(isString), userId: isOptional(isString), teamId: isOptional(isString),
-  enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), pool: isOneOf("dispatch", "normal", "verification", "delete"),
+  enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), pool: isOptional(isOneOf("dispatch", "normal", "verification", "delete")),
   recoveryAttempts: isNumber, nextRecoveryAt: isOptional(isString), expiresAt: isOptional(isString), refreshable: isBoolean,
   refreshDueAt: isOptional(isString), lastRefreshAt: isOptional(isString), refreshFailureCount: isNumber,
   lastRefreshErrorCode: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
   failureCount: isNumber, cooldownUntil: isOptional(isString), lastError: isOptional(isString), lastUsedAt: isOptional(isString),
   linkedAccountId: isOptional(isString), linkedAccountName: isOptional(isString), linkedProvider: isOptional(isOneOf("grok_build", "grok_web")), observedModel: isOptional(isString),
   createdAt: isString, billing: isOptional(billingValidator), quota: quotaValidator, quotaWindows: isOptional(isArrayOf(quotaWindowValidator)),
+  modelStates: isOptional(isArrayOf(modelStateValidator)),
 });
 const decodeBilling = createValidatedDecoder<BillingDTO>("billing", billingValidator);
 const decodeAccount = createValidatedDecoder<AccountDTO>("account", accountValidator);
@@ -277,6 +298,7 @@ const decodeBuildProbeStatus = createObjectDecoder<BuildProbeStatusDTO>("build p
   statistics: hasShape({
     attempts: isNumber, succeeded: isNumber, failed: isNumber, verified: isNumber, normalOk: isNumber, dispatchOk: isNumber, cooledDown: isNumber,
     deletable: isNumber, deleted: isNumber, consecutiveFailures: isNumber,
+    laneAttempts: isOptional(hasShape({ verification: isNumber, normal: isNumber, delete: isNumber, dispatch: isNumber })),
   }),
   pools: hasShape({ dispatch: isNumber, normal: isNumber, verification: isNumber, delete: isNumber }),
   recent: isArrayOf(buildProbeResultValidator),

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	accountsyncapp "github.com/chenyme/grok2api/backend/internal/application/accountsync"
@@ -30,6 +31,40 @@ type accountSynchronizerStub struct {
 
 type accountProgressSynchronizerStub struct {
 	accountSynchronizerStub
+}
+
+func TestNewAccountResponseIncludesImagineModelState(t *testing.T) {
+	now := time.Now().UTC()
+	response := newAccountResponse(accountapp.View{
+		Credential: accountdomain.Credential{ID: 12, Provider: accountdomain.ProviderWeb},
+		ModelStates: []accountdomain.ModelState{{
+			AccountID: 12, UpstreamModel: "grok-imagine-image", Status: accountdomain.ModelStatusQuotaAvailable,
+			Reason: "quota_remaining_positive", LastAttemptAt: now, LastSuccessAt: &now, UpdatedAt: now,
+		}},
+	})
+	if len(response.ModelStates) != 1 {
+		t.Fatalf("model states = %#v", response.ModelStates)
+	}
+	state := response.ModelStates[0]
+	if state.UpstreamModel != "grok-imagine-image" || state.Status != "quota_available" || state.Reason != "quota_remaining_positive" || state.LastSuccessAt == nil {
+		t.Fatalf("model state = %#v", state)
+	}
+	if response.Pool != "" {
+		t.Fatalf("web account pool = %q, want empty", response.Pool)
+	}
+}
+
+func TestAccountPoolOnlyAppliesToBuildProvider(t *testing.T) {
+	webPool := accountPool(accountdomain.Credential{ID: 1, Provider: accountdomain.ProviderWeb, Enabled: true})
+	if webPool != "" {
+		t.Fatalf("web pool = %q", webPool)
+	}
+	buildPool := accountPool(accountdomain.Credential{
+		ID: 2, Provider: accountdomain.ProviderBuild, Enabled: true, ObservedModel: "grok-4",
+	})
+	if buildPool != accountapp.PoolDispatch {
+		t.Fatalf("build pool = %q", buildPool)
+	}
 }
 
 func TestWriteServiceErrorUsesCredentialLimitCodes(t *testing.T) {

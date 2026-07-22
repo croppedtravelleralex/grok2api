@@ -11,6 +11,9 @@
 - Panda 为低资源生产机：**禁止在其上编译/构建**；标准链为本地改测 → GitHub 上传（Actions/GHCR）→ Panda 仅 `pull` 运行。
 - **Build（2026-07-22）**：四池主路径已上线；生产快照约 `dispatch≈211 / normal=2 / verification=0 / delete=0`。已做/未做全量盘点与 FP-* 待办见 [08-build-four-pool-dual-probe-todos-2026-07-22.md](./08-build-four-pool-dual-probe-todos-2026-07-22.md)。
 - **Web（2026-07-22）**：Lite 主路径已切纯 HTTP——关 browser-bridge + 本地 signer（`127.0.0.1:8788/sign`）+ 单住宅出口；文本与 Lite 均有 200 证据。当前生产镜像为 `5da879fc…15295` / `613a305`。
+- **Imagine 次数读取（本地已实现、生产未部署）**：`GET /rest/usage/free-usage-gates` 可返回 `imagine.allowance/remaining`；上游不返回窗口长度或绝对重置时间。实测多个账号（含历史 Lite 成功号）均可能返回 `0/0`，因此 `0/0` 定义为“免费闸门不适用或上限未知”，只有 `total>0 && remaining=0` 才能判定额度耗尽。
+- **账号×模型独立状态（本地已实现、生产未部署）**：持久化 `unknown / quota_available / available / soft_stop / quota_exhausted / auth_failed / signature_failed`；额度窗口与真实请求结果分开保存。Accounts API/页面会同时展示 Imagine 次数和模型状态。
+- 本轮已做、未做、生产门禁与下一步完成定义统一见 [09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md](./09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md)。
 - Web 调度当前 **20 个账号**进池：`641,642,644,646,647,649,650,652,654,656` + `659,661,663,667,669,671,673,674,675,677`；文生图开、图生图/视频关；NewAPI 渠道 `#105` 已启用。
 - NewAPI `#105` BaseURL：`http://grok2api:8000`（容器直连，避开 CF；需 `new-api` 加入 `grok2api_default` 网络）。
 - **NewAPI 文生图已验收**：同机 e2e 曾 **200**（约 7–11s），媒体 URL 落在 `https://grokimage.relai.asia/v1/media/images/...`（token 须 `group=grok`、DB key 48 位无连字符、无 `sk-` 前缀）；池薄时仍会 `429 usage_limit`。
@@ -54,6 +57,7 @@
 - Web 路径事实见 [07](./07-udeal-zero-browser-ops-2026-07-21.md)。
 - Web Imagine 的三类失败必须分开：流水线满为本地 429；`usage_limit_reached` 为上游真实 429；SSE `isSoftStop=true` 常对外表现为 502。单请求也会 soft-stop，双账号并发不是必要触发条件。
 - 近期成功账号优先曾导致两条并发 Lite 请求拿到同一账号；已把同账号 Lite 并发固定为 1。复验中并发请求使用不同账号，不再出现 `too many requests in progress`。
+- Imagine 图池不再借用聊天 `fast` 额度：独立使用 `imagine` 窗口、模型状态和模型级 block。真实成功优先，已知正额度待探测其次，`0/0`/未同步保持未知但可路由；明确耗尽、认证失败、签名失败和仍在冷却的 soft-stop 不进入图池。聊天池仍只看 `auto/fast`。
 
 ## 进行中事项
 
@@ -72,10 +76,10 @@
 ## 下一步 3-5 项
 
 1. 对 Web dispatch 账号做低速、逐号 Lite 能力 canary，建立至少 10 个 fresh 模型成功证据；不要用聊天 active 代替生图可用。
-2. 将 signer 做成 compose sidecar：自动发现模块/索引、保存 matched pair、重建后强制真实 `/rest/modes` 验证，失败不放量。
-3. 账号池达标后重新从 1→2→4→10 执行生产门禁，并记录 success/P50/P90/max/soft-stop/429。
-4. `grok_web_asset` 挂高带宽口做下图 canary；上行握手/上传仍保持同出口。
-5. 继续观察 Build 四池快照与探针 `deleted` 计数。
+2. 先部署并单账号验证 Imagine 次数同步和模型状态迁移；确认 Accounts 页不会把 `0/0` 显示成耗尽，再按新图池排序观察调度。
+3. 将 signer 做成 compose sidecar：自动发现模块/索引、保存 matched pair、重建后强制真实 `/rest/modes` 验证，失败不放量。
+4. 账号池达标后重新从 1→2→4→10 执行生产门禁，并记录 success/P50/P90/max/soft-stop/429。
+5. `grok_web_asset` 挂高带宽口做下图 canary；上行握手/上传仍保持同出口，并继续观察 Build 四池。
 
 ## 与 README 或旧文档的不一致处
 

@@ -109,6 +109,11 @@ func (a *Adapter) config() Config {
 func (a *Adapter) Provider() account.Provider { return account.ProviderWeb }
 
 func (a *Adapter) QuotaMode(upstreamModel string) string {
+	// Lite 生图的上游请求仍使用 fast 协议模式，但账号额度必须读取
+	// /rest/usage/free-usage-gates 的独立 Imagine 计数，不能借用聊天 fast 窗口。
+	if upstreamModel == "grok-imagine-image" {
+		return imagineQuotaMode
+	}
 	if spec, ok := Resolve(upstreamModel); ok {
 		return spec.Mode
 	}

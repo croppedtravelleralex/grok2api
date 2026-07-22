@@ -7,6 +7,7 @@
 3. 涉及上线顺序时读 [03-roadmap.md](./03-roadmap.md)。
 4. 涉及技术债时读 [04-improvement-backlog.md](./04-improvement-backlog.md)。
 5. 读当月日志，再进入相关代码、配置、数据库和命令验证。
+6. 涉及 Web Lite/Imagine/10 并发时，必须先读 [09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md](./09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md)，按其中 `1→2→4→10` 门禁接续。
 
 ## 本地默认流程
 
@@ -36,6 +37,9 @@
 - Web 403：先区分代理连接、Cloudflare 浏览器状态和 SSO 是否有效；代理 IP 白名单成功不等于 Grok 会话有效。
 - Web 浏览器身份：代理、SSO/clearance、UA、平台和浏览器 profile 必须保持一致；桥接停止通常是失败后的保护结果，不能当作 403 根因。
 - Web 全量额度刷新：必须走独立单并发池，先单账号 canary，禁止直接全量重跑。
+- Web Imagine 次数：调用 `GET /rest/usage/free-usage-gates`，只保存上游明确返回的 `allowance/remaining`。不得伪造“每日几点刷新”；该接口当前没有窗口秒数和 ResetAt。
+- Imagine `0/0`：不是耗尽证据。只有 `allowance>0 && remaining=0` 才按明确额度耗尽处理；`0/0` 保持 unknown 并允许低优先级真实请求探测。
+- 账号全局 active 不能代表 Imagine 可用。排障必须同时读取 `quotaWindows[mode=imagine]` 和 `modelStates[upstreamModel=grok-imagine-image]`。
 
 ## 纯 HTTP Lite 生图运维
 
@@ -44,6 +48,8 @@
 - 同账号 Lite 生图并发必须为 1。若日志出现 `You have too many requests in progress`，先查两条 trace 是否拿到同一 account ID，不要误判为账号额度 429。
 - 失败分类：`ErrImagePipelineFull` 是本地 429；`usage_limit_reached` 是上游真实 429；`isSoftStop=true` 是无图终止，常映射为 502。三者的处理和指标必须分开。
 - soft-stop 只做模型级降权，不污染账号全局健康或其他模型；成功偏好、未知、soft-stop 的排序也只作用于当前模型。
+- 模型状态持久化口径：成功=`available`，明确正额度但尚未真实成功=`quota_available`，无明确证据=`unknown`，无图终止=`soft_stop`，`usage_limit_reached`=`quota_exhausted`，401=`auth_failed`，最终 code 7/`anti_bot_rejected`=`signature_failed`。网络错误不得伪装成认证或签名失败。
+- 图池使用 Imagine 独立窗口和上述模型状态；聊天池使用 `auto/fast`。不要再用聊天 fast 剩余次数代表账号可生图次数。
 
 部署/重建顺序：
 

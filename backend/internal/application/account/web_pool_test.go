@@ -1,6 +1,11 @@
 package account
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+)
 
 func TestSelectWebPoolIDsRespectsCapAndOrdering(t *testing.T) {
 	candidates := []webPoolCandidate{
@@ -22,3 +27,28 @@ func TestSelectWebPoolIDsRespectsCapAndOrdering(t *testing.T) {
 		t.Fatalf("ids=%v want [3 2]", ids)
 	}
 }
+
+func TestImagePoolEligibilityKeepsUnknownImagineQuotaRoutable(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name      string
+		candidate webPoolCandidate
+		want      bool
+	}{
+		{name: "zero over zero is unknown", candidate: webPoolCandidate{enabled: true, active: true, imagineWindow: &accountdomain.QuotaWindow{Total: 0, Remaining: 0}}, want: true},
+		{name: "known zero is exhausted", candidate: webPoolCandidate{enabled: true, active: true, imagineWindow: &accountdomain.QuotaWindow{Total: 10, Remaining: 0}}, want: false},
+		{name: "known positive is available", candidate: webPoolCandidate{enabled: true, active: true, imagineWindow: &accountdomain.QuotaWindow{Total: 10, Remaining: 3}}, want: true},
+		{name: "signature failure is unavailable", candidate: webPoolCandidate{enabled: true, active: true, modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusSignatureFailed}}, want: false},
+		{name: "old quota exhaustion cleared by positive refresh", candidate: webPoolCandidate{enabled: true, active: true, imagineBlocked: true, imagineWindow: &accountdomain.QuotaWindow{Total: 10, Remaining: 3}, modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusQuotaExhausted}}, want: true},
+		{name: "active soft stop is unavailable", candidate: webPoolCandidate{enabled: true, active: true, modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusSoftStop, CooldownUntil: timePointer(now.Add(time.Minute))}}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := imagePoolEligible(test.candidate, now); got != test.want {
+				t.Fatalf("eligible = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func timePointer(value time.Time) *time.Time { return &value }

@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
@@ -19,10 +20,11 @@ import (
 )
 
 const weeklyQuotaMode = "weekly"
+const imagineQuotaMode = "imagine"
 
 func (a *Adapter) SyncQuota(ctx context.Context, credential account.Credential) (provider.QuotaSnapshot, error) {
 	weekly, weeklyErr := a.syncWeeklyCredits(ctx, credential)
-	windows := make([]account.QuotaWindow, 0, 2)
+	windows := make([]account.QuotaWindow, 0, 3)
 	if autoWindow, autoErr := a.SyncQuotaMode(ctx, credential, "auto"); autoErr == nil {
 		windows = append(windows, autoWindow)
 	}
@@ -30,21 +32,34 @@ func (a *Adapter) SyncQuota(ctx context.Context, credential account.Credential) 
 	if fastErr == nil {
 		windows = append(windows, fastWindow)
 	}
+	imagineWindow, imagineErr := a.SyncQuotaMode(ctx, credential, imagineQuotaMode)
+	tier := credential.WebTier
 	if len(windows) > 0 {
-		tier, useWeekly := resolveWebTierFromQuota(credential.WebTier, windows, weeklyErr == nil)
+		var useWeekly bool
+		tier, useWeekly = resolveWebTierFromQuota(credential.WebTier, windows, weeklyErr == nil)
 		if useWeekly {
 			windows = []account.QuotaWindow{weekly}
 		}
-		return provider.QuotaSnapshot{Tier: tier, Windows: windows, SyncedAt: time.Now().UTC()}, nil
+	} else if weeklyErr == nil {
+		tier, _ = resolveWebTierFromQuota(credential.WebTier, nil, true)
+		windows = append(windows, weekly)
 	}
-	if weeklyErr == nil {
-		tier, _ := resolveWebTierFromQuota(credential.WebTier, nil, true)
-		return provider.QuotaSnapshot{Tier: tier, Windows: []account.QuotaWindow{weekly}, SyncedAt: time.Now().UTC()}, nil
+	if imagineErr == nil {
+		windows = append(windows, imagineWindow)
+	}
+	if len(windows) > 0 {
+		if tier != account.WebTierBasic && tier != account.WebTierSuper && tier != account.WebTierHeavy {
+			tier = account.WebTierAuto
+		}
+		return provider.QuotaSnapshot{Tier: tier, Windows: windows, SyncedAt: time.Now().UTC()}, nil
 	}
 	if fastErr != nil {
 		return provider.QuotaSnapshot{}, fastErr
 	}
-	return provider.QuotaSnapshot{}, weeklyErr
+	if weeklyErr != nil {
+		return provider.QuotaSnapshot{}, weeklyErr
+	}
+	return provider.QuotaSnapshot{}, imagineErr
 }
 
 func resolveWebTierFromQuota(current account.WebTier, windows []account.QuotaWindow, weeklyAvailable bool) (account.WebTier, bool) {
@@ -110,6 +125,9 @@ func inferWebTierFromQuota(windows []account.QuotaWindow) (account.WebTier, bool
 func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credential, mode string) (account.QuotaWindow, error) {
 	if mode == weeklyQuotaMode {
 		return a.syncWeeklyCredits(ctx, credential)
+	}
+	if mode == imagineQuotaMode {
+		return a.syncImagineUsage(ctx, credential)
 	}
 	cfg := a.config()
 	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
@@ -180,6 +198,102 @@ func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credenti
 		AccountID: credential.ID, Mode: mode, Remaining: max(0, value.RemainingQueries), Total: value.TotalQueries,
 		WindowSeconds: value.WindowSizeSeconds, ResetAt: &resetAt, SyncedAt: &now, Source: account.QuotaSourceUpstream, UpdatedAt: now,
 	}, nil
+}
+
+// syncImagineUsage 读取 Grok 前端公开使用的独立 Imagine 免费用量闸门。
+// 上游只返回本周期 allowance/remaining，不返回窗口长度或绝对重置时间，
+// 因此这里不猜测“每日几点刷新”，只持久化可验证的次数。
+func (a *Adapter) syncImagineUsage(ctx context.Context, credential account.Credential) (account.QuotaWindow, error) {
+	cfg := a.config()
+	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
+	if err != nil {
+		return account.QuotaWindow{}, err
+	}
+	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWeb, strconv.FormatUint(credential.ID, 10))
+	if err != nil {
+		return account.QuotaWindow{}, err
+	}
+	defer lease.Release()
+
+	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.QuotaTimeoutSeconds)*time.Second)
+	defer cancel()
+	endpoint := cfg.BaseURL + "/rest/usage/free-usage-gates"
+	var response *http.Response
+	var body []byte
+	for attempt := 0; attempt < 2; attempt++ {
+		request, requestErr := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
+		if requestErr != nil {
+			return account.QuotaWindow{}, requestErr
+		}
+		request.Header = buildHeaders(token, lease, "application/json")
+		applyAppHeaders(request.Header, cfg.BaseURL, cfg.BaseURL+"/")
+		a.applySignedStatsig(requestCtx, request, token, lease)
+		response, err = a.doModelRequest(requestCtx, lease, request, time.Duration(cfg.QuotaTimeoutSeconds)*time.Second)
+		if err != nil {
+			a.feedbackTransportError(ctx, lease, err)
+			return account.QuotaWindow{}, err
+		}
+		body, err = io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		_ = response.Body.Close()
+		if err != nil {
+			return account.QuotaWindow{}, err
+		}
+		if response.StatusCode == http.StatusForbidden && attempt == 0 && a.invalidateSignedStatsig(http.MethodGet, endpoint) {
+			continue
+		}
+		break
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
+		if response.StatusCode == http.StatusUnauthorized {
+			return account.QuotaWindow{}, provider.ErrUnauthorized
+		}
+		return account.QuotaWindow{}, fmt.Errorf("Grok Web Imagine 用量接口返回 %d", response.StatusCode)
+	}
+	a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
+	var value struct {
+		Imagine *struct {
+			Allowance json.RawMessage `json:"allowance"`
+			Remaining json.RawMessage `json:"remaining"`
+		} `json:"imagine"`
+	}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return account.QuotaWindow{}, err
+	}
+	if value.Imagine == nil {
+		return account.QuotaWindow{}, fmt.Errorf("Grok Web Imagine 用量响应缺少 imagine")
+	}
+	total, err := parseUsageCount(value.Imagine.Allowance)
+	if err != nil {
+		return account.QuotaWindow{}, fmt.Errorf("解析 Grok Web Imagine allowance: %w", err)
+	}
+	remaining, err := parseUsageCount(value.Imagine.Remaining)
+	if err != nil {
+		return account.QuotaWindow{}, fmt.Errorf("解析 Grok Web Imagine remaining: %w", err)
+	}
+	if remaining > total {
+		return account.QuotaWindow{}, fmt.Errorf("Grok Web Imagine 剩余次数大于总次数")
+	}
+	now := time.Now().UTC()
+	return account.QuotaWindow{
+		AccountID: credential.ID, Mode: imagineQuotaMode, Remaining: remaining, Total: total,
+		SyncedAt: &now, Source: account.QuotaSourceUpstream, UpdatedAt: now,
+	}, nil
+}
+
+func parseUsageCount(raw json.RawMessage) (int, error) {
+	text := strings.TrimSpace(string(raw))
+	if len(text) >= 2 && text[0] == '"' && text[len(text)-1] == '"' {
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return 0, err
+		}
+		text = strings.TrimSpace(text)
+	}
+	value, err := strconv.Atoi(text)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("无效的非负整数 %q", text)
+	}
+	return value, nil
 }
 
 func (a *Adapter) syncWeeklyCredits(ctx context.Context, credential account.Credential) (account.QuotaWindow, error) {

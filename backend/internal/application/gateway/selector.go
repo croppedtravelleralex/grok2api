@@ -27,6 +27,7 @@ type accountLease struct {
 const quotaProbeLease = 5 * time.Minute
 const successPersistInterval = 30 * time.Second
 const candidateCacheTTL = time.Second
+const buildDispatchHydrateLimit = 64
 const modelOutcomeSuccessTTL = 30 * time.Minute
 const modelSoftStopBaseCooldown = 30 * time.Second
 const modelSoftStopMaxCooldown = 5 * time.Minute
@@ -120,8 +121,8 @@ type Selector struct {
 	leaseWake      chan struct{}
 	lastSelectedAt map[uint64]time.Time
 	lastSuccessAt  map[uint64]time.Time
-	candidates     map[candidateCacheKey]candidateSnapshot
 	modelOutcomes  map[modelOutcomeKey]modelOutcome
+	candidates     map[candidateCacheKey]candidateSnapshot
 	candidateLoads singleflight.Group
 	buildDispatch  buildDispatchSource
 	tierOrders     interface {
@@ -166,7 +167,7 @@ func (s *Selector) routingConfig() (time.Duration, time.Duration, time.Duration,
 func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstreamModel, quotaMode, promptCacheKey string, excluded map[uint64]bool, allowQuotaProbe bool) (*accountLease, error) {
 	now := time.Now().UTC()
 	stickyKey := promptCacheStickyKey(promptCacheKey)
-	values, err := s.loadCandidates(ctx, provider, upstreamModel, quotaMode, now)
+	values, err := s.loadCandidatesForAcquire(ctx, provider, upstreamModel, quotaMode, now)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +193,7 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 			continue
 		}
 		supportedCandidates++
-		if candidate.ModelQuotaBlock != nil && now.Before(candidate.ModelQuotaBlock.CooldownUntil) {
+		if candidateModelQuotaBlocked(candidate, now) {
 			modelCoolingCandidates++
 			earliestRetry = earlierFuture(earliestRetry, candidate.ModelQuotaBlock.CooldownUntil, now)
 			continue
@@ -218,7 +219,9 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 			quotaCandidates++
 			continue
 		}
-		if candidate.QuotaWindow != nil && candidate.QuotaWindow.Remaining <= 0 {
+		// total=0/remaining=0 是 free-usage-gates 对部分已成功生图账号的真实返回，
+		// 表示该免费闸门不适用或上限未知，不能误判为模型额度耗尽。
+		if candidate.QuotaWindow != nil && candidate.QuotaWindow.Total > 0 && candidate.QuotaWindow.Remaining <= 0 {
 			quotaCandidates++
 			if candidate.QuotaWindow.ResetAt != nil {
 				earliestRetry = earlierFuture(earliestRetry, *candidate.QuotaWindow.ResetAt, now)
@@ -272,7 +275,7 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 		if err != nil {
 			return nil, fmt.Errorf("读取会话粘滞状态: %w", err)
 		}
-				if ok {
+		if ok {
 			for _, candidate := range normalCandidates {
 				if candidate.Credential.ID == stickyID {
 					lease, acquireErr := s.claimAccountSlot(ctx, candidate.Credential, upstreamModel)
@@ -410,7 +413,7 @@ func (s *Selector) AcquirePinned(ctx context.Context, provider account.Provider,
 			if candidate.ModelCapabilityKnown && !candidate.SupportsModel {
 				return nil, &SelectionUnavailableError{Reason: SelectionUnsupportedModel}
 			}
-			if candidate.ModelQuotaBlock != nil && now.Before(candidate.ModelQuotaBlock.CooldownUntil) {
+			if candidateModelQuotaBlocked(candidate, now) {
 				return nil, &SelectionUnavailableError{Reason: SelectionModelCooling, RetryAfter: retryDelay(now, candidate.ModelQuotaBlock.CooldownUntil)}
 			}
 			if value.CooldownUntil != nil && now.Before(*value.CooldownUntil) {
@@ -461,6 +464,15 @@ func (s *Selector) AcquirePinned(ctx context.Context, provider account.Provider,
 		return lease, nil
 	}
 	return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
+}
+
+// candidateModelQuotaBlocked 让新同步到的明确正额度覆盖旧的临时 model block；
+// 0/0 不是恢复证据，仍保留真实 429 建立的冷却。
+func candidateModelQuotaBlocked(candidate account.RoutingCandidate, now time.Time) bool {
+	if candidate.ModelQuotaBlock == nil || !now.Before(candidate.ModelQuotaBlock.CooldownUntil) {
+		return false
+	}
+	return candidate.QuotaWindow == nil || candidate.QuotaWindow.Total <= 0 || candidate.QuotaWindow.Remaining <= 0
 }
 
 func effectiveQuotaMode(candidate account.RoutingCandidate, fallback string) string {
@@ -521,6 +533,10 @@ func (s *Selector) MarkModelQuotaExhausted(ctx context.Context, credential accou
 	_ = s.accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{
 		AccountID: credential.ID, UpstreamModel: upstreamModel, Reason: "model_quota_depleted", CooldownUntil: until, UpdatedAt: time.Now().UTC(),
 	})
+	_ = s.accounts.SaveModelState(ctx, account.ModelState{
+		AccountID: credential.ID, UpstreamModel: upstreamModel, Status: account.ModelStatusQuotaExhausted,
+		Reason: "usage_limit_reached", ConsecutiveFailures: 1, LastAttemptAt: time.Now().UTC(), CooldownUntil: &until, UpdatedAt: time.Now().UTC(),
+	})
 	s.invalidateCandidates(credential.Provider)
 }
 
@@ -546,17 +562,15 @@ func (s *Selector) MarkPaidQuotaExhausted(ctx context.Context, credential accoun
 // MarkQuotaStateChanged 在 Billing 探测改变持久化额度状态后立即失效候选快照。
 func (s *Selector) MarkQuotaStateChanged(provider account.Provider) { s.invalidateCandidates(provider) }
 
-// ConsumeQuota 将成功请求的本地额度变化应用到候选快照，避免为单账号变化清空整个 Provider 缓存。
-// MarkModelSoftStop 只记录进程内的模型级退避，不修改账号全局健康或其他模型的调度资格。
-func (s *Selector) MarkModelSoftStop(accountID uint64, upstreamModel string) {
+// MarkModelSoftStop 记录模型级退避，不修改账号全局健康或其他模型的调度资格。
+func (s *Selector) MarkModelSoftStop(ctx context.Context, accountID uint64, upstreamModel string) error {
 	upstreamModel = strings.TrimSpace(upstreamModel)
 	if accountID == 0 || upstreamModel == "" {
-		return
+		return nil
 	}
 	now := time.Now().UTC()
 	key := modelOutcomeKey{accountID: accountID, upstreamModel: upstreamModel}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.modelOutcomes == nil {
 		s.modelOutcomes = make(map[modelOutcomeKey]modelOutcome)
 	}
@@ -575,23 +589,61 @@ func (s *Selector) MarkModelSoftStop(accountID uint64, upstreamModel string) {
 	value.lastSoftStopAt = now
 	value.softStopUntil = now.Add(cooldown)
 	s.modelOutcomes[key] = value
+	s.mu.Unlock()
+	if s.accounts == nil {
+		return nil
+	}
+	return s.accounts.SaveModelState(ctx, account.ModelState{
+		AccountID: accountID, UpstreamModel: upstreamModel, Status: account.ModelStatusSoftStop,
+		Reason: "soft_stop", ConsecutiveFailures: value.consecutiveSoftStop,
+		LastAttemptAt: now, CooldownUntil: &value.softStopUntil, UpdatedAt: now,
+	})
 }
 
 // MarkModelSuccess 让近期验证成功的账号在同模型中优先，同时清除它的 soft-stop 退避。
-func (s *Selector) MarkModelSuccess(accountID uint64, upstreamModel string) {
+func (s *Selector) MarkModelSuccess(ctx context.Context, accountID uint64, upstreamModel string) error {
 	upstreamModel = strings.TrimSpace(upstreamModel)
 	if accountID == 0 || upstreamModel == "" {
-		return
+		return nil
 	}
+	now := time.Now().UTC()
 	key := modelOutcomeKey{accountID: accountID, upstreamModel: upstreamModel}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.modelOutcomes == nil {
 		s.modelOutcomes = make(map[modelOutcomeKey]modelOutcome)
 	}
-	s.modelOutcomes[key] = modelOutcome{lastSuccessAt: time.Now().UTC()}
+	s.modelOutcomes[key] = modelOutcome{lastSuccessAt: now}
+	s.mu.Unlock()
+	if s.accounts == nil {
+		return nil
+	}
+	return s.accounts.SaveModelState(ctx, account.ModelState{
+		AccountID: accountID, UpstreamModel: upstreamModel, Status: account.ModelStatusAvailable,
+		Reason: "image_generated", LastAttemptAt: now, LastSuccessAt: &now, UpdatedAt: now,
+	})
 }
 
+func (s *Selector) MarkModelAuthFailed(ctx context.Context, accountID uint64, upstreamModel string) error {
+	return s.saveModelFailure(ctx, accountID, upstreamModel, account.ModelStatusAuthFailed, "unauthorized")
+}
+
+func (s *Selector) MarkModelSignatureFailed(ctx context.Context, accountID uint64, upstreamModel string) error {
+	return s.saveModelFailure(ctx, accountID, upstreamModel, account.ModelStatusSignatureFailed, "anti_bot_rejected")
+}
+
+func (s *Selector) saveModelFailure(ctx context.Context, accountID uint64, upstreamModel string, status account.ModelStatus, reason string) error {
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if s.accounts == nil || accountID == 0 || upstreamModel == "" {
+		return nil
+	}
+	now := time.Now().UTC()
+	return s.accounts.SaveModelState(ctx, account.ModelState{
+		AccountID: accountID, UpstreamModel: upstreamModel, Status: status, Reason: reason,
+		ConsecutiveFailures: 1, LastAttemptAt: now, UpdatedAt: now,
+	})
+}
+
+// ConsumeQuota 将成功请求的本地额度变化应用到候选快照，避免为单账号变化清空整个 Provider 缓存。
 func (s *Selector) ConsumeQuota(provider account.Provider, accountID uint64, mode string, amount int) {
 	if accountID == 0 || mode == "" || mode == "weekly" || amount <= 0 {
 		return
@@ -635,6 +687,27 @@ func (s *Selector) MarkFailure(ctx context.Context, credential account.Credentia
 	if status == 401 || status == 402 || status == 403 || status == 429 {
 		_ = s.sticky.DeleteByAccount(ctx, credential.ID)
 	}
+}
+
+func (s *Selector) loadCandidatesForAcquire(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {
+	if provider == account.ProviderBuild {
+		s.mu.Lock()
+		source := s.buildDispatch
+		s.mu.Unlock()
+		if source != nil {
+			ids := source.OrderedDispatchIDs(buildDispatchHydrateLimit)
+			if len(ids) > 0 {
+				values, err := s.accounts.ListRoutingCandidatesByIDs(ctx, provider, upstreamModel, quotaMode, ids)
+				if err != nil {
+					return nil, err
+				}
+				if len(values) > 0 {
+					return values, nil
+				}
+			}
+		}
+	}
+	return s.loadCandidates(ctx, provider, upstreamModel, quotaMode, now)
 }
 
 func (s *Selector) loadCandidates(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {
@@ -792,6 +865,18 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 	}
 	modelRanks := make(map[uint64]int, len(values))
 	upstreamModel = strings.TrimSpace(upstreamModel)
+	for _, candidate := range values {
+		state := candidate.ModelState
+		if state == nil || state.UpstreamModel != upstreamModel {
+			continue
+		}
+		switch {
+		case state.Status == account.ModelStatusSoftStop && state.CooldownUntil != nil && now.Before(*state.CooldownUntil):
+			modelRanks[state.AccountID] = 2
+		case state.Status == account.ModelStatusAvailable && state.LastSuccessAt != nil && now.Sub(*state.LastSuccessAt) <= modelOutcomeSuccessTTL:
+			modelRanks[state.AccountID] = 0
+		}
+	}
 	for key, outcome := range s.modelOutcomes {
 		latest := outcome.lastSuccessAt
 		if outcome.lastSoftStopAt.After(latest) {

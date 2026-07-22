@@ -296,7 +296,7 @@ def execute_browser_operation(browser, timeout_ms, operation):
     return state.get("result")
 
 
-def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeout_ms=None, user_agent=""):
+def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeout_ms=None, user_agent="", light_bootstrap=False):
     if not session_key or len(session_key) > 128:
         raise HTTPError(400, "invalid session key")
     timeout_ms = bounded_timeout_ms(None, 120000) if timeout_ms is None else max(1, min(MAX_OPERATION_MS, int(timeout_ms)))
@@ -359,9 +359,26 @@ def acquire_session(session_key, proxy_url, cookies, referer, target_url, timeou
   globalThis.TURBOPACK = queue;
 })();
 """})
-                    state["stage"] = "loading Grok through the selected proxy"
-                    request_value = V1RequestBase({"url": bootstrap_url, "cookies": cookies, "returnOnlyCookies": True})
-                    _evil_logic(request_value, driver, "GET")
+                    if light_bootstrap and target.hostname in {"grok.com", "www.grok.com"}:
+                        # Skip FlareSolverr: used when egress already clears CF (e.g. udeal pass_app).
+                        state["stage"] = "loading Grok via direct navigation"
+                        for cookie in cookies or []:
+                            try:
+                                driver.execute_cdp_cmd("Network.setCookie", {
+                                    "name": cookie["name"],
+                                    "value": cookie["value"],
+                                    "domain": cookie.get("domain") or ".grok.com",
+                                    "path": cookie.get("path") or "/",
+                                    "secure": bool(cookie.get("secure", True)),
+                                })
+                            except Exception:
+                                pass
+                        driver.set_page_load_timeout(max(30, min(90, timeout_ms // 1000)))
+                        driver.get(bootstrap_url)
+                    else:
+                        state["stage"] = "loading Grok through the selected proxy"
+                        request_value = V1RequestBase({"url": bootstrap_url, "cookies": cookies, "returnOnlyCookies": True})
+                        _evil_logic(request_value, driver, "GET")
                     if cancelled.is_set():
                         browser.close()
                         return
@@ -448,6 +465,264 @@ def health():
     if session_count == 0 and expired_count == 0 and not SESSION_CREATING.is_set():
         _terminate_orphaned_browser_processes()
     return encode_response({"status": "ok", "sessions": session_count})
+
+
+SIGN_SCRIPT = r"""
+const cfg = arguments[0], done = arguments[arguments.length - 1];
+let finished = false;
+const finish = value => { if (!finished) { finished = true; done(value); } };
+const timer = setTimeout(() => finish({error: 'browser sign timeout'}), cfg.timeoutMs);
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const looksGood = sig => {
+  const value = String(sig || '').trim();
+  return value.length > 20 && !value.startsWith('x0:') && !value.startsWith('eDA6');
+};
+const trySign = async (moduleId) => {
+  const signerModule = await globalThis.__grokBridgeRuntime.A(moduleId);
+  if (!signerModule || typeof signerModule.default !== 'function') {
+    throw new Error('module has no default factory');
+  }
+  const signer = signerModule.default();
+  if (typeof signer !== 'function') throw new Error('default() did not return signer');
+  const statsigId = await signer(cfg.path, cfg.method);
+  if (!looksGood(statsigId)) throw new Error('empty or fallback statsig id');
+  globalThis.__grokBridgeSigner = signer;
+  globalThis.__grokBridgeSignerModuleId = moduleId;
+  return String(statsigId).trim();
+};
+const cachedModuleIds = () => {
+  const runtime = globalThis.__grokBridgeRuntime;
+  const ids = [];
+  const cache = runtime && (runtime.c || runtime.m || runtime.modules);
+  if (cache && typeof cache === 'object') {
+    for (const key of Object.keys(cache)) {
+      const n = Number(key);
+      if (Number.isFinite(n) && n > 0) ids.push(n);
+    }
+  }
+  ids.sort((a, b) => a - b);
+  return ids;
+};
+(async () => {
+  try {
+    const deadline = Date.now() + Math.max(8000, (cfg.timeoutMs || 30000) - 2000);
+    while (Date.now() < deadline) {
+      if (globalThis.__grokBridgeRuntime && document.body && document.body.childNodes.length >= 3) break;
+      await sleep(250);
+    }
+    if (!globalThis.__grokBridgeRuntime) throw new Error('Turbopack runtime unavailable');
+    if (!document.body || document.body.childNodes.length < 3) {
+      throw new Error('Grok DOM not ready for signer (body.childNodes=' + ((document.body && document.body.childNodes.length) || 0) + ')');
+    }
+    await sleep(2500);
+
+    const captured = [];
+    const note = (sig) => { if (looksGood(sig)) captured.push(String(sig).trim()); };
+    try {
+      const origSet = Headers.prototype.set;
+      Headers.prototype.set = function(name, value) {
+        if (String(name).toLowerCase() === 'x-statsig-id') note(value);
+        return origSet.apply(this, arguments);
+      };
+      const origAppend = Headers.prototype.append;
+      Headers.prototype.append = function(name, value) {
+        if (String(name).toLowerCase() === 'x-statsig-id') note(value);
+        return origAppend.apply(this, arguments);
+      };
+    } catch (_) {}
+    const origFetch = window.fetch.bind(window);
+    window.fetch = async (input, init = {}) => {
+      try {
+        const headers = init && init.headers;
+        if (headers instanceof Headers) note(headers.get('x-statsig-id'));
+        else if (headers && typeof headers === 'object') note(headers['x-statsig-id'] || headers['X-Statsig-Id']);
+      } catch (_) {}
+      return origFetch(input, init);
+    };
+    // Nudge SPA into issuing a signed REST call if it can.
+    for (const path of ['/rest/rate-limits', cfg.path]) {
+      try {
+        await origFetch(path, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify(path === cfg.path
+            ? {temporary: true, message: 'ping', modeId: 'fast'}
+            : {requestKind: 'CLIENT_STATE_UPDATE'}),
+        });
+      } catch (_) {}
+      if (captured.length) break;
+      await sleep(500);
+    }
+    if (captured.length) {
+      clearTimeout(timer);
+      finish({statsigId: captured[0], path: cfg.path, method: cfg.method, source: 'fetch-capture'});
+      return;
+    }
+
+    const preferred = Number(cfg.signerModuleId) || 4629918;
+    let preferredError = null;
+    try {
+      const statsigId = await trySign(preferred);
+      clearTimeout(timer);
+      finish({
+        statsigId,
+        path: cfg.path,
+        method: cfg.method,
+        source: 'module',
+        signerModuleId: preferred,
+        attempts: 1,
+      });
+      return;
+    } catch (error) {
+      preferredError = error;
+    }
+
+    // DOM diagnostics when the known signer fails (usually missing meta node).
+    const metas = [...document.querySelectorAll('meta')].map(m => ({
+      name: m.getAttribute('name'),
+      property: m.getAttribute('property'),
+      content: String(m.getAttribute('content') || '').slice(0, 80),
+    }));
+    const ver = metas.filter(m => /verif|statsig|grok|site/i.test(String(m.name || '') + String(m.property || '')));
+    finish({
+      error: String(preferredError && (preferredError.stack || preferredError.message) || preferredError).slice(0, 800),
+      signerModuleId: preferred,
+      source: 'module-failed',
+      dom: {
+        title: document.title,
+        url: location.href,
+        bodyKids: document.body ? document.body.childNodes.length : 0,
+        metaCount: metas.length,
+        ver,
+        metas: metas.slice(0, 25),
+        text: String((document.body && document.body.innerText) || '').slice(0, 160),
+      },
+      capturedCount: captured.length,
+    });
+  } catch (error) {
+    clearTimeout(timer);
+    finish({error: String(error && (error.stack || error.message) || error).slice(0, 1200)});
+  }
+})();
+"""
+
+
+@APP.post("/v1/sign")
+def sign():
+    """只生成 grok.com /rest/* 的 x-statsig-id，不发起业务请求。"""
+    if not authorized():
+        raise HTTPError(401, "unauthorized")
+    payload = json_body()
+    method = str(payload.get("method") or "POST").upper()
+    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+        raise HTTPError(400, "invalid method")
+    path = str(payload.get("path") or "").strip()
+    if not path.startswith("/rest/"):
+        raise HTTPError(400, "invalid path")
+    timeout_ms = bounded_timeout_ms(payload.get("timeoutMs"), 120000)
+    deadline = time.monotonic() + (timeout_ms / 1000)
+    cookies = parse_cookies(payload.get("cookie"))
+    session_key = str(payload.get("sessionKey") or "sign-only")[:128]
+    bootstrap_url = "https://grok.com/"
+    # /v1/sign is for already-clear egress; FlareSolverr bootstrap often times out on panda.
+    light_bootstrap = payload.get("lightBootstrap")
+    if light_bootstrap is None:
+        light_bootstrap = True
+    else:
+        light_bootstrap = bool(light_bootstrap)
+    try:
+        browser = acquire_session(
+            session_key,
+            str(payload.get("proxyUrl") or ""),
+            cookies,
+            str(payload.get("referer") or bootstrap_url),
+            bootstrap_url,
+            remaining_timeout_ms(deadline),
+            str(payload.get("userAgent") or ""),
+            light_bootstrap=light_bootstrap,
+        )
+    except HTTPError:
+        raise
+    except Exception as error:
+        return error_response(error)
+    timeout_ms = remaining_timeout_ms(deadline)
+    cfg = {
+        "path": path,
+        "method": method,
+        "timeoutMs": timeout_ms,
+        "signerModuleId": SIGNER_MODULE_ID,
+    }
+    try:
+        def operation():
+            # Bootstrap may leave a sparse challenge/cookie page; ensure SPA shell is present.
+            try:
+                current = browser.driver.current_url or ""
+                ready = browser.driver.execute_script(
+                    "return !!(globalThis.__grokBridgeRuntime && document.body && document.body.childNodes && document.body.childNodes.length >= 3);"
+                )
+                if ("grok.com" not in current) or (not ready):
+                    browser.driver.get(bootstrap_url)
+                    deadline_local = time.monotonic() + min(45.0, timeout_ms / 1000)
+                    while time.monotonic() < deadline_local:
+                        ready = browser.driver.execute_script(
+                            "return !!(globalThis.__grokBridgeRuntime && document.body && document.body.childNodes && document.body.childNodes.length >= 3);"
+                        )
+                        if ready:
+                            break
+                        time.sleep(0.4)
+            except Exception:
+                pass
+            browser.driver.set_script_timeout((timeout_ms / 1000) + 15)
+            return browser.driver.execute_async_script(SIGN_SCRIPT, cfg)
+
+        result = execute_browser_operation(browser, timeout_ms, operation)
+        if not isinstance(result, dict):
+            return encode_response({"error": "invalid browser result"}, 502)
+        if result.get("error"):
+            log_bridge_error("sign", RuntimeError(str(result.get("error"))))
+            err_out = {"error": str(result.get("error"))[:300]}
+            if result.get("cachedCount") is not None:
+                err_out["cachedCount"] = result.get("cachedCount")
+            if result.get("tried") is not None:
+                err_out["tried"] = result.get("tried")
+            if result.get("errors"):
+                err_out["errors"] = result.get("errors")
+            return encode_response(err_out, 502)
+        statsig_id = str(result.get("statsigId") or "").strip()
+        if not statsig_id or statsig_id.startswith("eDA6") or statsig_id.startswith("x0:"):
+            # eDA6... is base64 of "x0:..." error fallback from older fetch path
+            return encode_response({"error": "statsig signature unavailable", "detail": statsig_id[:120]}, 502)
+        payload_out = {"statsigId": statsig_id, "path": path, "method": method}
+        if result.get("source"):
+            payload_out["source"] = result.get("source")
+        if result.get("signerModuleId") is not None:
+            payload_out["signerModuleId"] = result.get("signerModuleId")
+        # Export jar for HTTP replay (cf_clearance + site cookies). Never log values.
+        try:
+            jar = browser.driver.get_cookies() or []
+            parts = []
+            names = []
+            for item in jar:
+                name = str(item.get("name") or "")
+                value = str(item.get("value") or "")
+                if not name or not value:
+                    continue
+                parts.append(f"{name}={value}")
+                names.append(name)
+            if parts:
+                payload_out["cookie"] = "; ".join(parts)
+                payload_out["cookieNames"] = names
+                payload_out["hasCfClearance"] = "cf_clearance" in names
+        except Exception as cookie_error:
+            payload_out["cookieError"] = type(cookie_error).__name__
+        return encode_response(payload_out)
+    except Exception as error:
+        log_bridge_error("sign", error)
+        return encode_response({"error": type(error).__name__ + ": " + str(error)[:300]}, 502)
+    finally:
+        if not env_flag("BRIDGE_REUSE_SESSIONS", True):
+            discard_session(browser)
 
 
 @APP.post("/v1/fetch")

@@ -242,7 +242,7 @@ type accountResponse struct {
 	TeamID           string                `json:"teamId,omitempty"`
 	Enabled          bool                  `json:"enabled"`
 	AuthStatus       string                `json:"authStatus"`
-	Pool             string                `json:"pool"`
+	Pool             string                `json:"pool,omitempty"`
 	RecoveryAttempts int                   `json:"recoveryAttempts"`
 	NextRecoveryAt   *time.Time            `json:"nextRecoveryAt,omitempty"`
 	ExpiresAt        *time.Time            `json:"expiresAt,omitempty"`
@@ -267,6 +267,18 @@ type accountResponse struct {
 	Billing          *billingResponse      `json:"billing,omitempty"`
 	Quota            quotaResponse         `json:"quota"`
 	QuotaWindows     []quotaWindowResponse `json:"quotaWindows,omitempty"`
+	ModelStates      []modelStateResponse  `json:"modelStates,omitempty"`
+}
+
+type modelStateResponse struct {
+	UpstreamModel       string     `json:"upstreamModel"`
+	Status              string     `json:"status"`
+	Reason              string     `json:"reason,omitempty"`
+	ConsecutiveFailures int        `json:"consecutiveFailures"`
+	LastAttemptAt       *time.Time `json:"lastAttemptAt,omitempty"`
+	LastSuccessAt       *time.Time `json:"lastSuccessAt,omitempty"`
+	CooldownUntil       *time.Time `json:"cooldownUntil,omitempty"`
+	UpdatedAt           *time.Time `json:"updatedAt,omitempty"`
 }
 
 type quotaWindowResponse struct {
@@ -441,6 +453,12 @@ func newBuildProbeStatusResponse(value accountapp.BuildProbeStatus) gin.H {
 			"verified": value.Statistics.Verified, "normalOk": value.Statistics.NormalOK, "dispatchOk": value.Statistics.DispatchOK,
 			"cooledDown": value.Statistics.CooledDown, "deletable": value.Statistics.Deletable,
 			"deleted": value.Statistics.Deleted, "consecutiveFailures": value.Statistics.ConsecutiveFailures,
+			"laneAttempts": gin.H{
+				"verification": value.Statistics.LaneAttempts.Verification,
+				"normal":       value.Statistics.LaneAttempts.Normal,
+				"delete":       value.Statistics.LaneAttempts.Delete,
+				"dispatch":     value.Statistics.LaneAttempts.Dispatch,
+			},
 		},
 		"pools": gin.H{
 			"dispatch": value.Pools.Dispatch, "normal": value.Pools.Normal,
@@ -1179,6 +1197,7 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		LastUsedAt: c.LastUsedAt, LinkedAccountID: c.LinkedAccountID, LinkedName: c.LinkedAccountName, LinkedProvider: string(c.LinkedProvider),
 		CreatedAt: c.CreatedAt, ObservedModel: c.ObservedModel, ObservedModelAt: c.ObservedModelAt,
 		Quota: newQuotaResponse(value.Quota), QuotaWindows: make([]quotaWindowResponse, 0, len(value.QuotaWindows)),
+		ModelStates: make([]modelStateResponse, 0, len(value.ModelStates)),
 	}
 	if c.AuthStatus == accountdomain.AuthStatusReauthRequired {
 		result.NextRecoveryAt = c.CooldownUntil
@@ -1195,6 +1214,13 @@ func newAccountResponse(value accountapp.View) accountResponse {
 			Source: string(window.Source),
 		})
 	}
+	for _, state := range value.ModelStates {
+		result.ModelStates = append(result.ModelStates, modelStateResponse{
+			UpstreamModel: state.UpstreamModel, Status: string(state.Status), Reason: state.Reason,
+			ConsecutiveFailures: state.ConsecutiveFailures, LastAttemptAt: nonZeroTime(state.LastAttemptAt),
+			LastSuccessAt: state.LastSuccessAt, CooldownUntil: state.CooldownUntil, UpdatedAt: nonZeroTime(state.UpdatedAt),
+		})
+	}
 	if !c.ExpiresAt.IsZero() {
 		expiresAt := c.ExpiresAt
 		result.ExpiresAt = &expiresAt
@@ -1206,7 +1232,17 @@ func newAccountResponse(value accountapp.View) accountResponse {
 	return result
 }
 
+func nonZeroTime(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	return &value
+}
+
 func accountPool(value accountdomain.Credential) string {
+	if value.Provider != accountdomain.ProviderBuild {
+		return ""
+	}
 	return accountapp.AccountPoolAt(value, time.Now().UTC(), nil)
 }
 

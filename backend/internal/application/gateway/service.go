@@ -866,7 +866,9 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 		if err != nil {
 			retry, errorCode, softStop := imageExecutionErrorPolicy(err, attempt, attempts)
 			if softStop {
-				s.selector.MarkModelSoftStop(credential.ID, route.UpstreamModel)
+				if stateErr := s.selector.MarkModelSoftStop(ctx, credential.ID, route.UpstreamModel); stateErr != nil {
+					s.logger.Warn("image_model_state_persist_failed", "event_id", eventID, "request_id", requestID, "account_id", credential.ID, "model", route.UpstreamModel, "status", accountdomain.ModelStatusSoftStop, "error", stateErr)
+				}
 				s.logger.Warn("image_upstream_soft_stop", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "attempt", attempt+1)
 			} else {
 				s.logger.Error("image_upstream_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "error", err)
@@ -932,6 +934,21 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 		}
 		break
 	}
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		body, _ := readRetryableBody(response.Body)
+		response.Body = io.NopCloser(bytes.NewReader(body))
+		failure := newHTTPUpstreamFailure(response.StatusCode, body, credential.ID, credential.Name)
+		var stateErr error
+		switch {
+		case response.StatusCode == http.StatusUnauthorized:
+			stateErr = s.selector.MarkModelAuthFailed(ctx, credential.ID, route.UpstreamModel)
+		case strings.EqualFold(failure.UpstreamCode, "anti_bot_rejected"):
+			stateErr = s.selector.MarkModelSignatureFailed(ctx, credential.ID, route.UpstreamModel)
+		}
+		if stateErr != nil {
+			s.logger.Warn("image_model_state_persist_failed", "event_id", eventID, "request_id", requestID, "account_id", credential.ID, "model", route.UpstreamModel, "status_code", response.StatusCode, "upstream_code", failure.UpstreamCode, "error", stateErr)
+		}
+	}
 	if response.StatusCode == http.StatusUnauthorized && credential.AuthType == accountdomain.AuthTypeSSO {
 		_ = s.accounts.MarkReauthRequired(ctx, credential.ID, fmt.Sprintf("%s SSO credential rejected", credential.Provider))
 		s.selector.MarkFailure(ctx, credential, http.StatusUnauthorized, 0)
@@ -942,9 +959,13 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 	finalize := func(_ Usage, _ string, errorCode string) {
 		once.Do(func() {
 			releaseAccount()
+			persistCtx, cancel := context.WithTimeout(context.Background(), finalizationTimeout)
+			defer cancel()
 			softStop := errorCode == "soft_stop" || strings.Contains(strings.ToLower(errorCode), "soft_stop")
 			if response.StatusCode >= 200 && response.StatusCode < 300 && errorCode == "" {
-				s.selector.MarkModelSuccess(accountID, route.UpstreamModel)
+				if stateErr := s.selector.MarkModelSuccess(persistCtx, accountID, route.UpstreamModel); stateErr != nil {
+					s.logger.Warn("image_model_state_persist_failed", "event_id", eventID, "request_id", requestID, "account_id", accountID, "model", route.UpstreamModel, "status", accountdomain.ModelStatusAvailable, "error", stateErr)
+				}
 				finishPipeline(imagedomain.StatusSucceeded, "", softStop)
 				timing.finish(s.logger, "ok")
 			} else {
@@ -955,8 +976,6 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 				finishPipeline(imagedomain.StatusFailed, code, softStop)
 				timing.finish(s.logger, code)
 			}
-			persistCtx, cancel := context.WithTimeout(context.Background(), finalizationTimeout)
-			defer cancel()
 			record := audit.Record{
 				EventID: eventID, RequestID: requestID, ClientKeyID: key.ID, ClientKeyName: key.Name,
 				ModelRouteID: route.ID, ModelPublicID: externalModel, ModelUpstreamModel: modeldomain.DisplayUpstreamModel(route.Provider, route.UpstreamModel),

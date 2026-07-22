@@ -262,6 +262,7 @@ type RoutingCandidate struct {
 	QuotaWindow          *QuotaWindow
 	QuotaRecovery        *QuotaRecovery
 	ModelQuotaBlock      *ModelQuotaBlock
+	ModelState           *ModelState
 	ModelCapabilityKnown bool
 	SupportsModel        bool
 }
@@ -273,6 +274,42 @@ type ModelQuotaBlock struct {
 	Reason        string
 	CooldownUntil time.Time
 	UpdatedAt     time.Time
+}
+
+// ModelStatus 表示账号在单个上游模型上的独立可用性，不影响账号的全局认证状态。
+type ModelStatus string
+
+const (
+	ModelStatusUnknown         ModelStatus = "unknown"
+	ModelStatusQuotaAvailable  ModelStatus = "quota_available"
+	ModelStatusAvailable       ModelStatus = "available"
+	ModelStatusSoftStop        ModelStatus = "soft_stop"
+	ModelStatusQuotaExhausted  ModelStatus = "quota_exhausted"
+	ModelStatusAuthFailed      ModelStatus = "auth_failed"
+	ModelStatusSignatureFailed ModelStatus = "signature_failed"
+)
+
+func (s ModelStatus) IsValid() bool {
+	switch s {
+	case ModelStatusUnknown, ModelStatusQuotaAvailable, ModelStatusAvailable, ModelStatusSoftStop,
+		ModelStatusQuotaExhausted, ModelStatusAuthFailed, ModelStatusSignatureFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// ModelState 保存一次真实模型请求的结果状态；额度次数继续由 QuotaWindow 独立保存。
+type ModelState struct {
+	AccountID           uint64
+	UpstreamModel       string
+	Status              ModelStatus
+	Reason              string
+	ConsecutiveFailures int
+	LastAttemptAt       time.Time
+	LastSuccessAt       *time.Time
+	CooldownUntil       *time.Time
+	UpdatedAt           time.Time
 }
 
 // DeviceSession 表示一次短期 Device OAuth 授权流程。

@@ -67,3 +67,37 @@ func TestNewQuotaViewUsesConfirmedExhaustion(t *testing.T) {
 		t.Fatalf("quota = %#v", quota)
 	}
 }
+
+func TestModelStatesForViewSynthesizesImagineQuotaState(t *testing.T) {
+	now := time.Now().UTC()
+	credential := accountdomain.Credential{ID: 7, Provider: accountdomain.ProviderWeb}
+	tests := []struct {
+		name   string
+		window accountdomain.QuotaWindow
+		stored []accountdomain.ModelState
+		want   accountdomain.ModelStatus
+		reason string
+	}{
+		{name: "zero over zero stays unknown", window: accountdomain.QuotaWindow{Mode: "imagine", Total: 0, Remaining: 0, UpdatedAt: now}, want: accountdomain.ModelStatusUnknown, reason: "quota_limit_unknown"},
+		{name: "known remaining is quota available", window: accountdomain.QuotaWindow{Mode: "imagine", Total: 10, Remaining: 4, UpdatedAt: now}, want: accountdomain.ModelStatusQuotaAvailable, reason: "quota_remaining_positive"},
+		{name: "known zero is exhausted", window: accountdomain.QuotaWindow{Mode: "imagine", Total: 10, Remaining: 0, UpdatedAt: now}, stored: []accountdomain.ModelState{{AccountID: 7, UpstreamModel: imagineUpstreamModel, Status: accountdomain.ModelStatusAvailable}}, want: accountdomain.ModelStatusQuotaExhausted, reason: "quota_remaining_zero"},
+		{name: "fresh quota clears old exhaustion", window: accountdomain.QuotaWindow{Mode: "imagine", Total: 10, Remaining: 10, UpdatedAt: now}, stored: []accountdomain.ModelState{{AccountID: 7, UpstreamModel: imagineUpstreamModel, Status: accountdomain.ModelStatusQuotaExhausted}}, want: accountdomain.ModelStatusQuotaAvailable, reason: "quota_remaining_positive"},
+		{name: "actual success outranks positive quota", window: accountdomain.QuotaWindow{Mode: "imagine", Total: 10, Remaining: 8, UpdatedAt: now}, stored: []accountdomain.ModelState{{AccountID: 7, UpstreamModel: imagineUpstreamModel, Status: accountdomain.ModelStatusAvailable, Reason: "image_generated"}}, want: accountdomain.ModelStatusAvailable, reason: "image_generated"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			states := modelStatesForView(credential, []accountdomain.QuotaWindow{test.window}, test.stored)
+			if len(states) != 1 || states[0].Status != test.want || states[0].Reason != test.reason {
+				t.Fatalf("states = %#v, want status=%s reason=%s", states, test.want, test.reason)
+			}
+		})
+	}
+}
+
+func TestModelStatesForViewLeavesNonWebStatesUnchanged(t *testing.T) {
+	stored := []accountdomain.ModelState{{AccountID: 9, UpstreamModel: "grok-4.5", Status: accountdomain.ModelStatusAvailable}}
+	states := modelStatesForView(accountdomain.Credential{ID: 9, Provider: accountdomain.ProviderBuild}, nil, stored)
+	if len(states) != 1 || states[0] != stored[0] {
+		t.Fatalf("states = %#v", states)
+	}
+}

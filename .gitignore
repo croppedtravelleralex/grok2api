@@ -47,3 +47,4 @@ __pycache__/
 /release/
 /.tmp/
 /tmp/
+/artifacts/

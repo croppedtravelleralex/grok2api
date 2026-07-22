@@ -233,6 +233,21 @@ type accountModelQuotaBlockModel struct {
 
 func (accountModelQuotaBlockModel) TableName() string { return "account_model_quota_blocks" }
 
+type accountModelStateModel struct {
+	AccountID           uint64    `gorm:"primaryKey"`
+	UpstreamModel       string    `gorm:"size:255;primaryKey;not null;check:chk_account_model_states_model,length(trim(upstream_model)) BETWEEN 1 AND 255"`
+	Status              string    `gorm:"size:32;not null;check:chk_account_model_states_status,status IN ('unknown','quota_available','available','soft_stop','quota_exhausted','auth_failed','signature_failed')"`
+	Reason              string    `gorm:"size:100;not null;default:'';check:chk_account_model_states_reason,length(reason) <= 100"`
+	ConsecutiveFailures int       `gorm:"not null;default:0;check:chk_account_model_states_failures,consecutive_failures >= 0"`
+	LastAttemptAt       time.Time `gorm:"not null"`
+	LastSuccessAt       *time.Time
+	CooldownUntil       *time.Time
+	UpdatedAt           time.Time     `gorm:"not null"`
+	Account             *accountModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+}
+
+func (accountModelStateModel) TableName() string { return "account_model_states" }
+
 type clientKeyModel struct {
 	ID                    uint64 `gorm:"primaryKey;autoIncrement"`
 	Name                  string `gorm:"size:160;not null;check:chk_client_keys_name,length(trim(name)) BETWEEN 1 AND 160"`

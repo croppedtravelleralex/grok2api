@@ -10,7 +10,9 @@
 3. 需要判断优先级时看 [03-roadmap.md](./03-roadmap.md)。
 4. 需要找长期改进入口时看 [04-improvement-backlog.md](./04-improvement-backlog.md)。
 5. 需要继续接手维护时看 [05-ai-maintenance-playbook.md](./05-ai-maintenance-playbook.md)。
-6. 需要追溯历史上下文时看 [logs/](./logs/) 下的月度记录。
+6. Build 号池状态机看 [08-build-four-pool-dual-probe-todos-2026-07-22.md](./08-build-four-pool-dual-probe-todos-2026-07-22.md)。
+7. Imagine 额度、模型状态和 10 并发接续看 [09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md](./09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md)。
+8. 需要追溯历史上下文时看 [logs/](./logs/) 下的月度记录。
 
 ## 目录地图
 
@@ -22,6 +24,10 @@
 | [04-improvement-backlog.md](./04-improvement-backlog.md) | 长期改进池 | 出现新问题、新想法或新风险时 |
 | [05-ai-maintenance-playbook.md](./05-ai-maintenance-playbook.md) | AI 接手与回写规则 | 维护流程变化时 |
 | [06-open-todos-2026-07-16.md](./06-open-todos-2026-07-16.md) | 2026-07-16 现场确认的开放待办（探活可视化 / CF403 / HTTP逆向） | 执行或关闭这些待办时 |
+| [07-udeal-zero-browser-ops-2026-07-21.md](./07-udeal-zero-browser-ops-2026-07-21.md) | udeal 住宅 + 零浏览器签名器生产运维事实 | 出口/签名/调度变更时 |
+| [08-build-four-pool-dual-probe-todos-2026-07-22.md](./08-build-four-pool-dual-probe-todos-2026-07-22.md) | Build 四池+双探针：已做/部分做/未做全量盘点与 FP-* 待办 | 四池方案推进或验收时 |
+| [09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md](./09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md) | Imagine 次数、独立模型状态、10 并发：已做/未做/分档验收清单 | Web Lite 生图继续开发、部署或验收时 |
+| [pure-http-transfer-and-zero-browser.md](./pure-http-transfer-and-zero-browser.md) | 票/钥/CF/零浏览器分层与可验证 AC | 纯 HTTP 结论变化时 |
 | [logs/](./logs/) | 月度历史记录 | 每轮工作结束时追加 |
 
 ## 真相来源优先级

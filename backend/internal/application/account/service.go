@@ -37,6 +37,7 @@ var (
 )
 
 const (
+	imagineUpstreamModel                      = "grok-imagine-image"
 	estimatedFreeTokenLimit     int64         = 1_000_000
 	freeUsageWindow             time.Duration = 24 * time.Hour
 	forcedRefreshMinInterval    time.Duration = 30 * time.Second
@@ -109,6 +110,7 @@ type View struct {
 	Billing      *accountdomain.Billing
 	Quota        QuotaView
 	QuotaWindows []accountdomain.QuotaWindow
+	ModelStates  []accountdomain.ModelState
 }
 
 type UpdateInput struct {
@@ -236,16 +238,16 @@ type Service struct {
 	webQuotaPool          *batch.Pool
 	refreshPool           *batch.Pool
 	credentialRefreshWake chan struct{}
-	buildProbeMu       sync.Mutex
-	buildProbe         *buildProbeMonitor
-	dispatchIndex      *poolindex.DispatchIndex
-	verifyHeap         *poolindex.DueHeap
-	normalHeap         *poolindex.DueHeap
-	deleteHeap         *poolindex.DueHeap
-	dispatchProbeHeap  *poolindex.DueHeap
-	maintenanceDRR     *poolindex.DRRScheduler
-	logger             *slog.Logger
-	now                func() time.Time
+	buildProbeMu          sync.Mutex
+	buildProbe            *buildProbeMonitor
+	dispatchIndex         *poolindex.DispatchIndex
+	verifyHeap            *poolindex.DueHeap
+	normalHeap            *poolindex.DueHeap
+	deleteHeap            *poolindex.DueHeap
+	dispatchProbeHeap     *poolindex.DueHeap
+	maintenanceDRR        *poolindex.DRRScheduler
+	logger                *slog.Logger
+	now                   func() time.Time
 }
 
 func (s *Service) SetQuotaRecoveryQueue(queue repository.QuotaRecoveryQueue) {
@@ -342,6 +344,10 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 	if err != nil {
 		return nil, 0, err
 	}
+	modelStates, err := s.accounts.GetModelStates(ctx, accountIDs)
+	if err != nil {
+		return nil, 0, err
+	}
 	views := make([]View, 0, len(values))
 	for _, value := range values {
 		view := View{Credential: value}
@@ -354,6 +360,7 @@ func (s *Service) List(ctx context.Context, page, pageSize int, search string, f
 		}
 		view.Quota = newQuotaView(view.Billing, observedTokens[value.ID], recovery, value.ObservedModel)
 		view.QuotaWindows = quotaWindows[value.ID]
+		view.ModelStates = modelStatesForView(value, view.QuotaWindows, modelStates[value.ID])
 		views = append(views, view)
 	}
 	return views, total, nil
@@ -436,7 +443,70 @@ func (s *Service) Get(ctx context.Context, id uint64) (View, error) {
 	} else {
 		return View{}, err
 	}
+	if states, err := s.accounts.GetModelStates(ctx, []uint64{id}); err == nil {
+		view.ModelStates = modelStatesForView(value, view.QuotaWindows, states[id])
+	} else {
+		return View{}, err
+	}
 	return view, nil
+}
+
+// modelStatesForView 将真实模型请求结果与独立 Imagine 额度窗口合成为展示状态。
+// 0/0 只表示上限未知；只有 total>0 且 remaining=0 才能由额度证据判定耗尽。
+func modelStatesForView(credential accountdomain.Credential, windows []accountdomain.QuotaWindow, stored []accountdomain.ModelState) []accountdomain.ModelState {
+	result := append([]accountdomain.ModelState(nil), stored...)
+	if credential.Provider != accountdomain.ProviderWeb {
+		return result
+	}
+	stateIndex := -1
+	for index := range result {
+		if result[index].UpstreamModel == imagineUpstreamModel {
+			stateIndex = index
+			break
+		}
+	}
+	if stateIndex < 0 {
+		result = append(result, accountdomain.ModelState{
+			AccountID: credential.ID, UpstreamModel: imagineUpstreamModel,
+			Status: accountdomain.ModelStatusUnknown, Reason: "quota_not_synced",
+		})
+		stateIndex = len(result) - 1
+	}
+	var imagineWindow *accountdomain.QuotaWindow
+	for index := range windows {
+		if windows[index].Mode == "imagine" {
+			imagineWindow = &windows[index]
+			break
+		}
+	}
+	if imagineWindow == nil {
+		return result
+	}
+	state := &result[stateIndex]
+	state.AccountID = credential.ID
+	state.UpstreamModel = imagineUpstreamModel
+	actualResult := state.Status == accountdomain.ModelStatusAvailable ||
+		state.Status == accountdomain.ModelStatusSoftStop ||
+		state.Status == accountdomain.ModelStatusAuthFailed ||
+		state.Status == accountdomain.ModelStatusSignatureFailed
+	switch {
+	case imagineWindow.Total > 0 && imagineWindow.Remaining <= 0:
+		state.Status = accountdomain.ModelStatusQuotaExhausted
+		state.Reason = "quota_remaining_zero"
+		state.CooldownUntil = imagineWindow.ResetAt
+		state.UpdatedAt = imagineWindow.UpdatedAt
+	case imagineWindow.Total > 0 && imagineWindow.Remaining > 0 && !actualResult:
+		state.Status = accountdomain.ModelStatusQuotaAvailable
+		state.Reason = "quota_remaining_positive"
+		state.ConsecutiveFailures = 0
+		state.CooldownUntil = nil
+		state.UpdatedAt = imagineWindow.UpdatedAt
+	case imagineWindow.Total == 0 && imagineWindow.Remaining == 0 && (state.Status == accountdomain.ModelStatusUnknown || state.Status == accountdomain.ModelStatusQuotaAvailable):
+		state.Status = accountdomain.ModelStatusUnknown
+		state.Reason = "quota_limit_unknown"
+		state.UpdatedAt = imagineWindow.UpdatedAt
+	}
+	return result
 }
 
 func (s *Service) ObserveResponseModel(ctx context.Context, id uint64, model string) error {

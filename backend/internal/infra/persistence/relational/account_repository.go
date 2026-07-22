@@ -124,6 +124,51 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 	if err != nil {
 		return nil, err
 	}
+	return r.hydrateRoutingCandidates(ctx, provider, upstreamModel, quotaMode, values)
+}
+
+// ListRoutingCandidatesByIDs 仅 hydrate 指定 ID（Build DispatchIndex 热路径）。
+func (r *AccountRepository) ListRoutingCandidatesByIDs(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string, ids []uint64) ([]account.RoutingCandidate, error) {
+	if len(ids) == 0 {
+		return []account.RoutingCandidate{}, nil
+	}
+	values, err := r.listEnabledByIDs(ctx, provider, ids)
+	if err != nil {
+		return nil, err
+	}
+	candidates, err := r.hydrateRoutingCandidates(ctx, provider, upstreamModel, quotaMode, values)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[uint64]account.RoutingCandidate, len(candidates))
+	for _, candidate := range candidates {
+		byID[candidate.Credential.ID] = candidate
+	}
+	ordered := make([]account.RoutingCandidate, 0, len(ids))
+	for _, id := range ids {
+		if candidate, ok := byID[id]; ok {
+			ordered = append(ordered, candidate)
+		}
+	}
+	return ordered, nil
+}
+
+func (r *AccountRepository) listEnabledByIDs(ctx context.Context, provider account.Provider, ids []uint64) ([]account.Credential, error) {
+	var rows []accountModel
+	err := r.db.db.WithContext(ctx).Preload("Credential").Preload("WebProfile").
+		Where("provider = ? AND enabled = ? AND auth_status = ? AND id IN ?", provider, true, account.AuthStatusActive, ids).
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]account.Credential, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toAccountDomain(row))
+	}
+	return out, nil
+}
+
+func (r *AccountRepository) hydrateRoutingCandidates(ctx context.Context, provider account.Provider, upstreamModel, quotaMode string, values []account.Credential) ([]account.RoutingCandidate, error) {
 	bound := make(map[uint64]bool)
 	if strings.TrimSpace(upstreamModel) != "" {
 		var boundIDs []uint64
@@ -170,7 +215,13 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 		if quotaMode != "" {
 			modes = append(modes, quotaMode)
 		}
-		if err := r.db.db.WithContext(ctx).Where("account_id IN ? AND mode IN ?", ids, modes).Order("CASE WHEN mode = 'weekly' THEN 0 ELSE 1 END").Find(&rows).Error; err != nil {
+		order := "CASE WHEN mode = 'weekly' THEN 0 ELSE 1 END"
+		if quotaMode == "imagine" {
+			// Imagine 有独立 allowance/remaining；付费账号同时存在 weekly 时，
+			// 必须优先模型窗口，不能再让聊天/综合周池遮住生图状态。
+			order = "CASE WHEN mode = 'imagine' THEN 0 WHEN mode = 'weekly' THEN 1 ELSE 2 END"
+		}
+		if err := r.db.db.WithContext(ctx).Where("account_id IN ? AND mode IN ?", ids, modes).Order(order).Find(&rows).Error; err != nil {
 			return nil, err
 		}
 		for _, row := range rows {
@@ -182,6 +233,7 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 	known := make(map[uint64]bool, len(ids))
 	supported := make(map[uint64]bool, len(ids))
 	modelQuotaBlocks := make(map[uint64]account.ModelQuotaBlock, len(ids))
+	modelStates := make(map[uint64]account.ModelState, len(ids))
 	if strings.TrimSpace(upstreamModel) != "" && len(ids) > 0 {
 		var states []accountModelSyncStateModel
 		if err := r.db.db.WithContext(ctx).Where("account_id IN ? AND last_success_at IS NOT NULL", ids).Find(&states).Error; err != nil {
@@ -204,6 +256,13 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 		for _, row := range blockRows {
 			modelQuotaBlocks[row.AccountID] = account.ModelQuotaBlock{AccountID: row.AccountID, UpstreamModel: row.UpstreamModel, Reason: row.Reason, CooldownUntil: row.CooldownUntil.UTC(), UpdatedAt: row.UpdatedAt.UTC()}
 		}
+		var stateRows []accountModelStateModel
+		if err := r.db.db.WithContext(ctx).Where("account_id IN ? AND upstream_model = ?", ids, upstreamModel).Find(&stateRows).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range stateRows {
+			modelStates[row.AccountID] = toModelStateDomain(row)
+		}
 	}
 	result := make([]account.RoutingCandidate, 0, len(values))
 	for _, value := range values {
@@ -224,6 +283,9 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 		if block, ok := modelQuotaBlocks[value.ID]; ok {
 			candidate.ModelQuotaBlock = &block
 		}
+		if state, ok := modelStates[value.ID]; ok {
+			candidate.ModelState = &state
+		}
 		result = append(result, candidate)
 	}
 	return result, nil
@@ -238,57 +300,6 @@ func (r *AccountRepository) ListEnabled(ctx context.Context, provider account.Pr
 	out := make([]account.Credential, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, toAccountDomain(row))
-	}
-	return out, nil
-}
-
-// ListRecoveryCandidates 返回已隔离且到达恢复时间的账号。恢复调度与生产路由分离，
-// 因此 reauthRequired 账号不会重新进入真实流量，只会被单并发恢复 worker 选中。
-func (r *AccountRepository) ListRecoveryCandidates(ctx context.Context, provider account.Provider, now time.Time, limit int) ([]account.Credential, error) {
-	if limit < 1 {
-		return []account.Credential{}, nil
-	}
-	var rows []accountModel
-	err := r.db.db.WithContext(ctx).
-		Preload("Credential").Preload("WebProfile").
-		Where("provider = ? AND enabled = ? AND auth_status = ? AND (cooldown_until IS NULL OR cooldown_until <= ?)", provider, true, account.AuthStatusReauthRequired, now.UTC()).
-		Order("failure_count ASC, updated_at ASC, id ASC").Limit(limit).Find(&rows).Error
-	if err != nil {
-		return nil, err
-	}
-	out := make([]account.Credential, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, toAccountDomain(row))
-	}
-	if err := r.attachAccountLinks(ctx, out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// ListPurgeCandidates 返回已软退役或已标 deletable、且到达再检时间的账号。
-// 不包含管理员手动禁用（无 retired:/deletable: 前缀）的账号，避免误复活。
-func (r *AccountRepository) ListPurgeCandidates(ctx context.Context, provider account.Provider, now time.Time, limit int) ([]account.Credential, error) {
-	if limit < 1 {
-		return []account.Credential{}, nil
-	}
-	var rows []accountModel
-	err := r.db.db.WithContext(ctx).
-		Preload("Credential").Preload("WebProfile").
-		Where(
-			"provider = ? AND enabled = ? AND (cooldown_until IS NULL OR cooldown_until <= ?) AND (lower(last_error) LIKE ? OR lower(last_error) LIKE ?)",
-			provider, false, now.UTC(), "retired:%", "deletable:%",
-		).
-		Order("id ASC").Limit(limit).Find(&rows).Error
-	if err != nil {
-		return nil, err
-	}
-	out := make([]account.Credential, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, toAccountDomain(row))
-	}
-	if err := r.attachAccountLinks(ctx, out); err != nil {
-		return nil, err
 	}
 	return out, nil
 }
@@ -804,6 +815,62 @@ func (r *AccountRepository) PruneExpiredModelQuotaBlocks(ctx context.Context, no
 		return nil
 	})
 	return deleted, err
+}
+
+func (r *AccountRepository) SaveModelState(ctx context.Context, value account.ModelState) error {
+	value.UpstreamModel = strings.TrimSpace(value.UpstreamModel)
+	value.Reason = strings.TrimSpace(value.Reason)
+	if value.AccountID == 0 || value.UpstreamModel == "" || len(value.UpstreamModel) > 255 || !value.Status.IsValid() || len(value.Reason) > 100 || value.ConsecutiveFailures < 0 || value.LastAttemptAt.IsZero() {
+		return errors.New("模型状态无效")
+	}
+	if value.UpdatedAt.IsZero() {
+		value.UpdatedAt = value.LastAttemptAt
+	}
+	row := accountModelStateModel{
+		AccountID: value.AccountID, UpstreamModel: value.UpstreamModel, Status: string(value.Status), Reason: value.Reason,
+		ConsecutiveFailures: value.ConsecutiveFailures, LastAttemptAt: value.LastAttemptAt.UTC(),
+		LastSuccessAt: utcTimePointer(value.LastSuccessAt), CooldownUntil: utcTimePointer(value.CooldownUntil), UpdatedAt: value.UpdatedAt.UTC(),
+	}
+	return r.db.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "account_id"}, {Name: "upstream_model"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"status": row.Status, "reason": row.Reason, "consecutive_failures": row.ConsecutiveFailures,
+			"last_attempt_at": row.LastAttemptAt,
+			"last_success_at": gorm.Expr("COALESCE(?, last_success_at)", row.LastSuccessAt),
+			"cooldown_until":  row.CooldownUntil, "updated_at": row.UpdatedAt,
+		}),
+	}).Create(&row).Error
+}
+
+func (r *AccountRepository) GetModelStates(ctx context.Context, accountIDs []uint64) (map[uint64][]account.ModelState, error) {
+	result := make(map[uint64][]account.ModelState, len(accountIDs))
+	if len(accountIDs) == 0 {
+		return result, nil
+	}
+	var rows []accountModelStateModel
+	if err := r.db.db.WithContext(ctx).Where("account_id IN ?", accountIDs).Order("account_id ASC, upstream_model ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		result[row.AccountID] = append(result[row.AccountID], toModelStateDomain(row))
+	}
+	return result, nil
+}
+
+func toModelStateDomain(row accountModelStateModel) account.ModelState {
+	return account.ModelState{
+		AccountID: row.AccountID, UpstreamModel: row.UpstreamModel, Status: account.ModelStatus(row.Status), Reason: row.Reason,
+		ConsecutiveFailures: row.ConsecutiveFailures, LastAttemptAt: row.LastAttemptAt.UTC(),
+		LastSuccessAt: utcTimePointer(row.LastSuccessAt), CooldownUntil: utcTimePointer(row.CooldownUntil), UpdatedAt: row.UpdatedAt.UTC(),
+	}
+}
+
+func utcTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	result := value.UTC()
+	return &result
 }
 
 func (r *AccountRepository) SaveBilling(ctx context.Context, value account.Billing) error {

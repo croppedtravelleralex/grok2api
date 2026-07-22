@@ -1,10 +1,10 @@
-// Package poolindex 提供 Build 四池热路径索引：调度有序集、到期最小堆与 DRR。
 package poolindex
 
 import (
-	"sort"
 	"sync"
 	"time"
+
+	"github.com/google/btree"
 )
 
 // DispatchEntry 是调度池有序集中的一条账号记录。
@@ -47,44 +47,76 @@ func keyOf(entry DispatchEntry) dispatchKey {
 	}
 }
 
-// DispatchIndex 内存有序集：复合 key 排序 + map 旁表，复杂度同平衡树。
+type dispatchItem struct {
+	key   dispatchKey
+	entry DispatchEntry
+}
+
+func (a dispatchItem) Less(b btree.Item) bool {
+	other, ok := b.(dispatchItem)
+	if !ok {
+		return false
+	}
+	return a.key.less(other.key)
+}
+
+// DispatchMirror 可选镜像（如 Redis ZSET）；失败不影响内存索引。
+type DispatchMirror interface {
+	Upsert(entry DispatchEntry)
+	Remove(id uint64)
+	TouchSelected(id uint64, at time.Time)
+}
+
+// DispatchIndex 内存 BTree 有序集 + map 旁表；可选 Mirror。
 type DispatchIndex struct {
-	mu      sync.RWMutex
-	ordered []DispatchEntry
-	byID    map[uint64]int
+	mu     sync.RWMutex
+	tree   *btree.BTree
+	byID   map[uint64]dispatchItem
+	mirror DispatchMirror
 }
 
 func NewDispatchIndex() *DispatchIndex {
-	return &DispatchIndex{byID: make(map[uint64]int)}
+	return &DispatchIndex{tree: btree.New(32), byID: make(map[uint64]dispatchItem)}
+}
+
+// SetMirror 设置可选持久/分布式镜像。
+func (idx *DispatchIndex) SetMirror(mirror DispatchMirror) {
+	idx.mu.Lock()
+	idx.mirror = mirror
+	idx.mu.Unlock()
 }
 
 func (idx *DispatchIndex) Len() int {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	return len(idx.ordered)
+	return len(idx.byID)
 }
 
 func (idx *DispatchIndex) Upsert(entry DispatchEntry) {
 	idx.mu.Lock()
-	defer idx.mu.Unlock()
-	if pos, ok := idx.byID[entry.ID]; ok {
-		idx.removeAtLocked(pos)
+	if old, ok := idx.byID[entry.ID]; ok {
+		idx.tree.Delete(old)
 	}
-	key := keyOf(entry)
-	pos := sort.Search(len(idx.ordered), func(i int) bool {
-		return !keyOf(idx.ordered[i]).less(key)
-	})
-	idx.ordered = append(idx.ordered, DispatchEntry{})
-	copy(idx.ordered[pos+1:], idx.ordered[pos:])
-	idx.ordered[pos] = entry
-	idx.reindexFromLocked(pos)
+	item := dispatchItem{key: keyOf(entry), entry: entry}
+	idx.tree.ReplaceOrInsert(item)
+	idx.byID[entry.ID] = item
+	mirror := idx.mirror
+	idx.mu.Unlock()
+	if mirror != nil {
+		mirror.Upsert(entry)
+	}
 }
 
 func (idx *DispatchIndex) Remove(id uint64) {
 	idx.mu.Lock()
-	defer idx.mu.Unlock()
-	if pos, ok := idx.byID[id]; ok {
-		idx.removeAtLocked(pos)
+	if old, ok := idx.byID[id]; ok {
+		idx.tree.Delete(old)
+		delete(idx.byID, id)
+	}
+	mirror := idx.mirror
+	idx.mu.Unlock()
+	if mirror != nil {
+		mirror.Remove(id)
 	}
 }
 
@@ -99,44 +131,44 @@ func (idx *DispatchIndex) Contains(id uint64) bool {
 func (idx *DispatchIndex) Ascend(limit int) []DispatchEntry {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-	if limit <= 0 || limit > len(idx.ordered) {
-		limit = len(idx.ordered)
+	if limit <= 0 {
+		limit = len(idx.byID)
 	}
-	out := make([]DispatchEntry, limit)
-	copy(out, idx.ordered[:limit])
+	out := make([]DispatchEntry, 0, min(limit, len(idx.byID)))
+	idx.tree.Ascend(func(item btree.Item) bool {
+		out = append(out, item.(dispatchItem).entry)
+		return len(out) < limit
+	})
+	return out
+}
+
+// IDs 返回当前成员 ID 集合（对账用）。
+func (idx *DispatchIndex) IDs() map[uint64]struct{} {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	out := make(map[uint64]struct{}, len(idx.byID))
+	for id := range idx.byID {
+		out[id] = struct{}{}
+	}
 	return out
 }
 
 func (idx *DispatchIndex) TouchSelected(id uint64, at time.Time) {
 	idx.mu.Lock()
-	defer idx.mu.Unlock()
-	pos, ok := idx.byID[id]
+	old, ok := idx.byID[id]
 	if !ok {
+		idx.mu.Unlock()
 		return
 	}
-	entry := idx.ordered[pos]
-	idx.removeAtLocked(pos)
+	idx.tree.Delete(old)
+	entry := old.entry
 	entry.LastSelectedAt = at
-	key := keyOf(entry)
-	insert := sort.Search(len(idx.ordered), func(i int) bool {
-		return !keyOf(idx.ordered[i]).less(key)
-	})
-	idx.ordered = append(idx.ordered, DispatchEntry{})
-	copy(idx.ordered[insert+1:], idx.ordered[insert:])
-	idx.ordered[insert] = entry
-	idx.reindexFromLocked(insert)
-}
-
-func (idx *DispatchIndex) removeAtLocked(pos int) {
-	id := idx.ordered[pos].ID
-	copy(idx.ordered[pos:], idx.ordered[pos+1:])
-	idx.ordered = idx.ordered[:len(idx.ordered)-1]
-	delete(idx.byID, id)
-	idx.reindexFromLocked(pos)
-}
-
-func (idx *DispatchIndex) reindexFromLocked(start int) {
-	for i := start; i < len(idx.ordered); i++ {
-		idx.byID[idx.ordered[i].ID] = i
+	item := dispatchItem{key: keyOf(entry), entry: entry}
+	idx.tree.ReplaceOrInsert(item)
+	idx.byID[id] = item
+	mirror := idx.mirror
+	idx.mu.Unlock()
+	if mirror != nil {
+		mirror.TouchSelected(id, at)
 	}
 }

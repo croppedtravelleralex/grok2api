@@ -169,8 +169,7 @@ func TestSelectorClaimsPaidBillingProbeAfterPeriodEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	accounts := relational.NewAccountRepository(database)
-	value, _, err := accounts.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "paid", SourceKey: "paid", EncryptedAccessToken: "encrypted", AuthStatus: account.AuthStatusActive, MaxConcurrent: 1, ObservedModel: "grok-4.5-build-free",
-	})
+	value, _, err := accounts.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderBuild, Name: "paid", SourceKey: "paid", EncryptedAccessToken: "encrypted", AuthStatus: account.AuthStatusActive, MaxConcurrent: 1, ObservedModel: "grok-4.5-build-free"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,8 +410,12 @@ func TestSelectorRanksRecentModelSuccessBeforeUnknownAndSoftStop(t *testing.T) {
 		lastSelectedAt: make(map[uint64]time.Time),
 	}
 	model := "grok-imagine-image"
-	selector.MarkModelSoftStop(1, model)
-	selector.MarkModelSuccess(2, model)
+	if err := selector.MarkModelSoftStop(context.Background(), 1, model); err != nil {
+		t.Fatal(err)
+	}
+	if err := selector.MarkModelSuccess(context.Background(), 2, model); err != nil {
+		t.Fatal(err)
+	}
 	values := []account.RoutingCandidate{
 		{Credential: account.Credential{ID: 1, Priority: 1}},
 		{Credential: account.Credential{ID: 2, Priority: 1}},
@@ -432,7 +435,9 @@ func TestSelectorModelOutcomeDoesNotAffectOtherModels(t *testing.T) {
 		concurrency:    memory.NewConcurrencyLimiter(),
 		lastSelectedAt: make(map[uint64]time.Time),
 	}
-	selector.MarkModelSoftStop(1, "grok-imagine-image")
+	if err := selector.MarkModelSoftStop(context.Background(), 1, "grok-imagine-image"); err != nil {
+		t.Fatal(err)
+	}
 	values := []account.RoutingCandidate{
 		{Credential: account.Credential{ID: 1, Priority: 1}},
 		{Credential: account.Credential{ID: 2, Priority: 1}},
@@ -442,6 +447,55 @@ func TestSelectorModelOutcomeDoesNotAffectOtherModels(t *testing.T) {
 	}
 	if values[0].Credential.ID != 1 {
 		t.Fatalf("other model order=%v, want account 1 unchanged", []uint64{values[0].Credential.ID, values[1].Credential.ID})
+	}
+}
+
+func TestSelectorPersistsModelOutcomeRankingAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "persisted-model-outcome.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	create := func(name string) account.Credential {
+		value, _, createErr := accounts.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierBasic,
+			Name: name, SourceKey: name, EncryptedAccessToken: "encrypted", Enabled: true,
+			AuthStatus: account.AuthStatusActive, Priority: 1, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return value
+	}
+	softStopped := create("soft-stopped")
+	unknown := create("unknown")
+	succeeded := create("succeeded")
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	if err := selector.MarkModelSoftStop(ctx, softStopped.ID, "grok-imagine-image"); err != nil {
+		t.Fatal(err)
+	}
+	if err := selector.MarkModelSuccess(ctx, succeeded.ID, "grok-imagine-image"); err != nil {
+		t.Fatal(err)
+	}
+
+	selector = NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	excluded := map[uint64]bool{}
+	want := []uint64{succeeded.ID, unknown.ID, softStopped.ID}
+	for index, wantID := range want {
+		lease, acquireErr := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", excluded, false)
+		if acquireErr != nil {
+			t.Fatalf("acquire %d: %v", index, acquireErr)
+		}
+		if lease.Credential.ID != wantID {
+			t.Fatalf("acquire %d account = %d, want %d", index, lease.Credential.ID, wantID)
+		}
+		excluded[lease.Credential.ID] = true
+		lease.Release()
 	}
 }
 
@@ -457,6 +511,73 @@ func TestSelectorConsumesOnlyMatchingQuotaSnapshot(t *testing.T) {
 	if window == nil || window.Remaining != 7 {
 		t.Fatalf("quota window = %#v", window)
 	}
+}
+
+func TestSelectorTreatsZeroTotalModelQuotaAsUnknown(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "unknown-model-quota.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierBasic,
+		Name: "unknown-imagine", SourceKey: "unknown-imagine", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := accounts.SaveQuotaWindows(ctx, credential.ID, account.WebTierBasic, now, []account.QuotaWindow{{
+		AccountID: credential.ID, Mode: "imagine", Remaining: 0, Total: 0,
+		SyncedAt: &now, Source: account.QuotaSourceUpstream, UpdatedAt: now,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	lease, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false)
+	if err != nil {
+		t.Fatalf("0/0 model quota should stay routable as unknown: %v", err)
+	}
+	lease.Release()
+	if err := accounts.SaveQuotaWindows(ctx, credential.ID, account.WebTierBasic, now, []account.QuotaWindow{{
+		AccountID: credential.ID, Mode: "imagine", Remaining: 0, Total: 10,
+		SyncedAt: &now, Source: account.QuotaSourceUpstream, UpdatedAt: now,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	selector = NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	if _, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false); err == nil {
+		t.Fatal("0/10 model quota should be blocked as exhausted")
+	} else {
+		var unavailable *SelectionUnavailableError
+		if !errors.As(err, &unavailable) || unavailable.Reason != SelectionQuotaExhausted {
+			t.Fatalf("0/10 model quota error = %v", err)
+		}
+	}
+	if err := accounts.SaveQuotaWindows(ctx, credential.ID, account.WebTierSuper, now, []account.QuotaWindow{
+		{AccountID: credential.ID, Mode: "weekly", Remaining: 0, Total: 10000, SyncedAt: &now, Source: account.QuotaSourceUpstream, UpdatedAt: now},
+		{AccountID: credential.ID, Mode: "imagine", Remaining: 5, Total: 10, SyncedAt: &now, Source: account.QuotaSourceUpstream, UpdatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{
+		AccountID: credential.ID, UpstreamModel: "grok-imagine-image", Reason: "old_usage_limit",
+		CooldownUntil: now.Add(time.Hour), UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	selector = NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	lease, err = selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false)
+	if err != nil {
+		t.Fatalf("explicit Imagine quota should take precedence over weekly: %v", err)
+	}
+	lease.Release()
 }
 
 func TestSelectorWaitsBrieflyForAccountCapacity(t *testing.T) {
@@ -536,7 +657,9 @@ func TestSelectorSerializesWebLiteImagePerAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
-	selector.MarkModelSuccess(preferred.ID, "grok-imagine-image")
+	if err := selector.MarkModelSuccess(ctx, preferred.ID, "grok-imagine-image"); err != nil {
+		t.Fatal(err)
+	}
 
 	first, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "", "", nil, false)
 	if err != nil {

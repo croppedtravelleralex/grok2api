@@ -58,6 +58,9 @@ func TestBuildProbeStatusTracksRunningAccountAndDeleteTransition(t *testing.T) {
 	if completed.Running || completed.Statistics.Attempts != 1 || completed.Statistics.Failed != 1 || completed.Statistics.Deletable != 1 {
 		t.Fatalf("completed status = %#v", completed)
 	}
+	if completed.Statistics.LaneAttempts.Verification != 1 {
+		t.Fatalf("lane attempts = %#v", completed.Statistics.LaneAttempts)
+	}
 	if completed.Pools.Delete != 1 || len(completed.Recent) != 1 || completed.Recent[0].Outcome != BuildProbeOutcomeDeletable {
 		t.Fatalf("completed pools/recent = %#v", completed)
 	}
