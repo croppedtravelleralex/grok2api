@@ -32,7 +32,7 @@ func (r *ImagePipelineRepository) UpdateTrace(ctx context.Context, value imagepi
 	result := r.db.db.WithContext(ctx).Model(&imagePipelineTraceModel{}).Where("id = ?", model.ID).Updates(map[string]any{
 		"lane": model.Lane, "status": model.Status, "model": model.Model, "account_id": model.AccountID,
 		"account_name": model.AccountName, "error_code": model.ErrorCode, "ended_at": model.EndedAt,
-		"queue_ms": model.QueueMS, "expand_ms": model.ExpandMS, "sse_ms": model.SSEMS,
+		"queue_ms": model.QueueMS, "expand_ms": model.ExpandMS, "ssems": model.SSEMS,
 		"download_ms": model.DownloadMS, "total_ms": model.TotalMS, "soft_stop": model.SoftStop,
 	})
 	if result.Error != nil {

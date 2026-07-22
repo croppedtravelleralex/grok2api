@@ -2,14 +2,14 @@
 
 ## 最后更新时间
 
-- 日期：2026-07-21
-- 维护目的：记录 Build 四池 + 双探针落地；Web udeal 纯 HTTP 路径仍可用。
+- 日期：2026-07-22
+- 维护目的：记录 Build 四池主路径已清零删除池；后续增强待办见 [08](./08-build-four-pool-dual-probe-todos-2026-07-22.md)。
 
 ## 整体状态摘要
 
 - 后端为 Go 网关，前端为 React/Vite 管理端，支持 Grok Build、Web、Console 三个账号池。
 - Panda 为低资源生产机：**禁止在其上编译/构建**；标准链为本地改测 → GitHub 上传（Actions/GHCR）→ Panda 仅 `pull` 运行。
-- **Build（2026-07-21）**：四池状态机 —— 调度 / 普通 / 验证 / 删除；双探针（调度探针 + 维护探针 DRR 5:3:2）；删除池物理删除；废除恢复池与 `retired:` 软退役。
+- **Build（2026-07-22）**：四池主路径已上线；生产快照约 `dispatch≈211 / normal=2 / verification=0 / delete=0`。已做/未做全量盘点与 FP-* 待办见 [08-build-four-pool-dual-probe-todos-2026-07-22.md](./08-build-four-pool-dual-probe-todos-2026-07-22.md)。
 - **Web（2026-07-21）**：已可用——关 browser-bridge + 本地零浏览器签名器（`127.0.0.1:8788/sign`）+ LA 住宅 egress `70.39.164.200:30000`；详见 [07-udeal-zero-browser-ops-2026-07-21.md](./07-udeal-zero-browser-ops-2026-07-21.md)。
 - Web 调度当前 **20 个账号**进池：`641,642,644,646,647,649,650,652,654,656` + `659,661,663,667,669,671,673,674,675,677`；文生图开、图生图/视频关；NewAPI 渠道 `#105` 已启用。
 - NewAPI `#105` BaseURL：`http://grok2api:8000`（容器直连，避开 CF；需 `new-api` 加入 `grok2api_default` 网络）。
@@ -22,7 +22,7 @@
 
 - SQLite/PostgreSQL、内存/Redis 运行时、账号池、模型路由、请求审计和代理出口。
 - Panda 域名入口为 `grokimage.relai.asia`，生产服务由容器运行。
-- Web 与 Web Asset 使用分离的出口作用域与可配全局闸门（`webConcurrency` / `assetConcurrency` / `expandConcurrency`）；单 udeal 建议 2 / 8 / 2。Lite 文生图另有 `ImagePipelineScheduler`（10 槽 + SSE AIMD），管理端「时序图」可观测。
+- Web 与 Web Asset 使用分离的出口作用域与可配全局闸门（`webConcurrency` / `assetConcurrency` / `expandConcurrency`）；单 udeal 基线 2 / 8 / 2。Lite 文生图另有 `ImagePipelineScheduler`（10 槽 + 显式 FIFO/aging + SSE AIMD），管理端「时序图」展示槽位 owner、阶段等待和准入队列。
 
 ### 核心业务能力
 
@@ -59,7 +59,7 @@
 
 ## 已知阻塞与风险
 
-- **Web 主路径已切纯 HTTP（2026-07-21）**：依赖本地签名器进程 + udeal 单口；签名器随 grok2api 重建必须重拉（`start_signer_nsenter.sh`）。
+- **Web 主路径架构已切纯 HTTP，但生产验收未通过（2026-07-22）**：当前依赖本地签名器进程 + udeal 单口；旧镜像 80 次 Lite 请求为 80/80 上游 403。本轮已改为每请求生成新票并修复 trace/调度，尚待新镜像按 1→2→4→10 canary 验收。签名器随 grok2api 重建仍须重拉（`start_signer_nsenter.sh`）。
 - Webshare **不可**作 `grok_web`（CF Managed Challenge）；可仅试验 `grok_web_asset` CDN 下图。
 - 单 udeal：上行 ~1.5 Mbps / 下行 ~15 Mbps；Lite 出图约 **170KB JPEG / 784×1168**。调度建议 `webConcurrency=2`（流水线后可升 8）、`assetConcurrency=8`、`expandConcurrency=2`、`mediaConcurrency=1`；详见 [07](./07-udeal-zero-browser-ops-2026-07-21.md)。
 - Lite 文生图：准入排队 → 扩写池 → SSE AIMD → 下图池；账号 lease 在 SSE 后早释；`/image-timeline` 甘特图。

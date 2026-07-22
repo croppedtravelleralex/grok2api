@@ -82,6 +82,28 @@ func TestUpdatePersistsAppliesAndReportsRestart(t *testing.T) {
 	}
 }
 
+func TestUpdatePersistsExpandConcurrencyAndRequiresRestart(t *testing.T) {
+	cfg := testConfig(t)
+	repository := &runtimeSettingsRepositoryStub{}
+	service := NewService(cfg, time.Time{}, 0, repository, nil, nil)
+	input := service.Get().Config
+	input.ProviderWeb.ExpandConcurrency = cfg.Provider.Web.ExpandConcurrency + 1
+
+	snapshot, err := service.Update(context.Background(), 0, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository.value.ProviderWeb.ExpandConcurrency != input.ProviderWeb.ExpandConcurrency {
+		t.Fatalf("persisted expand concurrency = %d", repository.value.ProviderWeb.ExpandConcurrency)
+	}
+	if snapshot.Config.ProviderWeb.ExpandConcurrency != input.ProviderWeb.ExpandConcurrency {
+		t.Fatalf("snapshot expand concurrency = %d", snapshot.Config.ProviderWeb.ExpandConcurrency)
+	}
+	if len(snapshot.RestartRequired) != 1 || snapshot.RestartRequired[0] != "providerWeb.expandConcurrency" {
+		t.Fatalf("restartRequired = %#v", snapshot.RestartRequired)
+	}
+}
+
 func TestLoadPersistedKeepsConsoleDefaultsWhenFieldIsMissing(t *testing.T) {
 	cfg := testConfig(t)
 	value := toDomainConfig(cfg)

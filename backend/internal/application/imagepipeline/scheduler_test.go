@@ -2,12 +2,19 @@ package imagepipeline
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	domain "github.com/chenyme/grok2api/backend/internal/domain/imagepipeline"
 )
+
+type failingSegmentRepo struct{ *memRepo }
+
+func (r *failingSegmentRepo) AppendSegment(context.Context, domain.Segment) (domain.Segment, error) {
+	return domain.Segment{}, errors.New("segment storage unavailable")
+}
 
 type memRepo struct {
 	mu       sync.Mutex
@@ -180,4 +187,211 @@ func TestAIMDDecreaseOnSoftStop(t *testing.T) {
 	if snap.SSETarget >= 4 {
 		t.Fatalf("expected AIMD decrease, target=%d", snap.SSETarget)
 	}
+}
+
+func TestAdmissionQueueIsFIFOAndSnapshotShowsSlotOwners(t *testing.T) {
+	s := NewScheduler(newMemRepo(), Config{PipelineSlots: 1, QueueCapacity: 2, ExpandConcurrency: 1, SSEMin: 1, SSEInitial: 1, SSEMax: 1, DownloadConcurrency: 1}, nil)
+	r1, err := s.Admit(context.Background(), AdmitInput{RequestID: "r1", Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	order := make(chan string, 2)
+	start := func(id string) {
+		go func() {
+			run, admitErr := s.Admit(context.Background(), AdmitInput{RequestID: id, Model: "m"})
+			if admitErr != nil {
+				order <- "error:" + admitErr.Error()
+				return
+			}
+			order <- id
+			run.Finish(domain.StatusSucceeded, "", false)
+		}()
+	}
+	start("r2")
+	waitForQueueDepth(t, s, 1)
+	start("r3")
+	waitForQueueDepth(t, s, 2)
+
+	snapshot := s.Snapshot()
+	if len(snapshot.Slots) != 1 || !snapshot.Slots[0].Occupied || snapshot.Slots[0].RequestID != "r1" {
+		t.Fatalf("槽位快照不正确: %+v", snapshot.Slots)
+	}
+	if len(snapshot.Queue) != 2 || snapshot.Queue[0].Position != 1 || snapshot.Queue[0].RequestID != "r2" || snapshot.Queue[1].Position != 2 || snapshot.Queue[1].RequestID != "r3" {
+		t.Fatalf("队列快照不正确: %+v", snapshot.Queue)
+	}
+
+	r1.Finish(domain.StatusSucceeded, "", false)
+	if got := <-order; got != "r2" {
+		t.Fatalf("FIFO 第一项 = %s", got)
+	}
+	if got := <-order; got != "r3" {
+		t.Fatalf("FIFO 第二项 = %s", got)
+	}
+}
+
+func TestCanceledQueueWaiterDoesNotLeakSlot(t *testing.T) {
+	s := NewScheduler(newMemRepo(), Config{PipelineSlots: 1, QueueCapacity: 1, ExpandConcurrency: 1, SSEMin: 1, SSEInitial: 1, SSEMax: 1, DownloadConcurrency: 1}, nil)
+	r1, err := s.Admit(context.Background(), AdmitInput{RequestID: "r1", Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, admitErr := s.Admit(ctx, AdmitInput{RequestID: "r2", Model: "m"})
+		done <- admitErr
+	}()
+	waitForQueueDepth(t, s, 1)
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("取消的排队请求意外成功")
+	}
+	waitForQueueDepth(t, s, 0)
+	r1.Finish(domain.StatusSucceeded, "", false)
+
+	r3, err := s.Admit(context.Background(), AdmitInput{RequestID: "r3", Model: "m"})
+	if err != nil {
+		t.Fatalf("取消等待者后槽位泄漏: %v", err)
+	}
+	r3.Finish(domain.StatusSucceeded, "", false)
+}
+
+func TestExpandStageQueueIsFIFOAndVisible(t *testing.T) {
+	s := NewScheduler(newMemRepo(), Config{PipelineSlots: 3, QueueCapacity: 3, ExpandConcurrency: 1, SSEMin: 1, SSEInitial: 1, SSEMax: 1, SSEStagger: time.Millisecond, DownloadConcurrency: 1}, nil)
+	runs := make([]*Run, 3)
+	for i := range runs {
+		run, err := s.Admit(context.Background(), AdmitInput{RequestID: string(rune('1' + i)), Model: "m"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		runs[i] = run
+		defer run.Finish(domain.StatusSucceeded, "", false)
+	}
+	if err := runs[0].AcquireExpand(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	acquired := make(chan int, 2)
+	release := []chan struct{}{make(chan struct{}), make(chan struct{})}
+	for index := 1; index < 3; index++ {
+		index := index
+		go func() {
+			if err := runs[index].AcquireExpand(context.Background()); err != nil {
+				acquired <- -index
+				return
+			}
+			acquired <- index
+			<-release[index-1]
+			runs[index].ReleaseExpand()
+		}()
+		waitForStageQueueDepth(t, s, domain.StageExpand, index)
+	}
+
+	snapshot := s.Snapshot()
+	if snapshot.ExpandActive != 1 || snapshot.ExpandQueued != 2 || snapshot.Slots[runs[1].Lane()].WaitingFor != domain.StageExpand {
+		t.Fatalf("扩写队列快照不正确: active=%d queued=%d slots=%+v", snapshot.ExpandActive, snapshot.ExpandQueued, snapshot.Slots)
+	}
+	runs[0].ReleaseExpand()
+	if got := <-acquired; got != 1 {
+		t.Fatalf("扩写 FIFO 第一项=%d", got)
+	}
+	close(release[0])
+	if got := <-acquired; got != 2 {
+		t.Fatalf("扩写 FIFO 第二项=%d", got)
+	}
+	close(release[1])
+}
+
+func TestCanceledStageWaiterDoesNotLeakCapacity(t *testing.T) {
+	s := NewScheduler(newMemRepo(), Config{PipelineSlots: 2, QueueCapacity: 2, ExpandConcurrency: 1, SSEMin: 1, SSEInitial: 1, SSEMax: 1, SSEStagger: time.Millisecond, DownloadConcurrency: 1}, nil)
+	r1, _ := s.Admit(context.Background(), AdmitInput{RequestID: "r1", Model: "m"})
+	r2, _ := s.Admit(context.Background(), AdmitInput{RequestID: "r2", Model: "m"})
+	defer r1.Finish(domain.StatusSucceeded, "", false)
+	defer r2.Finish(domain.StatusSucceeded, "", false)
+	if err := r1.AcquireDownload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r2.AcquireDownload(ctx) }()
+	waitForStageQueueDepth(t, s, domain.StageDownload, 1)
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("取消的下图等待者意外成功")
+	}
+	r1.ReleaseDownload()
+	if snapshot := s.Snapshot(); snapshot.DownloadActive != 0 || snapshot.DownloadQueued != 0 {
+		t.Fatalf("取消后容量泄漏: %+v", snapshot)
+	}
+}
+
+func TestFinishReleasesHeldStageCapacity(t *testing.T) {
+	s := NewScheduler(newMemRepo(), Config{PipelineSlots: 2, QueueCapacity: 2, ExpandConcurrency: 1, SSEMin: 1, SSEInitial: 1, SSEMax: 1, SSEStagger: time.Millisecond, DownloadConcurrency: 1}, nil)
+	r1, _ := s.Admit(context.Background(), AdmitInput{RequestID: "r1", Model: "m"})
+	r2, _ := s.Admit(context.Background(), AdmitInput{RequestID: "r2", Model: "m"})
+	if err := r1.AcquireSSE(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- r2.AcquireSSE(context.Background()) }()
+	waitForStageQueueDepth(t, s, domain.StageSSE, 1)
+	r1.Finish(domain.StatusFailed, "aborted", false)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Finish 未归还 SSE 容量")
+	}
+	r2.ReleaseSSE()
+	r2.Finish(domain.StatusSucceeded, "", false)
+}
+
+func TestSegmentPersistenceFailureDoesNotLeakStageCapacity(t *testing.T) {
+	s := NewScheduler(&failingSegmentRepo{newMemRepo()}, Config{PipelineSlots: 2, QueueCapacity: 2, ExpandConcurrency: 1, SSEMin: 1, SSEInitial: 1, SSEMax: 1, SSEStagger: time.Millisecond, DownloadConcurrency: 1}, nil)
+	r1, _ := s.Admit(context.Background(), AdmitInput{RequestID: "r1", Model: "m"})
+	r2, _ := s.Admit(context.Background(), AdmitInput{RequestID: "r2", Model: "m"})
+	if err := r1.AcquireExpand(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r1.ReleaseExpand()
+	if err := r2.AcquireExpand(context.Background()); err != nil {
+		t.Fatalf("segment 落库失败后容量泄漏: %v", err)
+	}
+	r2.ReleaseExpand()
+	r1.Finish(domain.StatusSucceeded, "", false)
+	r2.Finish(domain.StatusSucceeded, "", false)
+}
+
+func waitForQueueDepth(t *testing.T, scheduler *Scheduler, depth int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if scheduler.Snapshot().QueueDepth == depth {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("等待队列深度 %d 超时，当前 %d", depth, scheduler.Snapshot().QueueDepth)
+}
+
+func waitForStageQueueDepth(t *testing.T, scheduler *Scheduler, stage domain.Stage, depth int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := scheduler.Snapshot()
+		actual := snapshot.ExpandQueued
+		if stage == domain.StageSSE {
+			actual = snapshot.SSEQueued
+		} else if stage == domain.StageDownload {
+			actual = snapshot.DownloadQueued
+		}
+		if actual == depth {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("等待 %s 队列深度 %d 超时", stage, depth)
 }

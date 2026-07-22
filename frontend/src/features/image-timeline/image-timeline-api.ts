@@ -33,6 +33,29 @@ export type ImageTimelineTraceDTO = {
   segments: ImageTimelineSegmentDTO[];
 };
 
+export type ImageTimelineSlotDTO = {
+  lane: number;
+  occupied: boolean;
+  traceId?: string;
+  requestId?: string;
+  model?: string;
+  accountName?: string;
+  stage?: ImageTimelineStage;
+  waitingFor?: ImageTimelineStage;
+  status?: string;
+  startedAt?: string;
+  activeMs?: number;
+};
+
+export type ImageTimelineQueueDTO = {
+  position: number;
+  traceId: string;
+  requestId: string;
+  model: string;
+  enqueuedAt: string;
+  waitMs: number;
+};
+
 export type ImageTimelineSnapshotDTO = {
   pipelineSlots: number;
   activeSlots: number;
@@ -45,6 +68,12 @@ export type ImageTimelineSnapshotDTO = {
   sseTarget: number;
   downloadActive: number;
   downloadLimit: number;
+  expandQueued: number;
+  sseQueued: number;
+  downloadQueued: number;
+  oldestQueueMs: number;
+  slots: ImageTimelineSlotDTO[];
+  queue: ImageTimelineQueueDTO[];
   successRate: number;
   sampleCount: number;
   p50TotalMs: number;
@@ -100,6 +129,29 @@ const traceValidator = hasShape({
   segments: isArrayOf(segmentValidator),
 });
 
+const slotValidator = hasShape({
+  lane: isNumber,
+  occupied: isBoolean,
+  traceId: isOptional(isString),
+  requestId: isOptional(isString),
+  model: isOptional(isString),
+  accountName: isOptional(isString),
+  stage: isOptional(isStage),
+  waitingFor: isOptional(isStage),
+  status: isOptional(isString),
+  startedAt: isOptional(isString),
+  activeMs: isOptional(isNumber),
+});
+
+const queueValidator = hasShape({
+  position: isNumber,
+  traceId: isString,
+  requestId: isString,
+  model: isString,
+  enqueuedAt: isString,
+  waitMs: isNumber,
+});
+
 const snapshotValidator = hasShape({
   pipelineSlots: isNumber,
   activeSlots: isNumber,
@@ -112,6 +164,12 @@ const snapshotValidator = hasShape({
   sseTarget: isNumber,
   downloadActive: isNumber,
   downloadLimit: isNumber,
+  expandQueued: isNumber,
+  sseQueued: isNumber,
+  downloadQueued: isNumber,
+  oldestQueueMs: isNumber,
+  slots: isArrayOf(slotValidator),
+  queue: isArrayOf(queueValidator),
   successRate: isNumber,
   sampleCount: isNumber,
   p50TotalMs: isNumber,

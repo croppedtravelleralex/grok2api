@@ -48,6 +48,7 @@
 - 预期产出：抓包清单、最小 PoC（登录态请求生图或 chat）、与现有 browser-bridge 的切换开关。
 - 完成标准：至少一条 Web 路径不经每请求 Chromium 成功返回；Panda 资源占用显著低于 bridge。
 - 依赖关系：能过 CF 的出口（住宅/ISP 或 clearance）；对照 `/root/gptimage` 实现模式，接口需 grok 专用。
+- 2026-07-22 状态：本地已实现每请求新签名票、纯 HTTP Lite 流水线、显式 FIFO/aging 和实时槽位/队列；当前生产旧镜像 80/80 上游 403，仍须新镜像 1→2→4→10 canary 后才能标记完成。
 
 ## Later
 

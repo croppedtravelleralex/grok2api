@@ -11,17 +11,21 @@ import (
 
 // generationTiming 只记录阶段耗时和有限枚举，不保存请求体、凭据或会话键。
 type generationTiming struct {
-	mu             sync.Mutex
-	started        time.Time
-	route          string
-	provider       accountdomain.Provider
-	selectionWait  time.Duration
-	credentialWait time.Duration
-	upstreamWait   time.Duration
-	firstHeaders   time.Duration
-	firstBody      time.Duration
-	attempts       int
-	finished       bool
+	mu               sync.Mutex
+	started          time.Time
+	route            string
+	provider         accountdomain.Provider
+	selectionWait    time.Duration
+	credentialWait   time.Duration
+	upstreamWait     time.Duration
+	firstHeaders     time.Duration
+	firstBody        time.Duration
+	pipelineQueue    time.Duration
+	pipelineExpand   time.Duration
+	pipelineSSE      time.Duration
+	pipelineDownload time.Duration
+	attempts         int
+	finished         bool
 }
 
 func newGenerationTiming(route string, provider accountdomain.Provider) *generationTiming {
@@ -58,6 +62,15 @@ func (t *generationTiming) markFirstBody() {
 	t.mu.Unlock()
 }
 
+func (t *generationTiming) markImagePipeline(queue, expand, sse, download time.Duration) {
+	t.mu.Lock()
+	t.pipelineQueue = queue
+	t.pipelineExpand = expand
+	t.pipelineSSE = sse
+	t.pipelineDownload = download
+	t.mu.Unlock()
+}
+
 func (t *generationTiming) finish(logger *slog.Logger, outcome string) {
 	if t == nil {
 		return
@@ -75,6 +88,8 @@ func (t *generationTiming) finish(logger *slog.Logger, outcome string) {
 		"selection_wait_ms", t.selectionWait.Milliseconds(), "credential_wait_ms", t.credentialWait.Milliseconds(),
 		"upstream_wait_ms", t.upstreamWait.Milliseconds(), "first_headers_ms", t.firstHeaders.Milliseconds(),
 		"first_body_ms", t.firstBody.Milliseconds(), "attempts", t.attempts, "retries", retries,
+		"pipeline_queue_ms", t.pipelineQueue.Milliseconds(), "pipeline_expand_ms", t.pipelineExpand.Milliseconds(),
+		"pipeline_sse_ms", t.pipelineSSE.Milliseconds(), "pipeline_download_ms", t.pipelineDownload.Milliseconds(),
 	}
 	t.mu.Unlock()
 	if logger == nil {

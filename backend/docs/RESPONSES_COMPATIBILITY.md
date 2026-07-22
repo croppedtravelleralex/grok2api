@@ -180,8 +180,8 @@ JSON 只接受当前 `accounts` 结构。SSO 不存在自动刷新：上游返�
 
 - Grok Build 使用标准 Go HTTP/TLS 传输并保持 CLI User-Agent；通过代理时仍沿用该传输，不切换成浏览器指纹。Grok Web HTTP 使用 Chrome TLS/HTTP2 指纹；Imagine 使用同一代理、User-Agent 和 Cookie Bundle 的 WebSocket 客户端。
 - 每次上游 HTTP 请求生成独立 UUID v4 `x-xai-request-id`，并携带与浏览器同源 fetch 一致的最小稳定请求头；不伪造 Client Hints、Sentry、trace 数据或手工 HTTP/2 头顺序。
-- 设置页支持两种 `x-statsig-id` 来源：手动模式直接使用管理员写入的固定值，不自动失效、刷新或替换；URL 模式会先使用同一账号、出口节点、User-Agent 与 Cookie 访问 `https://grok.com/index`，读取 `grok-site-verification` meta，再把请求 method、path 和 metaContent 发送到配置的签名服务。默认签名 URL 是 `https://grok.wodf.de/sign`。URL 签名按 method/path 缓存；Code 7 会立即强制刷新并替换旧值，刷新失败时保留上一个真实签名，绝不发送随机占位签名。
-- URL 模式按 `method + path` 在当前实例内共享一份签名，跨账号复用并缓存 1 小时；不同路径不会混用。并发刷新使用 singleflight 合并，缓存最多保存 4096 个路径，过期项会及时清理。签名服务不会收到 SSO、Cloudflare Cookie、提示词或响应正文。公网签名服务必须使用无凭据、查询参数或片段的 HTTPS:443 地址；Docker 单标签服务名、localhost、`.local/.internal` 和私有地址可使用 HTTP/HTTPS 与自定义端口，例如 `http://grok-signer-go:8788/sign`。签名请求不跟随重定向。手动值仅写入，管理接口只返回是否已配置。
+- 设置页支持两种 `x-statsig-id` 来源：手动模式直接使用管理员写入的固定值，不自动失效、刷新或替换；URL 模式会先使用同一账号、出口节点、User-Agent 与 Cookie 访问 `https://grok.com/index`，读取 `grok-site-verification` meta，再把请求 method、path 和 metaContent 发送到配置的签名服务。默认签名 URL 是 `https://grok.wodf.de/sign`。最终签名票按请求实时生成，不缓存或跨请求复用；403/Code 7 会清除 meta 缓存后重新抓取。
+- URL 模式只缓存首页 `grok-site-verification` meta（1 小时），并发刷新使用 singleflight 合并；签名服务不可用时请求不发送随机或陈旧占位票。签名服务不会收到 SSO、Cloudflare Cookie、提示词或响应正文。公网签名服务必须使用无凭据、查询参数或片段的 HTTPS:443 地址；Docker 单标签服务名、localhost、`.local/.internal` 和私有地址可使用 HTTP/HTTPS 与自定义端口，例如 `http://grok-signer-go:8788/sign`。签名请求不跟随重定向。手动值仅写入，管理接口只返回是否已配置。
 - HTTP 403 或流首包 Code 7 会在任何内容写给客户端前立即失效对应路径的缓存，重新获取 meta 并重签一次。首次失效不处罚代理节点；刷新后仍失败才反馈出口健康并返回反机器人错误。流已经开始后绝不重放或拼接第二条响应。
 - 手动 Cookie 只保留 `cf_clearance`、`__cf_bm`、`_cfuvid` 和 `cf_chl_*`。
 - 不配置、存储或发送 `grok_device_id`、`x-anonuserid`、`x-userid`、`x-challenge`、`x-signature`。

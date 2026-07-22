@@ -15,10 +15,11 @@ type imagePipelineTraceModel struct {
 	EndedAt     *time.Time
 	QueueMS     int64 `gorm:"not null;default:0"`
 	ExpandMS    int64 `gorm:"not null;default:0"`
-	SSEMS       int64 `gorm:"not null;default:0"`
-	DownloadMS  int64 `gorm:"not null;default:0"`
-	TotalMS     int64 `gorm:"not null;default:0"`
-	SoftStop    bool  `gorm:"not null;default:false"`
+	// 生产首版表由 GORM 将 SSEMS 命名为 ssems；显式固定列名，避免 map 更新误写 sse_ms。
+	SSEMS      int64 `gorm:"column:ssems;not null;default:0"`
+	DownloadMS int64 `gorm:"not null;default:0"`
+	TotalMS    int64 `gorm:"not null;default:0"`
+	SoftStop   bool  `gorm:"not null;default:false"`
 }
 
 func (imagePipelineTraceModel) TableName() string { return "image_pipeline_traces" }

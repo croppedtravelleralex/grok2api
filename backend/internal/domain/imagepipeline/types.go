@@ -22,23 +22,23 @@ const (
 )
 
 type Trace struct {
-	ID           string
-	RequestID    string
-	Lane         int
-	Status       Status
-	Model        string
-	AccountID    *uint64
-	AccountName  string
-	ErrorCode    string
-	StartedAt    time.Time
-	EndedAt      *time.Time
-	QueueMS      int64
-	ExpandMS     int64
-	SSEMS        int64
-	DownloadMS   int64
-	TotalMS      int64
-	SoftStop     bool
-	Segments     []Segment
+	ID          string
+	RequestID   string
+	Lane        int
+	Status      Status
+	Model       string
+	AccountID   *uint64
+	AccountName string
+	ErrorCode   string
+	StartedAt   time.Time
+	EndedAt     *time.Time
+	QueueMS     int64
+	ExpandMS    int64
+	SSEMS       int64
+	DownloadMS  int64
+	TotalMS     int64
+	SoftStop    bool
+	Segments    []Segment
 }
 
 type Segment struct {
@@ -52,29 +52,58 @@ type Segment struct {
 }
 
 type Snapshot struct {
-	PipelineSlots      int
-	ActiveSlots        int
-	QueueDepth         int
-	QueueCapacity      int
-	ExpandActive       int
-	ExpandLimit        int
-	SSEActive          int
-	SSELimit           int
-	SSETarget          int
-	DownloadActive     int
-	DownloadLimit      int
-	SuccessRate        float64
-	SampleCount        int
-	P50TotalMS         int64
-	P90TotalMS         int64
-	P95TotalMS         int64
-	P50ExpandMS        int64
-	P90ExpandMS        int64
-	P50SSEMS           int64
-	P90SSEMS           int64
-	P50DownloadMS      int64
-	P90DownloadMS      int64
-	UpdatedAt          time.Time
+	PipelineSlots  int
+	ActiveSlots    int
+	QueueDepth     int
+	QueueCapacity  int
+	ExpandActive   int
+	ExpandLimit    int
+	SSEActive      int
+	SSELimit       int
+	SSETarget      int
+	DownloadActive int
+	DownloadLimit  int
+	ExpandQueued   int
+	SSEQueued      int
+	DownloadQueued int
+	SuccessRate    float64
+	SampleCount    int
+	P50TotalMS     int64
+	P90TotalMS     int64
+	P95TotalMS     int64
+	P50ExpandMS    int64
+	P90ExpandMS    int64
+	P50SSEMS       int64
+	P90SSEMS       int64
+	P50DownloadMS  int64
+	P90DownloadMS  int64
+	OldestQueueMS  int64
+	Slots          []SlotSnapshot
+	Queue          []QueueSnapshot
+	UpdatedAt      time.Time
+}
+
+type SlotSnapshot struct {
+	Lane        int
+	Occupied    bool
+	TraceID     string
+	RequestID   string
+	Model       string
+	AccountName string
+	Stage       Stage
+	WaitingFor  Stage
+	Status      Status
+	StartedAt   time.Time
+	ActiveMS    int64
+}
+
+type QueueSnapshot struct {
+	Position   int
+	TraceID    string
+	RequestID  string
+	Model      string
+	EnqueuedAt time.Time
+	WaitMS     int64
 }
 
 type Timeline struct {

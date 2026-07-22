@@ -42,7 +42,7 @@ export const settingsSchema = z.object({
     statsigManualConfigured: z.boolean(),
     statsigSignerURL: z.string().trim().max(2048),
     quotaTimeout: durationSchema, chatTimeout: durationSchema, imageTimeout: durationSchema, videoTimeout: durationSchema,
-    mediaConcurrency: positiveInteger.max(64), webConcurrency: positiveInteger.max(20), assetConcurrency: positiveInteger.max(20), allowNSFW: z.boolean(),
+    mediaConcurrency: positiveInteger.max(64), webConcurrency: positiveInteger.max(20), assetConcurrency: positiveInteger.max(20), expandConcurrency: positiveInteger.max(20), allowNSFW: z.boolean(),
     recoveryBackoffBase: durationSchema, recoveryBackoffMax: durationSchema,
   }).superRefine((value, context) => {
     if (durationSeconds(value.recoveryBackoffMax) < durationSeconds(value.recoveryBackoffBase)) {

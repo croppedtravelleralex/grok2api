@@ -105,7 +105,7 @@ func TestStatsigSignerClientRejectsRedirects(t *testing.T) {
 	}
 }
 
-func TestStatsigSignerCachesByMethodAndPathForOneHour(t *testing.T) {
+func TestStatsigSignerRefreshesSignaturePerRequestAndCachesMeta(t *testing.T) {
 	var fetches int
 	var signedMeta []string
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
@@ -140,8 +140,8 @@ func TestStatsigSignerCachesByMethodAndPathForOneHour(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fetches != 1 || len(signedMeta) != 1 || first != second {
-		t.Fatalf("cached fetches=%d signedMeta=%v first=%q second=%q", fetches, signedMeta, first, second)
+	if fetches != 1 || len(signedMeta) != 2 || first == second {
+		t.Fatalf("per-request signing fetches=%d signedMeta=%v first=%q second=%q", fetches, signedMeta, first, second)
 	}
 
 	now = now.Add(time.Hour)
@@ -149,7 +149,7 @@ func TestStatsigSignerCachesByMethodAndPathForOneHour(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fetches != 2 || third == first {
+	if fetches != 2 || len(signedMeta) != 3 || third == second {
 		t.Fatalf("hourly refresh fetches=%d first=%q third=%q", fetches, first, third)
 	}
 
@@ -158,15 +158,15 @@ func TestStatsigSignerCachesByMethodAndPathForOneHour(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fetches != 3 || fourth == third {
+	if fetches != 3 || len(signedMeta) != 4 || fourth == third {
 		t.Fatalf("invalidation fetches=%d third=%q fourth=%q", fetches, third, fourth)
 	}
 
 	if _, _, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token-a", nil, http.MethodPost, "https://grok.com/rest/other"); err != nil {
 		t.Fatal(err)
 	}
-	if fetches != 4 {
-		t.Fatalf("different path reused signature: fetches=%d", fetches)
+	if fetches != 3 || len(signedMeta) != 5 {
+		t.Fatalf("different path must reuse meta but refresh signature: fetches=%d signatures=%d", fetches, len(signedMeta))
 	}
 }
 
@@ -208,7 +208,7 @@ func TestStatsigWarmupFetchesMetaOnceForSharedPaths(t *testing.T) {
 	if warmed != len(targets) || fetches != 1 || signatures != len(targets) {
 		t.Fatalf("warmed=%d fetches=%d signatures=%d", warmed, fetches, signatures)
 	}
-	if warmedAgain, err := signer.Warm(context.Background(), "https://grok.com", "https://signer.example/sign", "token", nil, targets); err != nil || warmedAgain != 0 || fetches != 1 {
+	if warmedAgain, err := signer.Warm(context.Background(), "https://grok.com", "https://signer.example/sign", "token", nil, targets); err != nil || warmedAgain != len(targets) || fetches != 1 {
 		t.Fatalf("cached warmup=%d fetches=%d err=%v", warmedAgain, fetches, err)
 	}
 }
@@ -226,6 +226,39 @@ func TestApplySignedStatsigUsesManualValue(t *testing.T) {
 	}
 }
 
+func TestStatsigSignerUsesExpiredMetaOnlyToMintFreshSignature(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	signer := newStatsigSigner()
+	signer.now = func() time.Time { return now }
+	signer.validateEndpoint = func(context.Context, string) error { return nil }
+	signer.store(statsigMetaKey("https://grok.com", "https://signer.example/sign"), "expired-meta", now.Add(-time.Minute), now.Add(-2*time.Hour))
+	signer.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
+		return "", errors.New("homepage unavailable")
+	}
+	signer.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var payload struct {
+			Environment struct {
+				MetaContent string `json:"metaContent"`
+			} `json:"environment"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Environment.MetaContent != "expired-meta" {
+			t.Fatalf("meta = %q", payload.Environment.MetaContent)
+		}
+		raw := make([]byte, 70)
+		raw[0] = 7
+		body, _ := json.Marshal(map[string]string{"x-statsig-id": base64.RawStdEncoding.EncodeToString(raw)})
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(body))), Header: http.Header{}}, nil
+	})}
+
+	value, source, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token", nil, http.MethodPost, "https://grok.com/rest/chat")
+	if err != nil || source != "stale" || !validStatsigID(value) {
+		t.Fatalf("value=%q source=%q err=%v", value, source, err)
+	}
+}
+
 func TestStatsigInvalidationDoesNotReuseRejectedValue(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	raw := make([]byte, 70)
@@ -233,10 +266,7 @@ func TestStatsigInvalidationDoesNotReuseRejectedValue(t *testing.T) {
 	previous := base64.RawStdEncoding.EncodeToString(raw)
 	signer := newStatsigSigner()
 	signer.now = func() time.Time { return now }
-	key, _, err := statsigSignatureKey("https://grok.com", "https://signer.example/sign", http.MethodPost, "https://grok.com/rest/test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := statsigMetaKey("https://grok.com", "https://signer.example/sign")
 	signer.store(key, previous, now.Add(time.Hour), now)
 	signer.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
 		return "", errors.New("signer unavailable")

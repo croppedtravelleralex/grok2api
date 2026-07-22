@@ -743,6 +743,13 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 		}
 		pipelineFinished = true
 		pipelineRun.Finish(status, errorCode, softStop)
+		pipelineTiming := pipelineRun.Timing()
+		timing.markImagePipeline(
+			time.Duration(pipelineTiming.QueueMS)*time.Millisecond,
+			time.Duration(pipelineTiming.ExpandMS)*time.Millisecond,
+			time.Duration(pipelineTiming.SSEMS)*time.Millisecond,
+			time.Duration(pipelineTiming.DownloadMS)*time.Millisecond,
+		)
 	}
 	defer func() {
 		if !returnedOK && !pipelineFinished && pipelineRun != nil {

@@ -45,20 +45,36 @@ type Scheduler struct {
 	logger *slog.Logger
 	cfg    Config
 
-	mu             sync.Mutex
-	slots          []bool
-	queueWaiting   int
-	expandActive   int
-	sseActive      int
-	sseTarget      int
-	downloadActive int
-	lastSSEStart   time.Time
-	recentOutcomes []outcomeSample
-	live           map[string]*Run
-	expandGate     chan struct{}
-	sseGate        chan struct{}
-	downloadGate   chan struct{}
-	slotWake       chan struct{}
+	mu              sync.Mutex
+	slots           []*Run
+	waiters         []*slotWaiter
+	expandActive    int
+	sseActive       int
+	sseTarget       int
+	downloadActive  int
+	lastSSEStart    time.Time
+	expandWaiters   []*stageWaiter
+	sseWaiters      []*stageWaiter
+	downloadWaiters []*stageWaiter
+	sseTimerPending bool
+	recentOutcomes  []outcomeSample
+	live            map[string]*Run
+}
+
+type slotWaiter struct {
+	run        *Run
+	enqueuedAt time.Time
+	grant      chan int
+	granted    bool
+	lane       int
+}
+
+type stageWaiter struct {
+	run        *Run
+	stage      domain.Stage
+	enqueuedAt time.Time
+	grant      chan struct{}
+	granted    bool
 }
 
 type outcomeSample struct {
@@ -85,8 +101,17 @@ type Run struct {
 	seq             int
 	openSegs        map[domain.Stage]uint64
 	stageWait       map[domain.Stage]time.Time
+	heldStages      map[domain.Stage]bool
 	holdingSlot     bool
 	releasedAccount bool
+	waitingFor      domain.Stage
+}
+
+type Timing struct {
+	QueueMS    int64
+	ExpandMS   int64
+	SSEMS      int64
+	DownloadMS int64
 }
 
 func NewScheduler(repo repository.ImagePipelineRepository, cfg Config, logger *slog.Logger) *Scheduler {
@@ -96,13 +121,9 @@ func NewScheduler(repo repository.ImagePipelineRepository, cfg Config, logger *s
 	}
 	s := &Scheduler{
 		repo: repo, logger: logger, cfg: cfg,
-		slots:        make([]bool, cfg.PipelineSlots),
-		sseTarget:    cfg.SSEInitial,
-		live:         make(map[string]*Run),
-		expandGate:   make(chan struct{}, cfg.ExpandConcurrency),
-		sseGate:      make(chan struct{}, cfg.SSEMax),
-		downloadGate: make(chan struct{}, cfg.DownloadConcurrency),
-		slotWake:     make(chan struct{}, 1),
+		slots:     make([]*Run, cfg.PipelineSlots),
+		sseTarget: cfg.SSEInitial,
+		live:      make(map[string]*Run),
 	}
 	return s
 }
@@ -163,8 +184,9 @@ func (s *Scheduler) Admit(ctx context.Context, input AdmitInput) (*Run, error) {
 			ID: traceID, RequestID: input.RequestID, Status: domain.StatusQueued,
 			Model: input.Model, StartedAt: now, Lane: -1,
 		},
-		openSegs:  make(map[domain.Stage]uint64),
-		stageWait: make(map[domain.Stage]time.Time),
+		openSegs:   make(map[domain.Stage]uint64),
+		stageWait:  make(map[domain.Stage]time.Time),
+		heldStages: make(map[domain.Stage]bool),
 	}
 	s.mu.Lock()
 	s.live[traceID] = run
@@ -173,7 +195,7 @@ func (s *Scheduler) Admit(ctx context.Context, input AdmitInput) (*Run, error) {
 	// 先占槽再落库，避免 lane=-1 在旧库 CHECK 下写失败；槽位到手后立刻 Create。
 	queueSegID := run.beginSegment(domain.StageQueue, now)
 
-	lane, err := s.acquireSlot(ctx)
+	lane, err := s.acquireSlot(ctx, run, now)
 	ended := time.Now().UTC()
 	run.endSegment(queueSegID, domain.StageQueue, ended, outcomeFromErr(err))
 	if err != nil {
@@ -197,170 +219,271 @@ func (s *Scheduler) Admit(ctx context.Context, input AdmitInput) (*Run, error) {
 	return run, nil
 }
 
-func (s *Scheduler) acquireSlot(ctx context.Context) (int, error) {
+func (s *Scheduler) acquireSlot(ctx context.Context, run *Run, enqueuedAt time.Time) (int, error) {
 	s.mu.Lock()
-	if lane, ok := s.findFreeSlotLocked(); ok {
-		s.slots[lane] = true
-		s.mu.Unlock()
-		return lane, nil
-	}
-	if s.queueWaiting >= s.cfg.QueueCapacity {
-		s.mu.Unlock()
-		return -1, ErrQueueFull
-	}
-	s.queueWaiting++
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		s.queueWaiting--
-		s.mu.Unlock()
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return -1, ctx.Err()
-		case <-s.slotWake:
-		case <-time.After(50 * time.Millisecond):
-		}
-		s.mu.Lock()
+	if len(s.waiters) == 0 {
 		if lane, ok := s.findFreeSlotLocked(); ok {
-			s.slots[lane] = true
+			s.slots[lane] = run
 			s.mu.Unlock()
 			return lane, nil
 		}
+	}
+	if len(s.waiters) >= s.cfg.QueueCapacity {
 		s.mu.Unlock()
+		return -1, ErrQueueFull
+	}
+	waiter := &slotWaiter{run: run, enqueuedAt: enqueuedAt, grant: make(chan int, 1), lane: -1}
+	s.waiters = append(s.waiters, waiter)
+	s.mu.Unlock()
+
+	select {
+	case lane := <-waiter.grant:
+		return lane, nil
+	case <-ctx.Done():
+		s.mu.Lock()
+		if waiter.granted {
+			if waiter.lane >= 0 && waiter.lane < len(s.slots) && s.slots[waiter.lane] == run {
+				s.slots[waiter.lane] = nil
+				s.grantWaitersLocked()
+			}
+		} else {
+			for i, queued := range s.waiters {
+				if queued == waiter {
+					s.waiters = append(s.waiters[:i], s.waiters[i+1:]...)
+					break
+				}
+			}
+		}
+		s.mu.Unlock()
+		return -1, ctx.Err()
 	}
 }
 
 func (s *Scheduler) findFreeSlotLocked() (int, bool) {
-	for i, used := range s.slots {
-		if !used {
+	for i, owner := range s.slots {
+		if owner == nil {
 			return i, true
 		}
 	}
 	return -1, false
 }
 
-func (s *Scheduler) releaseSlot(lane int) {
+func (s *Scheduler) releaseSlot(lane int, owner *Run) {
 	if lane < 0 {
 		return
 	}
 	s.mu.Lock()
-	if lane < len(s.slots) {
-		s.slots[lane] = false
+	if lane < len(s.slots) && s.slots[lane] == owner {
+		s.slots[lane] = nil
+		s.grantWaitersLocked()
 	}
 	s.mu.Unlock()
+}
+
+func (s *Scheduler) grantWaitersLocked() {
+	for len(s.waiters) > 0 {
+		lane, ok := s.findFreeSlotLocked()
+		if !ok {
+			return
+		}
+		waiter := s.waiters[0]
+		s.waiters = s.waiters[1:]
+		waiter.granted = true
+		waiter.lane = lane
+		s.slots[lane] = waiter.run
+		waiter.grant <- lane
+	}
+}
+
+func (s *Scheduler) acquireStage(ctx context.Context, run *Run, stage domain.Stage, enqueuedAt time.Time) error {
+	waiter := &stageWaiter{run: run, stage: stage, enqueuedAt: enqueuedAt, grant: make(chan struct{}, 1)}
+	s.mu.Lock()
+	queue := s.stageWaitersLocked(stage)
+	*queue = append(*queue, waiter)
+	s.grantStageWaitersLocked(stage, time.Now().UTC())
+	s.mu.Unlock()
+
 	select {
-	case s.slotWake <- struct{}{}:
-	default:
-	}
-}
-
-func (r *Run) AcquireExpand(ctx context.Context) error {
-	return r.acquirePool(ctx, domain.StageExpand, r.scheduler.expandGate, func() {
-		r.scheduler.mu.Lock()
-		r.scheduler.expandActive++
-		r.scheduler.mu.Unlock()
-	})
-}
-
-func (r *Run) ReleaseExpand() {
-	r.releasePool(domain.StageExpand, r.scheduler.expandGate, func() {
-		r.scheduler.mu.Lock()
-		if r.scheduler.expandActive > 0 {
-			r.scheduler.expandActive--
-		}
-		r.scheduler.mu.Unlock()
-	})
-}
-
-func (r *Run) AcquireSSE(ctx context.Context) error {
-	if err := r.waitSSEBudget(ctx); err != nil {
-		return err
-	}
-	return r.acquirePool(ctx, domain.StageSSE, r.scheduler.sseGate, func() {
-		r.scheduler.mu.Lock()
-		r.scheduler.sseActive++
-		r.scheduler.lastSSEStart = time.Now().UTC()
-		r.scheduler.mu.Unlock()
-	})
-}
-
-func (r *Run) ReleaseSSE() {
-	r.releasePool(domain.StageSSE, r.scheduler.sseGate, func() {
-		r.scheduler.mu.Lock()
-		if r.scheduler.sseActive > 0 {
-			r.scheduler.sseActive--
-		}
-		r.scheduler.mu.Unlock()
-	})
-}
-
-func (r *Run) AcquireDownload(ctx context.Context) error {
-	return r.acquirePool(ctx, domain.StageDownload, r.scheduler.downloadGate, func() {
-		r.scheduler.mu.Lock()
-		r.scheduler.downloadActive++
-		r.scheduler.mu.Unlock()
-	})
-}
-
-func (r *Run) ReleaseDownload() {
-	r.releasePool(domain.StageDownload, r.scheduler.downloadGate, func() {
-		r.scheduler.mu.Lock()
-		if r.scheduler.downloadActive > 0 {
-			r.scheduler.downloadActive--
-		}
-		r.scheduler.mu.Unlock()
-	})
-}
-
-func (r *Run) waitSSEBudget(ctx context.Context) error {
-	s := r.scheduler
-	for {
-		s.mu.Lock()
-		target := s.sseTarget
-		active := s.sseActive
-		staggerOK := s.lastSSEStart.IsZero() || time.Since(s.lastSSEStart) >= s.cfg.SSEStagger
-		s.mu.Unlock()
-		if active < target && staggerOK {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-}
-
-func (r *Run) acquirePool(ctx context.Context, stage domain.Stage, gate chan struct{}, onAcquire func()) error {
-	waitStart := time.Now().UTC()
-	segID := r.beginSegment(domain.StageQueue, waitStart)
-	select {
-	case gate <- struct{}{}:
-		ended := time.Now().UTC()
-		r.endSegment(segID, domain.StageQueue, ended, "acquired")
-		r.mu.Lock()
-		r.trace.QueueMS += ended.Sub(waitStart).Milliseconds()
-		r.mu.Unlock()
-		onAcquire()
-		r.beginSegment(stage, ended)
+	case <-waiter.grant:
 		return nil
 	case <-ctx.Done():
-		ended := time.Now().UTC()
-		r.endSegment(segID, domain.StageQueue, ended, "canceled")
+		s.mu.Lock()
+		if waiter.granted {
+			s.decrementStageActiveLocked(stage)
+			s.grantStageWaitersLocked(stage, time.Now().UTC())
+		} else {
+			queue = s.stageWaitersLocked(stage)
+			for index, queued := range *queue {
+				if queued == waiter {
+					*queue = append((*queue)[:index], (*queue)[index+1:]...)
+					break
+				}
+			}
+		}
+		s.mu.Unlock()
 		return ctx.Err()
 	}
 }
 
-func (r *Run) releasePool(stage domain.Stage, gate chan struct{}, onRelease func()) {
+func (s *Scheduler) releaseStage(stage domain.Stage) {
+	s.mu.Lock()
+	s.decrementStageActiveLocked(stage)
+	s.grantStageWaitersLocked(stage, time.Now().UTC())
+	s.mu.Unlock()
+}
+
+func (s *Scheduler) stageWaitersLocked(stage domain.Stage) *[]*stageWaiter {
+	switch stage {
+	case domain.StageExpand:
+		return &s.expandWaiters
+	case domain.StageSSE:
+		return &s.sseWaiters
+	case domain.StageDownload:
+		return &s.downloadWaiters
+	default:
+		panic("unsupported image pipeline stage: " + string(stage))
+	}
+}
+
+func (s *Scheduler) stageCapacityLocked(stage domain.Stage) (active, limit int) {
+	switch stage {
+	case domain.StageExpand:
+		return s.expandActive, s.cfg.ExpandConcurrency
+	case domain.StageSSE:
+		return s.sseActive, s.sseTarget
+	case domain.StageDownload:
+		return s.downloadActive, s.cfg.DownloadConcurrency
+	default:
+		return 0, 0
+	}
+}
+
+func (s *Scheduler) incrementStageActiveLocked(stage domain.Stage, now time.Time) {
+	switch stage {
+	case domain.StageExpand:
+		s.expandActive++
+	case domain.StageSSE:
+		s.sseActive++
+		s.lastSSEStart = now
+	case domain.StageDownload:
+		s.downloadActive++
+	}
+}
+
+func (s *Scheduler) decrementStageActiveLocked(stage domain.Stage) {
+	switch stage {
+	case domain.StageExpand:
+		if s.expandActive > 0 {
+			s.expandActive--
+		}
+	case domain.StageSSE:
+		if s.sseActive > 0 {
+			s.sseActive--
+		}
+	case domain.StageDownload:
+		if s.downloadActive > 0 {
+			s.downloadActive--
+		}
+	}
+}
+
+// grantStageWaitersLocked always grants from the head. Queue age therefore
+// monotonically increases priority and an older request cannot be bypassed.
+func (s *Scheduler) grantStageWaitersLocked(stage domain.Stage, now time.Time) {
+	queue := s.stageWaitersLocked(stage)
+	for len(*queue) > 0 {
+		active, limit := s.stageCapacityLocked(stage)
+		if active >= limit {
+			return
+		}
+		if stage == domain.StageSSE && !s.lastSSEStart.IsZero() {
+			remaining := s.cfg.SSEStagger - now.Sub(s.lastSSEStart)
+			if remaining > 0 {
+				s.scheduleSSEGrantLocked(remaining)
+				return
+			}
+		}
+		waiter := (*queue)[0]
+		*queue = (*queue)[1:]
+		waiter.granted = true
+		s.incrementStageActiveLocked(stage, now)
+		waiter.grant <- struct{}{}
+		if stage == domain.StageSSE {
+			now = time.Now().UTC()
+		}
+	}
+}
+
+func (s *Scheduler) scheduleSSEGrantLocked(after time.Duration) {
+	if s.sseTimerPending {
+		return
+	}
+	s.sseTimerPending = true
+	time.AfterFunc(after, func() {
+		s.mu.Lock()
+		s.sseTimerPending = false
+		s.grantStageWaitersLocked(domain.StageSSE, time.Now().UTC())
+		s.mu.Unlock()
+	})
+}
+
+func (r *Run) AcquireExpand(ctx context.Context) error {
+	return r.acquirePool(ctx, domain.StageExpand)
+}
+
+func (r *Run) ReleaseExpand() {
+	r.releasePool(domain.StageExpand)
+}
+
+func (r *Run) AcquireSSE(ctx context.Context) error {
+	return r.acquirePool(ctx, domain.StageSSE)
+}
+
+func (r *Run) ReleaseSSE() {
+	r.releasePool(domain.StageSSE)
+}
+
+func (r *Run) AcquireDownload(ctx context.Context) error {
+	return r.acquirePool(ctx, domain.StageDownload)
+}
+
+func (r *Run) ReleaseDownload() {
+	r.releasePool(domain.StageDownload)
+}
+
+func (r *Run) acquirePool(ctx context.Context, stage domain.Stage) error {
+	waitStart := time.Now().UTC()
+	r.mu.Lock()
+	r.waitingFor = stage
+	r.mu.Unlock()
+	segID := r.beginSegment(domain.StageQueue, waitStart)
+	err := r.scheduler.acquireStage(ctx, r, stage, waitStart)
+	ended := time.Now().UTC()
+	r.mu.Lock()
+	r.waitingFor = ""
+	r.trace.QueueMS += ended.Sub(waitStart).Milliseconds()
+	r.mu.Unlock()
+	if err == nil {
+		r.endSegment(segID, domain.StageQueue, ended, "acquired")
+		r.mu.Lock()
+		r.heldStages[stage] = true
+		r.mu.Unlock()
+		r.beginSegment(stage, ended)
+		return nil
+	}
+	r.endSegment(segID, domain.StageQueue, ended, "canceled")
+	return err
+}
+
+func (r *Run) releasePool(stage domain.Stage) {
 	now := time.Now().UTC()
 	r.mu.Lock()
 	segID, ok := r.openSegs[stage]
 	started := r.stageWait[stage]
+	held := r.heldStages[stage]
 	delete(r.openSegs, stage)
 	delete(r.stageWait, stage)
+	delete(r.heldStages, stage)
 	r.mu.Unlock()
 	if ok {
 		r.endSegment(segID, stage, now, "ok")
@@ -378,10 +501,8 @@ func (r *Run) releasePool(stage domain.Stage, gate chan struct{}, onRelease func
 			r.mu.Unlock()
 		}
 	}
-	onRelease()
-	select {
-	case <-gate:
-	default:
+	if held {
+		r.scheduler.releaseStage(stage)
 	}
 }
 
@@ -396,7 +517,9 @@ func (r *Run) SetAccount(accountID uint64, accountName string) {
 	r.trace.AccountID = &accountID
 	r.trace.AccountName = accountName
 	r.mu.Unlock()
-	_ = r.scheduler.persistUpdate(r.snapshotTrace())
+	if err := r.scheduler.persistUpdate(r.snapshotTrace()); err != nil {
+		r.scheduler.logger.Warn("image_pipeline_trace_update_failed", "trace_id", r.TraceID(), "error", err)
+	}
 }
 
 func (r *Run) MarkAccountReleased() {
@@ -419,14 +542,17 @@ func (r *Run) MarkSoftStop() {
 
 func (r *Run) Finish(status domain.Status, errorCode string, softStop bool) {
 	ended := time.Now().UTC()
-	r.finishLocked(status, errorCode, ended)
+	heldStages := r.finishLocked(status, errorCode, ended)
+	for _, stage := range heldStages {
+		r.scheduler.releaseStage(stage)
+	}
 	r.mu.Lock()
 	softStop = softStop || r.trace.SoftStop
 	r.trace.SoftStop = softStop
 	sample := outcomeSample{
 		ok: status == domain.StatusSucceeded, softStop: softStop,
 		rateLimit: errorCode == "usage_limit_reached" || strings.Contains(errorCode, "rate_limit"),
-		totalMS: r.trace.TotalMS, expandMS: r.trace.ExpandMS, sseMS: r.trace.SSEMS, downloadMS: r.trace.DownloadMS,
+		totalMS:   r.trace.TotalMS, expandMS: r.trace.ExpandMS, sseMS: r.trace.SSEMS, downloadMS: r.trace.DownloadMS,
 		at: ended,
 	}
 	lane := r.trace.Lane
@@ -436,28 +562,37 @@ func (r *Run) Finish(status domain.Status, errorCode string, softStop bool) {
 	r.mu.Unlock()
 	r.scheduler.recordOutcome(sample)
 	if holding {
-		r.scheduler.releaseSlot(lane)
+		r.scheduler.releaseSlot(lane, r)
 	}
 	r.scheduler.mu.Lock()
 	delete(r.scheduler.live, id)
 	r.scheduler.mu.Unlock()
-	_ = r.scheduler.persistUpdate(r.snapshotTrace())
+	if err := r.scheduler.persistUpdate(r.snapshotTrace()); err != nil {
+		r.scheduler.logger.Warn("image_pipeline_trace_update_failed", "trace_id", id, "error", err)
+	}
 }
 
-func (r *Run) finishLocked(status domain.Status, errorCode string, ended time.Time) {
+func (r *Run) finishLocked(status domain.Status, errorCode string, ended time.Time) []domain.Stage {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.trace.EndedAt != nil {
-		return
+		return nil
+	}
+	heldStages := make([]domain.Stage, 0, len(r.heldStages))
+	for stage := range r.heldStages {
+		heldStages = append(heldStages, stage)
+		delete(r.heldStages, stage)
 	}
 	for stage, segID := range r.openSegs {
 		r.scheduler.closeSegmentAsync(segID, ended, "aborted")
 		delete(r.openSegs, stage)
+		delete(r.stageWait, stage)
 	}
 	r.trace.Status = status
 	r.trace.ErrorCode = errorCode
 	r.trace.EndedAt = &ended
 	r.trace.TotalMS = ended.Sub(r.trace.StartedAt).Milliseconds()
+	return heldStages
 }
 
 func (r *Run) snapshotTrace() domain.Trace {
@@ -476,6 +611,12 @@ func (r *Run) Lane() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.trace.Lane
+}
+
+func (r *Run) Timing() Timing {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return Timing{QueueMS: r.trace.QueueMS, ExpandMS: r.trace.ExpandMS, SSEMS: r.trace.SSEMS, DownloadMS: r.trace.DownloadMS}
 }
 
 func (r *Run) beginSegment(stage domain.Stage, at time.Time) uint64 {
@@ -530,6 +671,7 @@ func (s *Scheduler) persistUpdate(trace domain.Trace) error {
 func (s *Scheduler) recordOutcome(sample outcomeSample) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer func() { s.grantStageWaitersLocked(domain.StageSSE, time.Now().UTC()) }()
 	s.recentOutcomes = append(s.recentOutcomes, sample)
 	if len(s.recentOutcomes) > 20 {
 		s.recentOutcomes = s.recentOutcomes[len(s.recentOutcomes)-20:]
@@ -573,30 +715,50 @@ func (s *Scheduler) recordOutcome(sample outcomeSample) {
 
 func (s *Scheduler) Snapshot() domain.Snapshot {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	activeSlots := 0
-	for _, used := range s.slots {
-		if used {
-			activeSlots++
-		}
-	}
+	slotOwners := append([]*Run(nil), s.slots...)
+	waiters := append([]*slotWaiter(nil), s.waiters...)
+	recentOutcomes := append([]outcomeSample(nil), s.recentOutcomes...)
 	snap := domain.Snapshot{
-		PipelineSlots: s.cfg.PipelineSlots, ActiveSlots: activeSlots,
-		QueueDepth: s.queueWaiting, QueueCapacity: s.cfg.QueueCapacity,
+		PipelineSlots: s.cfg.PipelineSlots,
+		QueueDepth:    len(waiters), QueueCapacity: s.cfg.QueueCapacity,
 		ExpandActive: s.expandActive, ExpandLimit: s.cfg.ExpandConcurrency,
 		SSEActive: s.sseActive, SSELimit: s.cfg.SSEMax, SSETarget: s.sseTarget,
 		DownloadActive: s.downloadActive, DownloadLimit: s.cfg.DownloadConcurrency,
-		SampleCount: len(s.recentOutcomes), UpdatedAt: time.Now().UTC(),
+		ExpandQueued: len(s.expandWaiters), SSEQueued: len(s.sseWaiters), DownloadQueued: len(s.downloadWaiters),
+		SampleCount: len(recentOutcomes), UpdatedAt: time.Now().UTC(),
 	}
-	if len(s.recentOutcomes) == 0 {
+	s.mu.Unlock()
+
+	now := snap.UpdatedAt
+	snap.Slots = make([]domain.SlotSnapshot, len(slotOwners))
+	for lane, owner := range slotOwners {
+		snap.Slots[lane] = domain.SlotSnapshot{Lane: lane}
+		if owner != nil {
+			snap.ActiveSlots++
+			snap.Slots[lane] = owner.slotSnapshot(lane, now)
+		}
+	}
+	snap.Queue = make([]domain.QueueSnapshot, 0, len(waiters))
+	for position, waiter := range waiters {
+		trace := waiter.run.snapshotTrace()
+		waitMS := max(int64(0), now.Sub(waiter.enqueuedAt).Milliseconds())
+		if waitMS > snap.OldestQueueMS {
+			snap.OldestQueueMS = waitMS
+		}
+		snap.Queue = append(snap.Queue, domain.QueueSnapshot{
+			Position: position + 1, TraceID: trace.ID, RequestID: trace.RequestID,
+			Model: trace.Model, EnqueuedAt: waiter.enqueuedAt, WaitMS: waitMS,
+		})
+	}
+	if len(recentOutcomes) == 0 {
 		return snap
 	}
 	success := 0
-	totals := make([]int64, 0, len(s.recentOutcomes))
-	expands := make([]int64, 0, len(s.recentOutcomes))
-	sses := make([]int64, 0, len(s.recentOutcomes))
-	downloads := make([]int64, 0, len(s.recentOutcomes))
-	for _, item := range s.recentOutcomes {
+	totals := make([]int64, 0, len(recentOutcomes))
+	expands := make([]int64, 0, len(recentOutcomes))
+	sses := make([]int64, 0, len(recentOutcomes))
+	downloads := make([]int64, 0, len(recentOutcomes))
+	for _, item := range recentOutcomes {
 		if item.ok {
 			success++
 		}
@@ -605,12 +767,34 @@ func (s *Scheduler) Snapshot() domain.Snapshot {
 		sses = append(sses, item.sseMS)
 		downloads = append(downloads, item.downloadMS)
 	}
-	snap.SuccessRate = float64(success) / float64(len(s.recentOutcomes))
+	snap.SuccessRate = float64(success) / float64(len(recentOutcomes))
 	snap.P50TotalMS, snap.P90TotalMS, snap.P95TotalMS = percentiles(totals)
 	snap.P50ExpandMS, snap.P90ExpandMS, _ = percentiles(expands)
 	snap.P50SSEMS, snap.P90SSEMS, _ = percentiles(sses)
 	snap.P50DownloadMS, snap.P90DownloadMS, _ = percentiles(downloads)
 	return snap
+}
+
+func (r *Run) slotSnapshot(lane int, now time.Time) domain.SlotSnapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stage := currentStage(r.openSegs)
+	return domain.SlotSnapshot{
+		Lane: lane, Occupied: true, TraceID: r.trace.ID, RequestID: r.trace.RequestID,
+		Model: r.trace.Model, AccountName: r.trace.AccountName, Stage: stage,
+		WaitingFor: r.waitingFor,
+		Status:     r.trace.Status, StartedAt: r.trace.StartedAt,
+		ActiveMS: max(int64(0), now.Sub(r.trace.StartedAt).Milliseconds()),
+	}
+}
+
+func currentStage(open map[domain.Stage]uint64) domain.Stage {
+	for _, stage := range []domain.Stage{domain.StageDownload, domain.StageSSE, domain.StageExpand, domain.StageQueue} {
+		if _, ok := open[stage]; ok {
+			return stage
+		}
+	}
+	return ""
 }
 
 func (s *Scheduler) Timeline(ctx context.Context, from, to time.Time) (domain.Timeline, error) {
@@ -627,7 +811,12 @@ func (s *Scheduler) Timeline(ctx context.Context, from, to time.Time) (domain.Ti
 	// 合并进行中的 live segments（以 now 作为临时终点）
 	now := time.Now().UTC()
 	s.mu.Lock()
+	live := make([]*Run, 0, len(s.live))
 	for _, run := range s.live {
+		live = append(live, run)
+	}
+	s.mu.Unlock()
+	for _, run := range live {
 		trace := run.snapshotTrace()
 		run.mu.Lock()
 		for stage, segID := range run.openSegs {
@@ -649,7 +838,6 @@ func (s *Scheduler) Timeline(ctx context.Context, from, to time.Time) (domain.Ti
 			traces = append(traces, trace)
 		}
 	}
-	s.mu.Unlock()
 	sort.Slice(traces, func(i, j int) bool { return traces[i].StartedAt.Before(traces[j].StartedAt) })
 	return domain.Timeline{
 		From: from, To: to, Snapshot: s.Snapshot(), Lanes: s.cfg.PipelineSlots, Traces: traces,

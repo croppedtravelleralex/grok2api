@@ -39,6 +39,7 @@ type ProviderWebConfig struct {
 	MediaConcurrency    int
 	WebConcurrency      int
 	AssetConcurrency    int
+	ExpandConcurrency   int
 	AllowNSFW           bool
 	RecoveryBackoffBase time.Duration
 	RecoveryBackoffMax  time.Duration

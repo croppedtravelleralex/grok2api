@@ -90,6 +90,8 @@ func snapshotDTO(value domain.Snapshot) gin.H {
 		"expandActive": value.ExpandActive, "expandLimit": value.ExpandLimit,
 		"sseActive": value.SSEActive, "sseLimit": value.SSELimit, "sseTarget": value.SSETarget,
 		"downloadActive": value.DownloadActive, "downloadLimit": value.DownloadLimit,
+		"expandQueued": value.ExpandQueued, "sseQueued": value.SSEQueued, "downloadQueued": value.DownloadQueued,
+		"oldestQueueMs": value.OldestQueueMS, "slots": slotsDTO(value.Slots), "queue": queueDTO(value.Queue),
 		"successRate": value.SuccessRate, "sampleCount": value.SampleCount,
 		"p50TotalMs": value.P50TotalMS, "p90TotalMs": value.P90TotalMS, "p95TotalMs": value.P95TotalMS,
 		"p50ExpandMs": value.P50ExpandMS, "p90ExpandMs": value.P90ExpandMS,
@@ -97,6 +99,37 @@ func snapshotDTO(value domain.Snapshot) gin.H {
 		"p50DownloadMs": value.P50DownloadMS, "p90DownloadMs": value.P90DownloadMS,
 		"updatedAt": value.UpdatedAt.Format(time.RFC3339Nano),
 	}
+}
+
+func slotsDTO(values []domain.SlotSnapshot) []gin.H {
+	items := make([]gin.H, 0, len(values))
+	for _, slot := range values {
+		item := gin.H{"lane": slot.Lane, "occupied": slot.Occupied}
+		if slot.Occupied {
+			item["traceId"] = slot.TraceID
+			item["requestId"] = slot.RequestID
+			item["model"] = slot.Model
+			item["accountName"] = slot.AccountName
+			item["stage"] = string(slot.Stage)
+			item["waitingFor"] = string(slot.WaitingFor)
+			item["status"] = string(slot.Status)
+			item["startedAt"] = slot.StartedAt.Format(time.RFC3339Nano)
+			item["activeMs"] = slot.ActiveMS
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func queueDTO(values []domain.QueueSnapshot) []gin.H {
+	items := make([]gin.H, 0, len(values))
+	for _, queued := range values {
+		items = append(items, gin.H{
+			"position": queued.Position, "traceId": queued.TraceID, "requestId": queued.RequestID,
+			"model": queued.Model, "enqueuedAt": queued.EnqueuedAt.Format(time.RFC3339Nano), "waitMs": queued.WaitMS,
+		})
+	}
+	return items
 }
 
 func tracesDTO(values []domain.Trace) []gin.H {

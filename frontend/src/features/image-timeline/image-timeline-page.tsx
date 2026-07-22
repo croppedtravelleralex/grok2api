@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
-import { getImageTimeline, type ImageTimelineSegmentDTO, type ImageTimelineStage, type ImageTimelineTraceDTO, type ImageTimelineWindow } from "@/features/image-timeline/image-timeline-api";
+import { getImageTimeline, type ImageTimelineQueueDTO, type ImageTimelineSegmentDTO, type ImageTimelineSlotDTO, type ImageTimelineStage, type ImageTimelineTraceDTO, type ImageTimelineWindow } from "@/features/image-timeline/image-timeline-api";
 import { ErrorState } from "@/shared/components/data-state";
 import { formatDuration, formatNumber } from "@/shared/lib/format";
 import { cn } from "@/shared/lib/cn";
@@ -69,6 +69,13 @@ export function ImageTimelinePage() {
           <Metric label={t("imageTimeline.queue")} value={`${data.snapshot.queueDepth} / ${data.snapshot.queueCapacity}`} />
           <Metric label={t("imageTimeline.ssePool")} value={`${data.snapshot.sseActive} / ${data.snapshot.sseTarget} (max ${data.snapshot.sseLimit})`} />
           <Metric label={t("imageTimeline.successP90")} value={`${formatPercent(data.snapshot.successRate, i18n.language)} · P90 ${formatDuration(data.snapshot.p90TotalMs)}`} />
+        </div>
+      ) : null}
+
+      {data ? (
+        <div className="grid gap-4 xl:grid-cols-[2fr_1fr]">
+          <SlotState slots={data.snapshot.slots} />
+          <QueueState queue={data.snapshot.queue} oldestQueueMs={data.snapshot.oldestQueueMs} stageQueued={{ expand: data.snapshot.expandQueued, sse: data.snapshot.sseQueued, download: data.snapshot.downloadQueued }} />
         </div>
       ) : null}
 
@@ -165,6 +172,7 @@ function GanttChartView({
         );
       })}
       {traces.map((trace) => {
+        if (trace.lane < 0 || trace.lane >= lanes) return null;
         const y = 28 + Math.max(0, Math.min(lanes - 1, trace.lane)) * rowHeight + 4;
         const failed = trace.status === "failed" || trace.status === "canceled";
         return (
@@ -195,6 +203,61 @@ function GanttChartView({
         );
       })}
     </svg>
+  );
+}
+
+function SlotState({ slots }: { slots: ImageTimelineSlotDTO[] }) {
+  const { t } = useTranslation();
+  return (
+    <section className="rounded-xl border bg-card p-4">
+      <h2 className="text-sm font-medium">{t("imageTimeline.slotState")}</h2>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+        {slots.map((slot) => (
+          <div key={slot.lane} className={cn("min-w-0 rounded-lg border px-3 py-2", slot.occupied ? "border-sky-500/30 bg-sky-500/5" : "bg-muted/30")}>
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="font-medium">{t("imageTimeline.lane", { n: slot.lane + 1 })}</span>
+              <span className={slot.occupied ? "text-sky-700 dark:text-sky-300" : "text-muted-foreground"}>
+                {slot.occupied ? t("imageTimeline.running") : t("imageTimeline.idle")}
+              </span>
+            </div>
+            {slot.occupied ? (
+              <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+                <p className="truncate" title={slot.requestId}>{slot.requestId || slot.traceId}</p>
+                <p>{slot.stage ? t(`imageTimeline.stage.${slot.stage}`) : "-"}{slot.waitingFor ? ` → ${t(`imageTimeline.stage.${slot.waitingFor}`)}` : ""} · {formatDuration(slot.activeMs ?? 0)}</p>
+              </div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function QueueState({ queue, oldestQueueMs, stageQueued }: { queue: ImageTimelineQueueDTO[]; oldestQueueMs: number; stageQueued: { expand: number; sse: number; download: number } }) {
+  const { t } = useTranslation();
+  return (
+    <section className="rounded-xl border bg-card p-4">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-medium">{t("imageTimeline.queueState")}</h2>
+        <span className="text-xs text-muted-foreground">{t("imageTimeline.oldest")}: {formatDuration(oldestQueueMs)}</span>
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        {t("imageTimeline.stage.expand")} {stageQueued.expand} · {t("imageTimeline.stage.sse")} {stageQueued.sse} · {t("imageTimeline.stage.download")} {stageQueued.download}
+      </p>
+      {queue.length === 0 ? (
+        <p className="mt-3 text-sm text-muted-foreground">{t("imageTimeline.queueEmpty")}</p>
+      ) : (
+        <ol className="mt-3 max-h-48 space-y-2 overflow-y-auto">
+          {queue.map((item) => (
+            <li key={item.traceId} className="flex items-center gap-3 rounded-lg bg-muted/40 px-3 py-2 text-xs">
+              <span className="font-semibold tabular-nums">#{item.position}</span>
+              <span className="min-w-0 flex-1 truncate" title={item.requestId}>{item.requestId}</span>
+              <span className="tabular-nums text-muted-foreground">{formatDuration(item.waitMs)}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
   );
 }
 

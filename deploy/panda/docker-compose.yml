@@ -3,12 +3,13 @@ name: grok2api
 services:
   grok2api:
     container_name: grok2api
-    image: "${GROK2API_IMAGE:-ghcr.io/croppedtravelleralex/grok2api@sha256:0360e4800d2a29ac3d0ea37f14b34fffbc03a561c5edbed4ef295e4acd9a266b}"
+    image: "${GROK2API_IMAGE:-ghcr.io/croppedtravelleralex/grok2api@sha256:4764cf41257a10b8f10599c26d661e2e3a366a73be4beb44057b266dcad79ece}"
     ports:
       - "127.0.0.1:18000:8000"
     environment:
       TZ: Asia/Shanghai
-      GROK2API_BROWSER_BRIDGE_URL: http://browser-bridge:8192
+      # 纯 HTTP Lite 默认不启用浏览器桥；故障清障时才显式传入 bridge URL。
+      GROK2API_BROWSER_BRIDGE_URL: "${GROK2API_BROWSER_BRIDGE_URL:-}"
       GROK2API_BROWSER_BRIDGE_KEY_FILE: /run/secrets/browser-bridge-key
       GROK2API_WEB_QUOTA_STARTUP_LIMIT: "0"
       GROK2API_WEB_QUOTA_CATCHUP_LIMIT: "1"
