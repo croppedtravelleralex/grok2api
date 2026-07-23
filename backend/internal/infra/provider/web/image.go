@@ -426,6 +426,7 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 			}
 		}
 		chatCtx := a.attachChromeTicket(ctx, activeCredential.ID)
+		a.prepareChromeTicketDownloadCookie(chatCtx, activeCredential)
 		upstream, lease, _, statsigTarget, err := a.openChat(chatCtx, activeCredential, "", spec, normalizedChatInput{Prompt: "Drawing: " + expanded})
 		if err != nil {
 			a.releaseSSStage(run, staged, accountLease)
@@ -1580,19 +1581,11 @@ func (a *Adapter) downloadImage(ctx context.Context, credential account.Credenti
 		return nil, err
 	}
 	deviceCookie := chromeTicketCookieFromContext(ctx)
-	warmedCF := ""
-	if deviceCookie != "" {
-		if cf, warmErr := a.warmChromeTicketCloudflare(ctx, credential, deviceCookie); warmErr != nil {
-			a.log().Warn("web_lite_asset_cf_warm_failed", "account_id", credential.ID, "error", warmErr)
-		} else {
-			warmedCF = cf
-			a.log().Info("web_lite_asset_cf_warm", "account_id", credential.ID, "cf_set", warmedCF != "")
-		}
-	}
+	downloadState := chromeDownloadStateFromContext(ctx)
 	scopes := []domainegress.Scope{domainegress.ScopeWebAsset, domainegress.ScopeWeb}
 	var lastErr error
 	for index, scope := range scopes {
-		raw, status, downloadErr := a.downloadImageWithScope(ctx, credential, parsed, token, scope, deviceCookie, warmedCF)
+		raw, status, downloadErr := a.downloadImageWithScope(ctx, credential, parsed, token, scope, deviceCookie, downloadState)
 		if downloadErr == nil {
 			return raw, nil
 		}
@@ -1606,7 +1599,7 @@ func (a *Adapter) downloadImage(ctx context.Context, credential account.Credenti
 	return nil, lastErr
 }
 
-func (a *Adapter) downloadImageWithScope(ctx context.Context, credential account.Credential, parsed *url.URL, token string, scope domainegress.Scope, deviceCookie, warmedCF string) ([]byte, int, error) {
+func (a *Adapter) downloadImageWithScope(ctx context.Context, credential account.Credential, parsed *url.URL, token string, scope domainegress.Scope, deviceCookie string, downloadState chromeDownloadState) ([]byte, int, error) {
 	lease, err := a.egress.Acquire(ctx, scope, fmt.Sprintf("%d", credential.ID))
 	if err != nil {
 		return nil, 0, err
@@ -1616,15 +1609,13 @@ func (a *Adapter) downloadImageWithScope(ctx context.Context, credential account
 	if err != nil {
 		return nil, 0, err
 	}
-	request.Header = buildHeaders(token, lease, "")
-	request.Header.Set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
-	applyAppHeaders(request.Header, a.cfg.BaseURL, a.cfg.BaseURL+"/")
-	request.Header.Set("Sec-Fetch-Dest", "image")
-	request.Header.Set("Sec-Fetch-Mode", "cors")
-	if deviceCookie != "" {
-		request.Header.Set("Cookie", buildChromeTicketDownloadCookie(token, lease.CFCookies, warmedCF, deviceCookie))
+	cfg := a.config()
+	userAgent := strings.TrimSpace(downloadState.UserAgent)
+	if userAgent == "" {
+		userAgent = lease.UserAgent
 	}
-	request.Header.Del("Content-Type")
+	cookie := resolveAssetDownloadCookie(token, lease.CFCookies, deviceCookie, downloadState)
+	applyAssetDownloadHeaders(request.Header, cfg, userAgent, cookie)
 	response, err := lease.Do(request)
 	if err != nil {
 		a.log().Warn("web_lite_asset_download_failed",

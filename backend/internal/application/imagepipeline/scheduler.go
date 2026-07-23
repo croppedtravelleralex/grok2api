@@ -109,12 +109,14 @@ type AdmitInput struct {
 }
 
 type RunArtifacts struct {
-	ExpandedPrompt    string
-	ImageURLs         []string
-	ChromeDeviceCookie string
-	UploadAccountID   *uint64
-	PSAccountID       *uint64
-	SSAccountID       *uint64
+	ExpandedPrompt       string
+	ImageURLs              []string
+	ChromeDeviceCookie     string
+	ChromeDownloadCookie   string
+	ChromeUserAgent        string
+	UploadAccountID        *uint64
+	PSAccountID            *uint64
+	SSAccountID            *uint64
 }
 
 type Run struct {
@@ -332,6 +334,18 @@ func (r *Run) AppendImageURL(value string) {
 func (r *Run) SetChromeDeviceCookie(value string) {
 	r.mu.Lock()
 	r.artifacts.ChromeDeviceCookie = strings.TrimSpace(value)
+	r.mu.Unlock()
+}
+
+func (r *Run) SetChromeDownloadCookie(value string) {
+	r.mu.Lock()
+	r.artifacts.ChromeDownloadCookie = strings.TrimSpace(value)
+	r.mu.Unlock()
+}
+
+func (r *Run) SetChromeUserAgent(value string) {
+	r.mu.Lock()
+	r.artifacts.ChromeUserAgent = strings.TrimSpace(value)
 	r.mu.Unlock()
 }
 

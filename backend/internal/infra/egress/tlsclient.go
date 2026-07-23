@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -76,6 +78,20 @@ func (c *browserClient) CloseIdleConnections() {
 	if c != nil && c.inner != nil {
 		c.inner.CloseIdleConnections()
 	}
+}
+
+func (c *browserClient) cloudflareCookiesForURL(target *url.URL) string {
+	if c == nil || c.inner == nil || target == nil {
+		return ""
+	}
+	parts := make([]string, 0, 4)
+	for _, cookie := range c.inner.GetCookies(target) {
+		name := strings.ToLower(cookie.Name)
+		if name == "cf_clearance" || name == "__cf_bm" || name == "_cfuvid" || strings.HasPrefix(name, "cf_chl") {
+			parts = append(parts, cookie.Name+"="+cookie.Value)
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 func toFHTTPRequest(request *http.Request) (*fhttp.Request, error) {

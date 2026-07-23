@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -44,6 +45,14 @@ func (l *Lease) Do(request *http.Request) (*http.Response, error) {
 	}
 	return l.client.Do(request)
 }
+
+func (l *Lease) JarCloudflareCookies(target *url.URL) string {
+	if l == nil || l.browser == nil || target == nil {
+		return ""
+	}
+	return l.browser.cloudflareCookiesForURL(target)
+}
+
 func (l *Lease) Release() {
 	if l != nil && l.release != nil {
 		l.release()

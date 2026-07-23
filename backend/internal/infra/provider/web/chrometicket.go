@@ -25,6 +25,9 @@ func (a *Adapter) attachChromeTicket(ctx context.Context, accountID uint64) cont
 	a.log().Info("chrome_ticket_pool_hit", "ticket_id", ticket.ID, "account_id", accountID, "sign_source", ticket.SignSource)
 	if run := imagepipelineapp.RunFromContext(ctx); run != nil {
 		run.SetChromeDeviceCookie(ticket.DeviceCookie)
+		if ua := strings.TrimSpace(ticket.UserAgent); ua != "" {
+			run.SetChromeUserAgent(ua)
+		}
 	}
 	return chrometicketdomain.WithLease(ctx, ticket)
 }
