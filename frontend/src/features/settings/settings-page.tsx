@@ -198,6 +198,22 @@ export function SettingsPage() {
               <SettingsField controlId="client-key-default-concurrency" label={t("settings.clientKeys.maxConcurrent")} error={form.formState.errors.clientKeyDefaults?.maxConcurrent?.message}><Input id="client-key-default-concurrency" type="number" min={1} max={1_024} {...form.register("clientKeyDefaults.maxConcurrent", { valueAsNumber: true })} /></SettingsField>
             </div>
           </SettingsSection>
+
+          <SettingsSection title={t("settings.webProbe.title")}>
+            <p className="mb-4 text-xs text-muted-foreground">{t("settings.webProbe.description")}</p>
+            <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2">
+              <SettingsField controlId="web-probe-dispatch-interval" label={t("settings.webProbe.dispatchInterval")} error={form.formState.errors.webProbe?.dispatchInterval?.message}><Controller control={form.control} name="webProbe.dispatchInterval" render={({ field }) => <DurationInput id="web-probe-dispatch-interval" value={field.value} onChange={field.onChange} />} /></SettingsField>
+              <SettingsField controlId="web-probe-idle-interval" label={t("settings.webProbe.idleInterval")} error={form.formState.errors.webProbe?.idleInterval?.message}><Controller control={form.control} name="webProbe.idleInterval" render={({ field }) => <DurationInput id="web-probe-idle-interval" value={field.value} onChange={field.onChange} />} /></SettingsField>
+              <SettingsField controlId="web-probe-initial-delay" label={t("settings.webProbe.initialDelay")} error={form.formState.errors.webProbe?.initialDelay?.message}><Controller control={form.control} name="webProbe.initialDelay" render={({ field }) => <DurationInput id="web-probe-initial-delay" value={field.value} onChange={field.onChange} />} /></SettingsField>
+              <SettingsField controlId="web-probe-dead-l2-interval" label={t("settings.webProbe.deadL2MinInterval")} error={form.formState.errors.webProbe?.deadL2MinInterval?.message}><Controller control={form.control} name="webProbe.deadL2MinInterval" render={({ field }) => <DurationInput id="web-probe-dead-l2-interval" value={field.value} onChange={field.onChange} />} /></SettingsField>
+              <SettingsField controlId="web-probe-lite-per-account" label={t("settings.webProbe.litePerAccountPerDay")} error={form.formState.errors.webProbe?.litePerAccountPerDay?.message}><Input id="web-probe-lite-per-account" type="number" min={0} max={100} {...form.register("webProbe.litePerAccountPerDay", { valueAsNumber: true })} /></SettingsField>
+              <SettingsField controlId="web-probe-chat-per-account" label={t("settings.webProbe.chatPerAccountPerDay")} error={form.formState.errors.webProbe?.chatPerAccountPerDay?.message}><Input id="web-probe-chat-per-account" type="number" min={0} max={100} {...form.register("webProbe.chatPerAccountPerDay", { valueAsNumber: true })} /></SettingsField>
+              <SettingsField controlId="web-probe-lite-global" label={t("settings.webProbe.liteGlobalPerHour")} error={form.formState.errors.webProbe?.liteGlobalPerHour?.message}><Input id="web-probe-lite-global" type="number" min={0} max={1000} {...form.register("webProbe.liteGlobalPerHour", { valueAsNumber: true })} /></SettingsField>
+              <SettingsField controlId="web-probe-pipeline-l1" label={t("settings.webProbe.pipelineL1Threshold")} error={form.formState.errors.webProbe?.pipelineL1Threshold?.message}><Input id="web-probe-pipeline-l1" type="number" min={0.01} max={0.99} step={0.01} {...form.register("webProbe.pipelineL1Threshold", { valueAsNumber: true })} /></SettingsField>
+              <SettingsField controlId="web-probe-pipeline-l0" label={t("settings.webProbe.pipelineL0OnlyThreshold")} error={form.formState.errors.webProbe?.pipelineL0OnlyThreshold?.message}><Input id="web-probe-pipeline-l0" type="number" min={0.01} max={0.99} step={0.01} {...form.register("webProbe.pipelineL0OnlyThreshold", { valueAsNumber: true })} /></SettingsField>
+              <SettingsField controlId="web-probe-unknown-quota" className="sm:col-span-2" label={t("settings.webProbe.probeUnknownQuota")} badge={t("settings.webProbe.probeUnknownQuotaHint")}><Controller control={form.control} name="webProbe.probeUnknownQuota" render={({ field }) => <div className="flex h-8 items-center"><Switch id="web-probe-unknown-quota" checked={field.value} onCheckedChange={field.onChange} /></div>} /></SettingsField>
+            </div>
+          </SettingsSection>
           </SettingsPane>
         </Tabs>
       ) : null}

@@ -12,6 +12,7 @@ type Config struct {
 	Routing           RoutingConfig
 	Audit             AuditConfig
 	ClientKeyDefaults ClientKeyDefaultsConfig
+	WebProbe          *WebProbeConfig
 }
 
 type ProviderConsoleConfig struct {
@@ -83,4 +84,18 @@ type AuditConfig struct {
 type ClientKeyDefaultsConfig struct {
 	RPMLimit      int
 	MaxConcurrent int
+}
+
+// WebProbeConfig 定义 Web 双轨探针可热更参数。
+type WebProbeConfig struct {
+	DispatchInterval        time.Duration
+	IdleInterval            time.Duration
+	InitialDelay            time.Duration
+	LitePerAccountPerDay    int
+	ChatPerAccountPerDay    int
+	LiteGlobalPerHour       int
+	DeadL2MinInterval       time.Duration
+	PipelineL1Threshold     float64
+	PipelineL0OnlyThreshold float64
+	ProbeUnknownQuota       bool
 }

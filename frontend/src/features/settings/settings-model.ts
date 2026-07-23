@@ -88,6 +88,18 @@ export const settingsSchema = z.object({
   audit: z.object({ bufferSize: positiveInteger.max(262_144), batchSize: positiveInteger.max(4_096), flushInterval: auditFlushDuration })
     .refine((value) => value.batchSize <= value.bufferSize, { path: ["batchSize"] }),
   clientKeyDefaults: z.object({ rpmLimit: positiveInteger.max(100_000), maxConcurrent: positiveInteger.max(1_024) }),
+  webProbe: z.object({
+    dispatchInterval: durationSchema,
+    idleInterval: durationSchema,
+    initialDelay: durationSchema,
+    litePerAccountPerDay: z.number().int().min(0).max(100),
+    chatPerAccountPerDay: z.number().int().min(0).max(100),
+    liteGlobalPerHour: z.number().int().min(0).max(1000),
+    deadL2MinInterval: durationSchema,
+    pipelineL1Threshold: z.number().min(0.01).max(0.99),
+    pipelineL0OnlyThreshold: z.number().min(0.01).max(0.99),
+    probeUnknownQuota: z.boolean(),
+  }).refine((value) => value.pipelineL0OnlyThreshold > value.pipelineL1Threshold, { path: ["pipelineL0OnlyThreshold"] }),
 });
 
 export type SettingsForm = z.infer<typeof settingsSchema>;
@@ -115,6 +127,18 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
     },
     audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: parseDuration(config.audit.flushInterval) },
     clientKeyDefaults: config.clientKeyDefaults,
+    webProbe: {
+      dispatchInterval: parseDuration(config.webProbe.dispatchInterval),
+      idleInterval: parseDuration(config.webProbe.idleInterval),
+      initialDelay: parseDuration(config.webProbe.initialDelay),
+      litePerAccountPerDay: config.webProbe.litePerAccountPerDay,
+      chatPerAccountPerDay: config.webProbe.chatPerAccountPerDay,
+      liteGlobalPerHour: config.webProbe.liteGlobalPerHour,
+      deadL2MinInterval: parseDuration(config.webProbe.deadL2MinInterval),
+      pipelineL1Threshold: config.webProbe.pipelineL1Threshold,
+      pipelineL0OnlyThreshold: config.webProbe.pipelineL0OnlyThreshold,
+      probeUnknownQuota: config.webProbe.probeUnknownQuota,
+    },
   };
 }
 
@@ -140,6 +164,18 @@ export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
     },
     audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: formatDuration(config.audit.flushInterval) },
     clientKeyDefaults: config.clientKeyDefaults,
+    webProbe: {
+      dispatchInterval: formatDuration(config.webProbe.dispatchInterval),
+      idleInterval: formatDuration(config.webProbe.idleInterval),
+      initialDelay: formatDuration(config.webProbe.initialDelay),
+      litePerAccountPerDay: config.webProbe.litePerAccountPerDay,
+      chatPerAccountPerDay: config.webProbe.chatPerAccountPerDay,
+      liteGlobalPerHour: config.webProbe.liteGlobalPerHour,
+      deadL2MinInterval: formatDuration(config.webProbe.deadL2MinInterval),
+      pipelineL1Threshold: config.webProbe.pipelineL1Threshold,
+      pipelineL0OnlyThreshold: config.webProbe.pipelineL0OnlyThreshold,
+      probeUnknownQuota: config.webProbe.probeUnknownQuota,
+    },
   };
 }
 

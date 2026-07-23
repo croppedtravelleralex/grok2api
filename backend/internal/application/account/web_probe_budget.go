@@ -1,11 +1,11 @@
 package account
 
 import (
-	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/chenyme/grok2api/backend/internal/infra/config"
 )
 
 // WebProbeLevel 探针请求分级。
@@ -24,6 +24,8 @@ type webProbeBudgetGovernor struct {
 	chatPerAccountPerDay  int
 	liteGlobalPerHour     int
 	deadL2MinInterval     time.Duration
+	pipelineL1Threshold   float64
+	pipelineL0OnlyThreshold float64
 
 	accountLite  map[string]int // lane:accountID -> count today
 	accountChat  map[string]int
@@ -35,15 +37,34 @@ type webProbeBudgetGovernor struct {
 }
 
 func newWebProbeBudgetGovernor() *webProbeBudgetGovernor {
+	return newWebProbeBudgetGovernorFromConfig(config.DefaultWebProbeConfig())
+}
+
+func newWebProbeBudgetGovernorFromConfig(cfg config.WebProbeConfig) *webProbeBudgetGovernor {
+	normalized := config.NormalizeWebProbeConfig(cfg)
 	return &webProbeBudgetGovernor{
-		litePerAccountPerDay: envIntDefault("WEB_PROBE_LITE_MAX_PER_ACCOUNT_PER_DAY", 1),
-		chatPerAccountPerDay: envIntDefault("WEB_PROBE_CHAT_MAX_PER_ACCOUNT_PER_DAY", 3),
-		liteGlobalPerHour:    envIntDefault("WEB_PROBE_LITE_GLOBAL_PER_HOUR", 6),
-		deadL2MinInterval:    envDurationDefault("WEB_PROBE_DEAD_L2_MIN_INTERVAL", 24*time.Hour),
-		accountLite:          make(map[string]int),
-		accountChat:          make(map[string]int),
-		deadLastL2:           make(map[string]time.Time),
+		litePerAccountPerDay:    normalized.LitePerAccountPerDay,
+		chatPerAccountPerDay:    normalized.ChatPerAccountPerDay,
+		liteGlobalPerHour:       normalized.LiteGlobalPerHour,
+		deadL2MinInterval:       normalized.DeadL2MinInterval.Value(),
+		pipelineL1Threshold:     normalized.PipelineL1Threshold,
+		pipelineL0OnlyThreshold: normalized.PipelineL0OnlyThreshold,
+		accountLite:             make(map[string]int),
+		accountChat:             make(map[string]int),
+		deadLastL2:              make(map[string]time.Time),
 	}
+}
+
+func (g *webProbeBudgetGovernor) applyConfig(cfg config.WebProbeConfig) {
+	normalized := config.NormalizeWebProbeConfig(cfg)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.litePerAccountPerDay = normalized.LitePerAccountPerDay
+	g.chatPerAccountPerDay = normalized.ChatPerAccountPerDay
+	g.liteGlobalPerHour = normalized.LiteGlobalPerHour
+	g.deadL2MinInterval = normalized.DeadL2MinInterval.Value()
+	g.pipelineL1Threshold = normalized.PipelineL1Threshold
+	g.pipelineL0OnlyThreshold = normalized.PipelineL0OnlyThreshold
 }
 
 func (s *Service) SetWebProbePipelineOccupancy(fn func() (active, total int)) {
@@ -77,9 +98,9 @@ func (g *webProbeBudgetGovernor) pipelineLoad() float64 {
 func (g *webProbeBudgetGovernor) maxLevel(now time.Time) WebProbeLevel {
 	load := g.pipelineLoad()
 	switch {
-	case load >= 0.9:
+	case load >= g.pipelineL0OnlyThreshold:
 		return WebProbeL0
-	case load >= 0.7:
+	case load >= g.pipelineL1Threshold:
 		return WebProbeL1
 	default:
 		return WebProbeL2
@@ -186,30 +207,6 @@ func pipelineTotal(g *webProbeBudgetGovernor) int {
 
 func budgetKey(lane WebLane, accountID uint64) string {
 	return string(lane) + ":" + strconv.FormatUint(accountID, 10)
-}
-
-func envIntDefault(name string, fallback int) int {
-	value := strings.TrimSpace(os.Getenv(name))
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 0 {
-		return fallback
-	}
-	return parsed
-}
-
-func envDurationDefault(name string, fallback time.Duration) time.Duration {
-	value := strings.TrimSpace(os.Getenv(name))
-	if value == "" {
-		return fallback
-	}
-	parsed, err := time.ParseDuration(value)
-	if err != nil || parsed <= 0 {
-		return fallback
-	}
-	return parsed
 }
 
 func webProbeLevelName(level WebProbeLevel) string {

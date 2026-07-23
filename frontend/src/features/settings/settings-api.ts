@@ -19,6 +19,12 @@ export type SettingsConfigDTO = {
   routing: { stickyTTL: string; cooldownBase: string; cooldownMax: string; capacityWait: string; maxAttempts: number };
   audit: { bufferSize: number; batchSize: number; flushInterval: string };
   clientKeyDefaults: { rpmLimit: number; maxConcurrent: number };
+  webProbe: {
+    dispatchInterval: string; idleInterval: string; initialDelay: string;
+    litePerAccountPerDay: number; chatPerAccountPerDay: number; liteGlobalPerHour: number;
+    deadL2MinInterval: string; pipelineL1Threshold: number; pipelineL0OnlyThreshold: number;
+    probeUnknownQuota: boolean;
+  };
 };
 
 export type EgressNodeDTO = {
@@ -55,6 +61,12 @@ const settingsConfigValidator = hasShape({
   routing: hasShape({ stickyTTL: isString, cooldownBase: isString, cooldownMax: isString, capacityWait: isString, maxAttempts: isNumber }),
   audit: hasShape({ bufferSize: isNumber, batchSize: isNumber, flushInterval: isString }),
   clientKeyDefaults: hasShape({ rpmLimit: isNumber, maxConcurrent: isNumber }),
+  webProbe: hasShape({
+    dispatchInterval: isString, idleInterval: isString, initialDelay: isString,
+    litePerAccountPerDay: isNumber, chatPerAccountPerDay: isNumber, liteGlobalPerHour: isNumber,
+    deadL2MinInterval: isString, pipelineL1Threshold: isNumber, pipelineL0OnlyThreshold: isNumber,
+    probeUnknownQuota: isBoolean,
+  }),
 });
 const decodeSettingsSnapshot = createObjectDecoder<SettingsSnapshotDTO>("settings", {
   config: settingsConfigValidator,

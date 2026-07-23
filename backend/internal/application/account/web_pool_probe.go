@@ -395,7 +395,7 @@ func (s *Service) nextWebProbeLane() WebLane {
 	return WebLaneChat
 }
 
-// WebDispatchProbeTick 调度探针：L0 only，零 Lite/Chat 业务请求。
+// WebDispatchProbeTick 调度探针：默认 L0；额度未知且开启 probeUnknownQuota 时可升 L2。
 func (s *Service) WebDispatchProbeTick(ctx context.Context) (uint64, bool, error) {
 	s.ensureWebPoolIndexWarm(ctx)
 	lane := s.nextWebProbeLane()
@@ -429,11 +429,32 @@ func (s *Service) WebDispatchProbeTick(ctx context.Context) (uint64, bool, error
 }
 
 func (s *Service) runWebDispatchProbe(ctx context.Context, candidate accountdomain.Credential, lane WebLane) (uint64, bool, error) {
-	if err := s.probeWebQuotaL0(ctx, candidate, lane); err != nil {
-		until := s.now().Add(15 * time.Minute)
-		_ = s.accounts.UpdateHealth(ctx, candidate.ID, candidate.FailureCount+1, &until, "web dispatch probe: "+err.Error(), true)
+	now := s.now()
+	level := WebProbeL0
+	if lane == WebLaneImage && s.probeUnknownQuotaEnabled() {
+		windows, _ := s.accounts.GetQuotaWindows(ctx, []uint64{candidate.ID})
+		modelStates, _ := s.accounts.GetModelStates(ctx, []uint64{candidate.ID})
+		blocks, _ := s.accounts.GetActiveModelQuotaBlocks(ctx, []uint64{candidate.ID}, imagineUpstream, now)
+		ctxInput := buildWebPoolContext(candidate, windows[candidate.ID], modelStates[candidate.ID], blocks[candidate.ID], now)
+		if imagineNeedsL2Probe(ctxInput) && s.webProbeBudget.allow(now, lane, candidate.ID, WebProbeL2, false) {
+			level = WebProbeL2
+		}
+	}
+	var probeErr error
+	switch level {
+	case WebProbeL0:
+		probeErr = s.probeWebQuotaL0(ctx, candidate, lane)
+	case WebProbeL2:
+		probeErr = s.probeWebLiteL2(ctx, candidate)
+	}
+	if probeErr != nil {
+		until := now.Add(15 * time.Minute)
+		_ = s.accounts.UpdateHealth(ctx, candidate.ID, candidate.FailureCount+1, &until, "web dispatch probe: "+probeErr.Error(), true)
 		s.syncWebAccountIndex(ctx, candidate.ID)
-		return candidate.ID, true, err
+		return candidate.ID, true, probeErr
+	}
+	if level == WebProbeL2 {
+		s.webProbeBudget.record(now, lane, candidate.ID, WebProbeL2)
 	}
 	_ = s.accounts.UpdateHealth(ctx, candidate.ID, 0, nil, "", true)
 	s.syncWebAccountIndex(ctx, candidate.ID)
@@ -441,6 +462,21 @@ func (s *Service) runWebDispatchProbe(ctx context.Context, candidate accountdoma
 	s.laneIndexLocked(lane).dispatchProbeHeap.Upsert(candidate.ID, s.now())
 	s.webProbeMu.Unlock()
 	return candidate.ID, true, nil
+}
+
+func imagineNeedsL2Probe(input WebPoolContext) bool {
+	if input.ModelState != nil && input.ModelState.Status == accountdomain.ModelStatusAvailable {
+		return false
+	}
+	if input.ModelState == nil {
+		return true
+	}
+	switch input.ModelState.Status {
+	case accountdomain.ModelStatusUnknown, accountdomain.ModelStatusQuotaAvailable:
+		return true
+	default:
+		return false
+	}
 }
 
 // WebMaintenanceProbeTick 维护探针：DRR + L0/L1/L2。

@@ -53,8 +53,14 @@ export function WebProbePanel({ onCompleted }: WebProbePanelProps) {
   const lanePools = status.pools[laneTab];
   const laneTotal = lanePools.dispatch + lanePools.recovery + lanePools.dead;
   const dispatchPercent = laneTotal > 0 ? Math.round((lanePools.dispatch / laneTotal) * 100) : 0;
-  const handledSuccessfully = status.statistics.dispatchOk + status.statistics.recoveryOk + status.statistics.deadOk;
-  const currentLabel = status.current?.accountName || status.recent[0]?.accountName || t("webProbe.noAccount");
+  const laneStats = laneTab === "image" ? status.statistics.image : status.statistics.chat;
+  const laneAttempts = laneStats?.attempts ?? 0;
+  const laneSucceeded = laneStats?.succeeded ?? 0;
+  const laneFailed = laneStats?.failed ?? 0;
+  const laneRecent = status.recent.filter((item) => item.lane === laneTab);
+  const currentLaneItem = status.current?.lane === laneTab ? status.current : laneRecent[0];
+  const currentLabel = currentLaneItem?.accountName || t("webProbe.noAccount");
+  const probeUnknownQuota = status.config?.probeUnknownQuota ?? true;
   const statusLabel = !status.enabled ? t("webProbe.disabled") : status.running ? t("webProbe.running") : t("webProbe.waiting");
 
   return (
@@ -68,7 +74,7 @@ export function WebProbePanel({ onCompleted }: WebProbePanelProps) {
               {status.running ? <span className="mr-1 size-1.5 animate-pulse rounded-full bg-current" /> : null}{statusLabel}
             </Badge>
           </div>
-          <p className="mt-1 text-xs text-muted-foreground">{t("webProbe.description", { interval: status.intervalSeconds, idle: Math.round(status.idleIntervalSeconds / 60), level: status.budget.maxProbeLevel })}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t("webProbe.description", { interval: status.intervalSeconds, idle: Math.round(status.idleIntervalSeconds / 60), level: status.budget.maxProbeLevel, probeUnknownQuota: probeUnknownQuota ? t("common.enabled") : t("common.disabled") })}</p>
         </div>
         <div className="text-left text-xs text-muted-foreground sm:text-right">
           <div>{status.running ? t("webProbe.startedAt", { time: formatDateTimeSeconds(status.current?.startedAt, i18n.language) }) : status.nextRunAt ? t("webProbe.nextRunAt", { time: formatDateTimeSeconds(status.nextRunAt, i18n.language) }) : t("webProbe.awaitingSchedule")}</div>
@@ -94,11 +100,14 @@ export function WebProbePanel({ onCompleted }: WebProbePanelProps) {
               </div>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <ProbeMetric icon={<RefreshCw />} label={t("webProbe.attempts")} value={status.statistics.attempts} locale={i18n.language} />
-              <ProbeMetric icon={<CheckCircle2 />} label={t("webProbe.successful")} value={handledSuccessfully} locale={i18n.language} tone="success" />
-              <ProbeMetric icon={<CircleAlert />} label={t("webProbe.failed")} value={status.statistics.failed} locale={i18n.language} tone="danger" />
-              <ProbeMetric icon={<Clock3 />} label={t("webProbe.budgetLite")} value={status.budget.liteGlobalUsedHour} locale={i18n.language} suffix={`/ ${status.budget.liteGlobalPerHour}h`} />
+              <ProbeMetric icon={<RefreshCw />} label={t("webProbe.attempts")} value={laneAttempts} locale={i18n.language} />
+              <ProbeMetric icon={<CheckCircle2 />} label={t("webProbe.successful")} value={laneSucceeded} locale={i18n.language} tone="success" />
+              <ProbeMetric icon={<CircleAlert />} label={t("webProbe.failed")} value={laneFailed} locale={i18n.language} tone="danger" />
+              <ProbeMetric icon={<Clock3 />} label={t("webProbe.pipelineLoadShort")} value={status.budget.pipelineLoadPercent} locale={i18n.language} suffix="%" />
             </div>
+            {laneTab === "image" ? (
+              <p className="text-[11px] text-muted-foreground xl:col-span-2">{t("webProbe.budgetLite")}: {formatNumber(status.budget.liteGlobalUsedHour, i18n.language, 0)} / {formatNumber(status.budget.liteGlobalPerHour, i18n.language, 0)} · {t("webProbe.maxLevel")} {status.budget.maxProbeLevel}</p>
+            ) : null}
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2">
             {(["dispatch", "recovery", "dead"] as const).map((pool) => (
@@ -113,9 +122,9 @@ export function WebProbePanel({ onCompleted }: WebProbePanelProps) {
 
       <div className="mt-4 border-t border-border/60 pt-3">
         <h3 className="mb-2 text-xs font-medium">{t("webProbe.recentTitle")}</h3>
-        {status.recent.length === 0 ? <p className="py-3 text-xs text-muted-foreground">{t("webProbe.noRecent")}</p> : (
+        {laneRecent.length === 0 ? <p className="py-3 text-xs text-muted-foreground">{t("webProbe.noRecent")}</p> : (
           <div className="grid gap-1.5 lg:grid-cols-2">
-            {status.recent.slice(0, 6).map((item) => (
+            {laneRecent.slice(0, 6).map((item) => (
               <div key={`${item.accountId}-${item.completedAt}`} title={item.error || undefined} className="flex min-w-0 items-center gap-2 rounded-md bg-muted/20 px-3 py-2 text-xs">
                 <OutcomeBadge outcome={item.outcome} label={t(`webProbe.outcome.${item.outcome}`)} />
                 <span className="shrink-0 text-muted-foreground">{t(`webProbe.lane.${item.lane}`)}</span>

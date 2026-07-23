@@ -607,19 +607,19 @@ func (a *Application) runBuildDispatchProbe(ctx context.Context) {
 	}
 }
 
-// runWebDispatchProbe Web 调度探针：L0 only，图/聊两轨交替。
+// runWebDispatchProbe Web 调度探针：默认 L0；额度未知时可在设置允许下执行 L2。
 func (a *Application) runWebDispatchProbe(ctx context.Context) {
-	interval := webProbeInterval()
+	interval, idleInterval, initialDelay := a.accounts.WebProbeTimings()
 	if interval <= 0 {
 		<-ctx.Done()
 		return
 	}
-	idleInterval := webProbeIdleInterval()
-	initialDelay := webProbeInitialDelay() / 2
 	if initialDelay <= 0 {
-		initialDelay = 15 * time.Second
+		initialDelay = interval / 2
+		if initialDelay <= 0 {
+			initialDelay = 15 * time.Second
+		}
 	}
-	a.accounts.ConfigureWebProbe(interval, idleInterval, initialDelay)
 	if err := a.accounts.RebuildWebPoolIndex(ctx); err != nil {
 		a.logger.Warn("web_pool_index_rebuild_failed", "error", err)
 	}
@@ -639,6 +639,11 @@ func (a *Application) runWebDispatchProbe(ctx context.Context) {
 		} else if found {
 			a.logger.Info("web_dispatch_probe_succeeded", "account_id", accountID)
 		}
+		interval, idleInterval, _ = a.accounts.WebProbeTimings()
+		if interval <= 0 {
+			<-ctx.Done()
+			return
+		}
 		nextInterval := interval
 		if !found {
 			nextInterval = idleInterval
@@ -650,13 +655,14 @@ func (a *Application) runWebDispatchProbe(ctx context.Context) {
 
 // runWebMaintenanceProbe Web 维护探针：DRR + L0/L1/L2。
 func (a *Application) runWebMaintenanceProbe(ctx context.Context) {
-	interval := webProbeInterval()
+	interval, idleInterval, initialDelay := a.accounts.WebProbeTimings()
 	if interval <= 0 {
 		<-ctx.Done()
 		return
 	}
-	idleInterval := webProbeIdleInterval()
-	initialDelay := webProbeInitialDelay()
+	if initialDelay <= 0 {
+		initialDelay = interval
+	}
 	timer := time.NewTimer(initialDelay)
 	defer timer.Stop()
 	for {
@@ -672,6 +678,11 @@ func (a *Application) runWebMaintenanceProbe(ctx context.Context) {
 			a.logger.Warn("web_maintenance_probe_failed", "account_id", accountID, "error", err)
 		} else if found {
 			a.logger.Info("web_maintenance_probe_succeeded", "account_id", accountID)
+		}
+		interval, idleInterval, _ = a.accounts.WebProbeTimings()
+		if interval <= 0 {
+			<-ctx.Done()
+			return
 		}
 		nextInterval := interval
 		if !found {

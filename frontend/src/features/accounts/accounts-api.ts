@@ -180,6 +180,8 @@ export type WebProbeStatusDTO = {
     deadOk: number;
     cooledDown: number;
     consecutiveFailures: number;
+    image?: { attempts: number; succeeded: number; failed: number };
+    chat?: { attempts: number; succeeded: number; failed: number };
     laneAttempts?: {
       imageDispatch: number;
       chatDispatch: number;
@@ -204,6 +206,15 @@ export type WebProbeStatusDTO = {
     pipelineTotalSlots: number;
     pipelineLoadPercent: number;
     maxProbeLevel: string;
+  };
+  config?: {
+    probeUnknownQuota: boolean;
+    litePerAccountPerDay: number;
+    chatPerAccountPerDay: number;
+    liteGlobalPerHour: number;
+    deadL2MinIntervalSeconds: number;
+    pipelineL1Threshold: number;
+    pipelineL0OnlyThreshold: number;
   };
   recent: Array<{
     accountId: string;
@@ -382,6 +393,8 @@ const decodeWebProbeStatus = createObjectDecoder<WebProbeStatusDTO>("web probe s
   statistics: hasShape({
     attempts: isNumber, succeeded: isNumber, failed: isNumber, dispatchOk: isNumber, recoveryOk: isNumber, deadOk: isNumber,
     cooledDown: isNumber, consecutiveFailures: isNumber,
+    image: isOptional(hasShape({ attempts: isNumber, succeeded: isNumber, failed: isNumber })),
+    chat: isOptional(hasShape({ attempts: isNumber, succeeded: isNumber, failed: isNumber })),
     laneAttempts: isOptional(hasShape({
       imageDispatch: isNumber, chatDispatch: isNumber, imageRecoveryVerify: isNumber, chatRecoveryVerify: isNumber,
       imageRecoveryCooldown: isNumber, chatRecoveryCooldown: isNumber, imageDead: isNumber, chatDead: isNumber,
@@ -392,6 +405,10 @@ const decodeWebProbeStatus = createObjectDecoder<WebProbeStatusDTO>("web probe s
     litePerAccountPerDay: isNumber, chatPerAccountPerDay: isNumber, liteGlobalPerHour: isNumber, liteGlobalUsedHour: isNumber,
     pipelineActiveSlots: isNumber, pipelineTotalSlots: isNumber, pipelineLoadPercent: isNumber, maxProbeLevel: isString,
   }),
+  config: isOptional(hasShape({
+    probeUnknownQuota: isBoolean, litePerAccountPerDay: isNumber, chatPerAccountPerDay: isNumber, liteGlobalPerHour: isNumber,
+    deadL2MinIntervalSeconds: isNumber, pipelineL1Threshold: isNumber, pipelineL0OnlyThreshold: isNumber,
+  })),
   recent: isArrayOf(webProbeResultValidator),
 });
 const accountAnalyticsPointValidator = hasShape({

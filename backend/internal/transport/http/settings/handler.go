@@ -29,6 +29,7 @@ type settingsConfigDTO struct {
 	Routing           routingConfigDTO           `json:"routing"`
 	Audit             auditConfigDTO             `json:"audit"`
 	ClientKeyDefaults clientKeyDefaultsConfigDTO `json:"clientKeyDefaults"`
+	WebProbe          webProbeConfigDTO          `json:"webProbe"`
 }
 
 type providerConsoleConfigDTO struct {
@@ -97,6 +98,19 @@ type auditConfigDTO struct {
 type clientKeyDefaultsConfigDTO struct {
 	RPMLimit      int `json:"rpmLimit"`
 	MaxConcurrent int `json:"maxConcurrent"`
+}
+
+type webProbeConfigDTO struct {
+	DispatchInterval        string  `json:"dispatchInterval"`
+	IdleInterval            string  `json:"idleInterval"`
+	InitialDelay            string  `json:"initialDelay"`
+	LitePerAccountPerDay    int     `json:"litePerAccountPerDay"`
+	ChatPerAccountPerDay    int     `json:"chatPerAccountPerDay"`
+	LiteGlobalPerHour       int     `json:"liteGlobalPerHour"`
+	DeadL2MinInterval       string  `json:"deadL2MinInterval"`
+	PipelineL1Threshold     float64 `json:"pipelineL1Threshold"`
+	PipelineL0OnlyThreshold float64 `json:"pipelineL0OnlyThreshold"`
+	ProbeUnknownQuota       bool    `json:"probeUnknownQuota"`
 }
 
 type settingsResponse struct {
@@ -183,6 +197,13 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 		ClientKeyDefaults: settingsapp.ClientKeyDefaultsConfig{
 			RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
 		},
+		WebProbe: settingsapp.WebProbeConfig{
+			DispatchInterval: value.WebProbe.DispatchInterval, IdleInterval: value.WebProbe.IdleInterval,
+			InitialDelay: value.WebProbe.InitialDelay, LitePerAccountPerDay: value.WebProbe.LitePerAccountPerDay,
+			ChatPerAccountPerDay: value.WebProbe.ChatPerAccountPerDay, LiteGlobalPerHour: value.WebProbe.LiteGlobalPerHour,
+			DeadL2MinInterval: value.WebProbe.DeadL2MinInterval, PipelineL1Threshold: value.WebProbe.PipelineL1Threshold,
+			PipelineL0OnlyThreshold: value.WebProbe.PipelineL0OnlyThreshold, ProbeUnknownQuota: value.WebProbe.ProbeUnknownQuota,
+		},
 	}
 }
 
@@ -227,6 +248,13 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 			},
 			ClientKeyDefaults: clientKeyDefaultsConfigDTO{
 				RPMLimit: config.ClientKeyDefaults.RPMLimit, MaxConcurrent: config.ClientKeyDefaults.MaxConcurrent,
+			},
+			WebProbe: webProbeConfigDTO{
+				DispatchInterval: config.WebProbe.DispatchInterval, IdleInterval: config.WebProbe.IdleInterval,
+				InitialDelay: config.WebProbe.InitialDelay, LitePerAccountPerDay: config.WebProbe.LitePerAccountPerDay,
+				ChatPerAccountPerDay: config.WebProbe.ChatPerAccountPerDay, LiteGlobalPerHour: config.WebProbe.LiteGlobalPerHour,
+				DeadL2MinInterval: config.WebProbe.DeadL2MinInterval, PipelineL1Threshold: config.WebProbe.PipelineL1Threshold,
+				PipelineL0OnlyThreshold: config.WebProbe.PipelineL0OnlyThreshold, ProbeUnknownQuota: config.WebProbe.ProbeUnknownQuota,
 			},
 		},
 		RecommendedProviderBuild: providerBuildRecommendationDTO{

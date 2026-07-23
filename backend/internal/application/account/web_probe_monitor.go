@@ -60,6 +60,12 @@ type WebProbeLaneAttempts struct {
 	ChatDead              int64
 }
 
+type WebProbeLaneStatistics struct {
+	Attempts  int64
+	Succeeded int64
+	Failed    int64
+}
+
 type WebProbeStatistics struct {
 	Attempts            int64
 	Succeeded           int64
@@ -69,7 +75,19 @@ type WebProbeStatistics struct {
 	DeadOK              int64
 	CooledDown          int64
 	ConsecutiveFailures int64
+	Image               WebProbeLaneStatistics
+	Chat                WebProbeLaneStatistics
 	LaneAttempts        WebProbeLaneAttempts
+}
+
+type WebProbeEffectiveConfig struct {
+	ProbeUnknownQuota       bool
+	LitePerAccountPerDay    int
+	ChatPerAccountPerDay    int
+	LiteGlobalPerHour       int
+	DeadL2MinInterval       time.Duration
+	PipelineL1Threshold     float64
+	PipelineL0OnlyThreshold float64
 }
 
 type WebLanePoolCounts struct {
@@ -97,6 +115,7 @@ type WebProbeStatus struct {
 	Statistics      WebProbeStatistics
 	Pools           WebThreePoolSummary
 	Budget          WebProbeBudgetSnapshot
+	Config          WebProbeEffectiveConfig
 	Recent          []WebProbeResult
 }
 
@@ -130,6 +149,7 @@ func (s *Service) WebProbeStatus(ctx context.Context) (WebProbeStatus, error) {
 	s.initWebProbe()
 	status := s.webProbe.snapshot()
 	status.Budget = s.webProbeBudget.snapshot(s.now())
+	status.Config = s.webProbeEffectiveConfig()
 	pools, err := s.summarizeWebThreePools(ctx)
 	if err != nil {
 		return status, err
@@ -249,8 +269,14 @@ func (m *webProbeMonitor) finish(candidate accountdomain.Credential, lane WebLan
 	}
 	m.statistics.Attempts++
 	recordWebLaneAttempt(&m.statistics.LaneAttempts, lane, mode)
+	laneStats := &m.statistics.Image
+	if lane == WebLaneChat {
+		laneStats = &m.statistics.Chat
+	}
+	laneStats.Attempts++
 	if probeErr == nil {
 		m.statistics.Succeeded++
+		laneStats.Succeeded++
 		m.statistics.ConsecutiveFailures = 0
 		switch mode {
 		case WebProbeModeDispatch:
@@ -263,6 +289,9 @@ func (m *webProbeMonitor) finish(candidate accountdomain.Credential, lane WebLan
 	} else {
 		m.statistics.Failed++
 		m.statistics.ConsecutiveFailures++
+		if outcome != WebProbeOutcomeCooldown {
+			laneStats.Failed++
+		}
 		if outcome == WebProbeOutcomeCooldown {
 			m.statistics.CooledDown++
 		}

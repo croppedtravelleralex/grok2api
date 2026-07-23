@@ -104,12 +104,14 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	mediaJobRepo := relational.NewMediaJobRepository(database)
 	mediaAssetRepo := relational.NewMediaAssetRepository(database)
 	imagePipelineRepo := relational.NewImagePipelineRepository(database)
+	config.ApplyWebProbeEnvOverrides(&cfg.WebProbe)
 	loadedConfig, settingsUpdatedAt, settingsRevision, err := settingsapp.LoadPersisted(ctx, cfg, runtimeSettingsRepo)
 	if err != nil {
 		database.Close()
 		return nil, err
 	}
 	cfg = loadedConfig
+	cfg.WebProbe = config.NormalizeWebProbeConfig(cfg.WebProbe)
 	localMediaStore, err := inframedia.NewLocalStore(cfg.Media.Local.Path)
 	if err != nil {
 		database.Close()
@@ -254,6 +256,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		snap := imagePipeline.Snapshot()
 		return snap.ActiveSlots, snap.PipelineSlots
 	})
+	accountService.ApplyWebProbeConfig(cfg.WebProbe)
 	quotaRecoveryService := quotarecoveryapp.NewService(logger, quotaQueue, accountService, cfg.Provider.Web.RecoveryBackoffBase.Value(), cfg.Provider.Web.RecoveryBackoffMax.Value())
 	quotaRecoveryService.SetBulkPool(syncPool)
 	var notifySettings func(context.Context)
@@ -290,6 +293,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		gatewayService.UpdateMaxAttempts(next.Routing.MaxAttempts)
 		auditService.UpdateConfig(next.Audit.BatchSize, next.Audit.FlushInterval.Value())
 		clientKeyService.UpdateDefaults(next.ClientKeyDefaults.RPMLimit, next.ClientKeyDefaults.MaxConcurrent)
+		accountService.ApplyWebProbeConfig(next.WebProbe)
 	})
 
 	startup := newStartupState(len(windows))

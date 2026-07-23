@@ -512,6 +512,8 @@ func newWebProbeStatusResponse(value accountapp.WebProbeStatus) gin.H {
 			"attempts": value.Statistics.Attempts, "succeeded": value.Statistics.Succeeded, "failed": value.Statistics.Failed,
 			"dispatchOk": value.Statistics.DispatchOK, "recoveryOk": value.Statistics.RecoveryOK, "deadOk": value.Statistics.DeadOK,
 			"cooledDown": value.Statistics.CooledDown, "consecutiveFailures": value.Statistics.ConsecutiveFailures,
+			"image": gin.H{"attempts": value.Statistics.Image.Attempts, "succeeded": value.Statistics.Image.Succeeded, "failed": value.Statistics.Image.Failed},
+			"chat":  gin.H{"attempts": value.Statistics.Chat.Attempts, "succeeded": value.Statistics.Chat.Succeeded, "failed": value.Statistics.Chat.Failed},
 			"laneAttempts": gin.H{
 				"imageDispatch": value.Statistics.LaneAttempts.ImageDispatch, "chatDispatch": value.Statistics.LaneAttempts.ChatDispatch,
 				"imageRecoveryVerify": value.Statistics.LaneAttempts.ImageRecoveryVerify, "chatRecoveryVerify": value.Statistics.LaneAttempts.ChatRecoveryVerify,
@@ -528,6 +530,12 @@ func newWebProbeStatusResponse(value accountapp.WebProbeStatus) gin.H {
 			"liteGlobalPerHour": value.Budget.LiteGlobalPerHour, "liteGlobalUsedHour": value.Budget.LiteGlobalUsedHour,
 			"pipelineActiveSlots": value.Budget.PipelineActiveSlots, "pipelineTotalSlots": value.Budget.PipelineTotalSlots,
 			"pipelineLoadPercent": value.Budget.PipelineLoadPercent, "maxProbeLevel": value.Budget.MaxProbeLevel,
+		},
+		"config": gin.H{
+			"probeUnknownQuota": value.Config.ProbeUnknownQuota, "litePerAccountPerDay": value.Config.LitePerAccountPerDay,
+			"chatPerAccountPerDay": value.Config.ChatPerAccountPerDay, "liteGlobalPerHour": value.Config.LiteGlobalPerHour,
+			"deadL2MinIntervalSeconds": int(value.Config.DeadL2MinInterval.Seconds()),
+			"pipelineL1Threshold": value.Config.PipelineL1Threshold, "pipelineL0OnlyThreshold": value.Config.PipelineL0OnlyThreshold,
 		},
 		"recent": recent,
 	}

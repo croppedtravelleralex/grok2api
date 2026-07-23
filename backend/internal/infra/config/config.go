@@ -50,6 +50,7 @@ type Config struct {
 	Routing           RoutingConfig           `yaml:"routing"`
 	Audit             AuditConfig             `yaml:"audit"`
 	ClientKeyDefaults ClientKeyDefaultsConfig `yaml:"clientKeyDefaults"`
+	WebProbe          WebProbeConfig          `yaml:"-"`
 }
 
 type ServerConfig struct {
@@ -446,6 +447,37 @@ func (c Config) Validate() error {
 	if c.ClientKeyDefaults.RPMLimit < 1 || c.ClientKeyDefaults.RPMLimit > clientkeydomain.MaxRPMLimit || c.ClientKeyDefaults.MaxConcurrent < 1 || c.ClientKeyDefaults.MaxConcurrent > clientkeydomain.MaxConcurrent {
 		return errors.New("clientKeyDefaults 超出允许范围")
 	}
+	if err := c.WebProbe.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c WebProbeConfig) Validate() error {
+	if c.DispatchInterval.Value() != 0 {
+		if c.DispatchInterval.Value() < 15*time.Second || c.DispatchInterval.Value() > 24*time.Hour {
+			return errors.New("webProbe.dispatchInterval 必须在 15 秒到 24 小时之间，或设为 0 关闭探针")
+		}
+	}
+	if c.IdleInterval.Value() < time.Minute || c.IdleInterval.Value() > 24*time.Hour {
+		return errors.New("webProbe.idleInterval 必须在 1 分钟到 24 小时之间")
+	}
+	if c.InitialDelay.Value() < 10*time.Second || c.InitialDelay.Value() > 24*time.Hour {
+		return errors.New("webProbe.initialDelay 必须在 10 秒到 24 小时之间")
+	}
+	if c.LitePerAccountPerDay < 0 || c.LitePerAccountPerDay > 100 ||
+		c.ChatPerAccountPerDay < 0 || c.ChatPerAccountPerDay > 100 ||
+		c.LiteGlobalPerHour < 0 || c.LiteGlobalPerHour > 1000 {
+		return errors.New("webProbe 账号/全局预算超出允许范围")
+	}
+	if c.DeadL2MinInterval.Value() < time.Hour || c.DeadL2MinInterval.Value() > 7*24*time.Hour {
+		return errors.New("webProbe.deadL2MinInterval 必须在 1 小时到 7 天之间")
+	}
+	if c.PipelineL1Threshold <= 0 || c.PipelineL1Threshold >= 1 ||
+		c.PipelineL0OnlyThreshold <= 0 || c.PipelineL0OnlyThreshold >= 1 ||
+		c.PipelineL0OnlyThreshold <= c.PipelineL1Threshold {
+		return errors.New("webProbe 流水线负载阈值无效")
+	}
 	return nil
 }
 
@@ -509,6 +541,7 @@ func defaultConfig() Config {
 		},
 		Audit:             AuditConfig{BufferSize: 16384, BatchSize: 256, FlushInterval: Duration(250 * time.Millisecond)},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},
+		WebProbe:          DefaultWebProbeConfig(),
 	}
 }
 

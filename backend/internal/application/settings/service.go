@@ -96,6 +96,20 @@ type ClientKeyDefaultsConfig struct {
 	MaxConcurrent int
 }
 
+// WebProbeConfig 是管理接口使用的 Web 探针输入。
+type WebProbeConfig struct {
+	DispatchInterval        string
+	IdleInterval            string
+	InitialDelay            string
+	LitePerAccountPerDay    int
+	ChatPerAccountPerDay    int
+	LiteGlobalPerHour       int
+	DeadL2MinInterval       string
+	PipelineL1Threshold     float64
+	PipelineL0OnlyThreshold float64
+	ProbeUnknownQuota       bool
+}
+
 // EditableConfig 聚合管理端允许修改的运行参数。
 type EditableConfig struct {
 	ProviderBuild     ProviderBuildConfig
@@ -106,6 +120,7 @@ type EditableConfig struct {
 	Routing           RoutingConfig
 	Audit             AuditConfig
 	ClientKeyDefaults ClientKeyDefaultsConfig
+	WebProbe          WebProbeConfig
 }
 
 // Snapshot 表示当前运行设置和需要重启才能生效的字段。
@@ -291,7 +306,31 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	base.ClientKeyDefaults = config.ClientKeyDefaultsConfig{
 		RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
 	}
+	if value.WebProbe != nil {
+		base.WebProbe = config.NormalizeWebProbeConfig(webProbeFromDomain(*value.WebProbe))
+	}
 	return base
+}
+
+func webProbeFromDomain(value settingsdomain.WebProbeConfig) config.WebProbeConfig {
+	return config.WebProbeConfig{
+		DispatchInterval: config.Duration(value.DispatchInterval), IdleInterval: config.Duration(value.IdleInterval),
+		InitialDelay: config.Duration(value.InitialDelay), LitePerAccountPerDay: value.LitePerAccountPerDay,
+		ChatPerAccountPerDay: value.ChatPerAccountPerDay, LiteGlobalPerHour: value.LiteGlobalPerHour,
+		DeadL2MinInterval: config.Duration(value.DeadL2MinInterval), PipelineL1Threshold: value.PipelineL1Threshold,
+		PipelineL0OnlyThreshold: value.PipelineL0OnlyThreshold, ProbeUnknownQuota: value.ProbeUnknownQuota,
+	}
+}
+
+func webProbeToDomain(value config.WebProbeConfig) *settingsdomain.WebProbeConfig {
+	normalized := config.NormalizeWebProbeConfig(value)
+	return &settingsdomain.WebProbeConfig{
+		DispatchInterval: normalized.DispatchInterval.Value(), IdleInterval: normalized.IdleInterval.Value(),
+		InitialDelay: normalized.InitialDelay.Value(), LitePerAccountPerDay: normalized.LitePerAccountPerDay,
+		ChatPerAccountPerDay: normalized.ChatPerAccountPerDay, LiteGlobalPerHour: normalized.LiteGlobalPerHour,
+		DeadL2MinInterval: normalized.DeadL2MinInterval.Value(), PipelineL1Threshold: normalized.PipelineL1Threshold,
+		PipelineL0OnlyThreshold: normalized.PipelineL0OnlyThreshold, ProbeUnknownQuota: normalized.ProbeUnknownQuota,
+	}
 }
 
 func toDomainConfig(value config.Config) settingsdomain.Config {
@@ -335,6 +374,7 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 		ClientKeyDefaults: settingsdomain.ClientKeyDefaultsConfig{
 			RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
 		},
+		WebProbe: webProbeToDomain(value.WebProbe),
 	}
 }
 
@@ -423,6 +463,10 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 		{"providerConsole.chatTimeout", input.ProviderConsole.ChatTimeout, func(value config.Duration) { next.Provider.Console.ChatTimeout = value }},
 		{"media.cleanupInterval", input.Media.CleanupInterval, func(value config.Duration) { next.Media.CleanupInterval = value }},
 		{"batch.randomDelay", input.Batch.RandomDelay, func(value config.Duration) { next.Batch.RandomDelay = value }},
+		{"webProbe.dispatchInterval", input.WebProbe.DispatchInterval, func(value config.Duration) { next.WebProbe.DispatchInterval = value }},
+		{"webProbe.idleInterval", input.WebProbe.IdleInterval, func(value config.Duration) { next.WebProbe.IdleInterval = value }},
+		{"webProbe.initialDelay", input.WebProbe.InitialDelay, func(value config.Duration) { next.WebProbe.InitialDelay = value }},
+		{"webProbe.deadL2MinInterval", input.WebProbe.DeadL2MinInterval, func(value config.Duration) { next.WebProbe.DeadL2MinInterval = value }},
 	}
 	for _, item := range durations {
 		value, err := time.ParseDuration(strings.TrimSpace(item.value))
@@ -431,6 +475,13 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 		}
 		item.set(config.Duration(value))
 	}
+	next.WebProbe.LitePerAccountPerDay = input.WebProbe.LitePerAccountPerDay
+	next.WebProbe.ChatPerAccountPerDay = input.WebProbe.ChatPerAccountPerDay
+	next.WebProbe.LiteGlobalPerHour = input.WebProbe.LiteGlobalPerHour
+	next.WebProbe.PipelineL1Threshold = input.WebProbe.PipelineL1Threshold
+	next.WebProbe.PipelineL0OnlyThreshold = input.WebProbe.PipelineL0OnlyThreshold
+	next.WebProbe.ProbeUnknownQuota = input.WebProbe.ProbeUnknownQuota
+	next.WebProbe = config.NormalizeWebProbeConfig(next.WebProbe)
 	if err := next.Validate(); err != nil {
 		return config.Config{}, err
 	}
@@ -475,5 +526,17 @@ func toEditable(cfg config.Config) EditableConfig {
 			BufferSize: cfg.Audit.BufferSize, BatchSize: cfg.Audit.BatchSize, FlushInterval: cfg.Audit.FlushInterval.String(),
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: cfg.ClientKeyDefaults.RPMLimit, MaxConcurrent: cfg.ClientKeyDefaults.MaxConcurrent},
+		WebProbe: webProbeToEditable(cfg.WebProbe),
+	}
+}
+
+func webProbeToEditable(value config.WebProbeConfig) WebProbeConfig {
+	normalized := config.NormalizeWebProbeConfig(value)
+	return WebProbeConfig{
+		DispatchInterval: normalized.DispatchInterval.String(), IdleInterval: normalized.IdleInterval.String(),
+		InitialDelay: normalized.InitialDelay.String(), LitePerAccountPerDay: normalized.LitePerAccountPerDay,
+		ChatPerAccountPerDay: normalized.ChatPerAccountPerDay, LiteGlobalPerHour: normalized.LiteGlobalPerHour,
+		DeadL2MinInterval: normalized.DeadL2MinInterval.String(), PipelineL1Threshold: normalized.PipelineL1Threshold,
+		PipelineL0OnlyThreshold: normalized.PipelineL0OnlyThreshold, ProbeUnknownQuota: normalized.ProbeUnknownQuota,
 	}
 }

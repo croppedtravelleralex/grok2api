@@ -15,6 +15,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/application/account/poolindex"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/infra/config"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
@@ -249,6 +250,8 @@ type Service struct {
 	webProbeMu            sync.Mutex
 	webProbe              *webProbeMonitor
 	webProbeBudget        *webProbeBudgetGovernor
+	webProbeCfgMu         sync.RWMutex
+	webProbeCfg           config.WebProbeConfig
 	webImageLane          webLaneIndex
 	webChatLane           webLaneIndex
 	webProbeLaneCursor    int
