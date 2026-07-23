@@ -699,6 +699,8 @@ type ImageGenerationInput struct {
 	Resolution     string
 	ResponseFormat string
 	Streaming      bool
+	ExpandPrompt   bool
+	MultiImageMode string
 }
 
 type ImageEditInput struct {
@@ -710,6 +712,13 @@ type ImageEditInput struct {
 	Count          int
 	Resolution     string
 	ResponseFormat string
+	ExpandPrompt   bool
+	MultiImageMode string
+}
+
+type imagePipelineOptions struct {
+	expandPrompt   bool
+	multiImageMode string
 }
 
 func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput) (*Result, error) {
@@ -719,7 +728,7 @@ func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput)
 			Size: input.Size, AspectRatio: input.AspectRatio, Resolution: input.Resolution,
 			ResponseFormat: input.ResponseFormat, Streaming: input.Streaming,
 		})
-	}, input.Streaming, input.Resolution, input.Count, 0)
+	}, input.Streaming, input.Resolution, input.Count, 0, imagePipelineOptions{expandPrompt: input.ExpandPrompt, multiImageMode: input.MultiImageMode})
 }
 
 func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result, error) {
@@ -728,10 +737,10 @@ func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result,
 			Credential: credential, RequestID: input.RequestID, Model: upstream, Prompt: input.Prompt,
 			ImageURLs: input.ImageURLs, Count: input.Count, Resolution: input.Resolution, ResponseFormat: input.ResponseFormat,
 		})
-	}, false, input.Resolution, input.Count, len(input.ImageURLs))
+	}, false, input.Resolution, input.Count, len(input.ImageURLs), imagePipelineOptions{expandPrompt: input.ExpandPrompt, multiImageMode: input.MultiImageMode})
 }
 
-func (s *Service) executeImage(ctx context.Context, requestID string, key clientkey.Key, publicModel string, operation audit.Operation, execute func(context.Context, provider.ImageAdapter, accountdomain.Credential, string) (*provider.Response, error), streaming bool, resolution string, requestedCount, inputImageCount int) (*Result, error) {
+func (s *Service) executeImage(ctx context.Context, requestID string, key clientkey.Key, publicModel string, operation audit.Operation, execute func(context.Context, provider.ImageAdapter, accountdomain.Credential, string) (*provider.Response, error), streaming bool, resolution string, requestedCount, inputImageCount int, pipeOpts imagePipelineOptions) (*Result, error) {
 	startedAt := time.Now()
 	eventID := newAuditEventID()
 	timing := newGenerationTiming(publicModel, "")
@@ -757,20 +766,6 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 			finishPipeline(imagedomain.StatusFailed, "aborted", false)
 		}
 	}()
-	if s.imagePipeline != nil && operation == audit.OperationImage {
-		run, admitErr := s.imagePipeline.Admit(ctx, imagepipelineapp.AdmitInput{RequestID: requestID, Model: publicModel})
-		if admitErr != nil {
-			if errors.Is(admitErr, imagepipelineapp.ErrQueueFull) {
-				return nil, ErrImagePipelineFull
-			}
-			if errors.Is(admitErr, context.Canceled) || errors.Is(admitErr, context.DeadlineExceeded) {
-				return nil, admitErr
-			}
-			return nil, admitErr
-		}
-		pipelineRun = run
-		ctx = imagepipelineapp.WithRun(ctx, pipelineRun)
-	}
 	routes, err := s.models.GetByPublicIDCandidates(ctx, publicModel)
 	if err != nil {
 		finishPipeline(imagedomain.StatusFailed, "model_not_found", false)
@@ -828,6 +823,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 	var lease *accountLease
 	var credential accountdomain.Credential
 	var response *provider.Response
+	effectiveQuotaMode := quotaMode
 	var releaseAccountOnce sync.Once
 	releaseAccount := func() {
 		releaseAccountOnce.Do(func() {
@@ -837,6 +833,52 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 		})
 	}
 	ctx = imagepipelineapp.WithEarlyAccountRelease(ctx, releaseAccount)
+
+	useStagedPipeline := s.imagePipeline != nil && isStagedWebImagePipeline(operation, publicModel, route.Provider)
+	if useStagedPipeline {
+		mode := strings.TrimSpace(strings.ToLower(pipeOpts.multiImageMode))
+		if mode == "" {
+			mode = imagepipelineapp.MultiImageModeFast
+		}
+		run, admitErr := s.imagePipeline.Admit(ctx, imagepipelineapp.AdmitInput{
+			RequestID: requestID, Model: publicModel, ExpandPrompt: pipeOpts.expandPrompt,
+			MultiImageMode: mode, NeedsUpload: operation == audit.OperationImageEdit,
+		})
+		if admitErr != nil {
+			if errors.Is(admitErr, imagepipelineapp.ErrQueueFull) {
+				return nil, ErrImagePipelineFull
+			}
+			return nil, admitErr
+		}
+		pipelineRun = run
+		ctx = imagepipelineapp.WithRun(ctx, pipelineRun)
+		ensureCred := func(execCtx context.Context, value accountdomain.Credential) (accountdomain.Credential, error) {
+			credStart := time.Now()
+			cred, credErr := s.accounts.EnsureCredential(execCtx, value, false)
+			timing.markCredential(time.Since(credStart))
+			return cred, credErr
+		}
+		stageProvider := s.newStageAccountProvider(pipelineRun, route.Provider, route.UpstreamModel, quotaMode, attempts, timing.markSelection, ensureCred)
+		ctx = imagepipelineapp.WithAccountProvider(ctx, stageProvider)
+		upstreamStart := time.Now()
+		response, err = execute(ctx, adapter, accountdomain.Credential{}, route.UpstreamModel)
+		timing.markUpstream(time.Since(upstreamStart))
+		if err != nil {
+			_, errorCode, softStop := imageExecutionErrorPolicy(err, 0, 1)
+			finishPipeline(imagedomain.StatusFailed, errorCode, softStop)
+			timing.finish(s.logger, errorCode)
+			return nil, err
+		}
+		if pipelineRun != nil {
+			trace := pipelineRun.Artifacts()
+			if id := trace.SSAccountID; id != nil {
+				credential = accountdomain.Credential{ID: *id}
+			}
+		}
+		effectiveQuotaMode = quotaMode
+		goto finalizeResponse
+	}
+
 	for attempt := 0; attempt < attempts; attempt++ {
 		selectStart := time.Now()
 		lease, err = s.selector.Acquire(ctx, route.Provider, route.UpstreamModel, quotaMode, "", excluded, false)
@@ -934,6 +976,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 		}
 		break
 	}
+finalizeResponse:
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 		body, _ := readRetryableBody(response.Body)
 		response.Body = io.NopCloser(bytes.NewReader(body))
@@ -953,7 +996,7 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 		_ = s.accounts.MarkReauthRequired(ctx, credential.ID, fmt.Sprintf("%s SSO credential rejected", credential.Provider))
 		s.selector.MarkFailure(ctx, credential, http.StatusUnauthorized, 0)
 	}
-	effectiveQuotaMode := lease.QuotaMode
+	effectiveQuotaMode = lease.QuotaMode
 	accountID := credential.ID
 	var once sync.Once
 	finalize := func(_ Usage, _ string, errorCode string) {

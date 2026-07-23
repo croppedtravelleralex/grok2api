@@ -13,13 +13,16 @@ type imagePipelineTraceModel struct {
 	ErrorCode   string    `gorm:"size:100;not null;default:'';check:chk_image_pipeline_traces_error_code,length(error_code) <= 100"`
 	StartedAt   time.Time `gorm:"not null;index:idx_image_pipeline_traces_started"`
 	EndedAt     *time.Time
-	QueueMS     int64 `gorm:"not null;default:0"`
+	QueueMS           int64 `gorm:"not null;default:0"`
+	UploadQueueMS     int64 `gorm:"not null;default:0"`
+	PSQueueMS         int64 `gorm:"not null;default:0"`
+	SSQueueMS         int64 `gorm:"not null;default:0"`
+	DownloadQueueMS   int64 `gorm:"not null;default:0"`
 	ExpandMS    int64 `gorm:"not null;default:0"`
-	// 生产首版表由 GORM 将 SSEMS 命名为 ssems；显式固定列名，避免 map 更新误写 sse_ms。
-	SSEMS      int64 `gorm:"column:ssems;not null;default:0"`
-	DownloadMS int64 `gorm:"not null;default:0"`
-	TotalMS    int64 `gorm:"not null;default:0"`
-	SoftStop   bool  `gorm:"not null;default:false"`
+	SSEMS       int64 `gorm:"column:ssems;not null;default:0"`
+	DownloadMS  int64 `gorm:"not null;default:0"`
+	TotalMS     int64 `gorm:"not null;default:0"`
+	SoftStop    bool  `gorm:"not null;default:false"`
 }
 
 func (imagePipelineTraceModel) TableName() string { return "image_pipeline_traces" }
@@ -27,7 +30,8 @@ func (imagePipelineTraceModel) TableName() string { return "image_pipeline_trace
 type imagePipelineSegmentModel struct {
 	ID        uint64    `gorm:"primaryKey;autoIncrement"`
 	TraceID   string    `gorm:"size:64;not null;index:idx_image_pipeline_segments_trace;check:chk_image_pipeline_segments_trace_id,length(trim(trace_id)) BETWEEN 16 AND 64"`
-	Stage     string    `gorm:"size:32;not null;check:chk_image_pipeline_segments_stage,stage IN ('queue','expand','sse','download')"`
+	Stage     string    `gorm:"size:32;not null;check:chk_image_pipeline_segments_stage,stage IN ('queue','upload','queue_upload','queue_ps','ps','expand','queue_ss','sse','queue_download','download')"`
+	Slot      int       `gorm:"not null;default:-1;check:chk_image_pipeline_segments_slot,slot >= -1 AND slot <= 128"`
 	Sequence  int       `gorm:"not null;check:chk_image_pipeline_segments_sequence,sequence >= 0 AND sequence <= 1000"`
 	StartedAt time.Time `gorm:"not null"`
 	EndedAt   *time.Time

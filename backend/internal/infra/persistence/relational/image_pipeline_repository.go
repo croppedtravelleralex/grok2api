@@ -32,7 +32,9 @@ func (r *ImagePipelineRepository) UpdateTrace(ctx context.Context, value imagepi
 	result := r.db.db.WithContext(ctx).Model(&imagePipelineTraceModel{}).Where("id = ?", model.ID).Updates(map[string]any{
 		"lane": model.Lane, "status": model.Status, "model": model.Model, "account_id": model.AccountID,
 		"account_name": model.AccountName, "error_code": model.ErrorCode, "ended_at": model.EndedAt,
-		"queue_ms": model.QueueMS, "expand_ms": model.ExpandMS, "ssems": model.SSEMS,
+		"queue_ms": model.QueueMS, "upload_queue_ms": model.UploadQueueMS, "ps_queue_ms": model.PSQueueMS,
+		"ss_queue_ms": model.SSQueueMS, "download_queue_ms": model.DownloadQueueMS,
+		"expand_ms": model.ExpandMS, "ssems": model.SSEMS,
 		"download_ms": model.DownloadMS, "total_ms": model.TotalMS, "soft_stop": model.SoftStop,
 	})
 	if result.Error != nil {
@@ -46,7 +48,7 @@ func (r *ImagePipelineRepository) UpdateTrace(ctx context.Context, value imagepi
 
 func (r *ImagePipelineRepository) AppendSegment(ctx context.Context, value imagepipeline.Segment) (imagepipeline.Segment, error) {
 	model := imagePipelineSegmentModel{
-		TraceID: value.TraceID, Stage: string(value.Stage), Sequence: value.Sequence,
+		TraceID: value.TraceID, Stage: string(value.Stage), Slot: value.Slot, Sequence: value.Sequence,
 		StartedAt: value.StartedAt.UTC(), EndedAt: value.EndedAt, Outcome: value.Outcome,
 	}
 	if err := r.db.db.WithContext(ctx).Create(&model).Error; err != nil {
@@ -135,8 +137,10 @@ func toTraceModel(value imagepipeline.Trace) imagePipelineTraceModel {
 	return imagePipelineTraceModel{
 		ID: value.ID, RequestID: value.RequestID, Lane: value.Lane, Status: string(value.Status),
 		Model: value.Model, AccountID: value.AccountID, AccountName: value.AccountName, ErrorCode: value.ErrorCode,
-		StartedAt: value.StartedAt.UTC(), EndedAt: value.EndedAt, QueueMS: value.QueueMS, ExpandMS: value.ExpandMS,
-		SSEMS: value.SSEMS, DownloadMS: value.DownloadMS, TotalMS: value.TotalMS, SoftStop: value.SoftStop,
+		StartedAt: value.StartedAt.UTC(), EndedAt: value.EndedAt,
+		QueueMS: value.QueueMS, UploadQueueMS: value.UploadQueueMS, PSQueueMS: value.PSQueueMS,
+		SSQueueMS: value.SSQueueMS, DownloadQueueMS: value.DownloadQueueMS,
+		ExpandMS: value.ExpandMS, SSEMS: value.SSEMS, DownloadMS: value.DownloadMS, TotalMS: value.TotalMS, SoftStop: value.SoftStop,
 	}
 }
 
@@ -144,14 +148,16 @@ func fromTraceModel(model imagePipelineTraceModel) imagepipeline.Trace {
 	return imagepipeline.Trace{
 		ID: model.ID, RequestID: model.RequestID, Lane: model.Lane, Status: imagepipeline.Status(model.Status),
 		Model: model.Model, AccountID: model.AccountID, AccountName: model.AccountName, ErrorCode: model.ErrorCode,
-		StartedAt: model.StartedAt, EndedAt: model.EndedAt, QueueMS: model.QueueMS, ExpandMS: model.ExpandMS,
-		SSEMS: model.SSEMS, DownloadMS: model.DownloadMS, TotalMS: model.TotalMS, SoftStop: model.SoftStop,
+		StartedAt: model.StartedAt, EndedAt: model.EndedAt,
+		QueueMS: model.QueueMS, UploadQueueMS: model.UploadQueueMS, PSQueueMS: model.PSQueueMS,
+		SSQueueMS: model.SSQueueMS, DownloadQueueMS: model.DownloadQueueMS,
+		ExpandMS: model.ExpandMS, SSEMS: model.SSEMS, DownloadMS: model.DownloadMS, TotalMS: model.TotalMS, SoftStop: model.SoftStop,
 	}
 }
 
 func fromSegmentModel(model imagePipelineSegmentModel) imagepipeline.Segment {
 	return imagepipeline.Segment{
-		ID: model.ID, TraceID: model.TraceID, Stage: imagepipeline.Stage(model.Stage), Sequence: model.Sequence,
+		ID: model.ID, TraceID: model.TraceID, Stage: imagepipeline.Stage(model.Stage), Slot: model.Slot, Sequence: model.Sequence,
 		StartedAt: model.StartedAt, EndedAt: model.EndedAt, Outcome: model.Outcome,
 	}
 }

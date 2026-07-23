@@ -68,6 +68,8 @@ type providerWebConfigDTO struct {
 	WebConcurrency          int    `json:"webConcurrency"`
 	AssetConcurrency        int    `json:"assetConcurrency"`
 	ExpandConcurrency       int    `json:"expandConcurrency"`
+	PromptSlots             int    `json:"promptSlots"`
+	SSESlots                int    `json:"sseSlots"`
 	AllowNSFW               bool   `json:"allowNSFW"`
 	RecoveryBackoffBase     string `json:"recoveryBackoffBase"`
 	RecoveryBackoffMax      string `json:"recoveryBackoffMax"`
@@ -171,7 +173,8 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			ChatTimeout: value.ProviderWeb.ChatTimeout, ImageTimeout: value.ProviderWeb.ImageTimeout,
 			VideoTimeout:     value.ProviderWeb.VideoTimeout,
 			MediaConcurrency: value.ProviderWeb.MediaConcurrency, WebConcurrency: value.ProviderWeb.WebConcurrency,
-			AssetConcurrency: value.ProviderWeb.AssetConcurrency, ExpandConcurrency: value.ProviderWeb.ExpandConcurrency, AllowNSFW: value.ProviderWeb.AllowNSFW,
+			AssetConcurrency: value.ProviderWeb.AssetConcurrency, ExpandConcurrency: value.ProviderWeb.ExpandConcurrency,
+			PromptSlots: value.ProviderWeb.PromptSlots, SSESlots: value.ProviderWeb.SSESlots, AllowNSFW: value.ProviderWeb.AllowNSFW,
 			RecoveryBackoffBase: value.ProviderWeb.RecoveryBackoffBase, RecoveryBackoffMax: value.ProviderWeb.RecoveryBackoffMax,
 		},
 		ProviderConsole: settingsapp.ProviderConsoleConfig{
@@ -223,7 +226,8 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				ChatTimeout:      config.ProviderWeb.ChatTimeout, ImageTimeout: config.ProviderWeb.ImageTimeout,
 				VideoTimeout:     config.ProviderWeb.VideoTimeout,
 				MediaConcurrency: config.ProviderWeb.MediaConcurrency, WebConcurrency: config.ProviderWeb.WebConcurrency,
-				AssetConcurrency: config.ProviderWeb.AssetConcurrency, ExpandConcurrency: config.ProviderWeb.ExpandConcurrency, AllowNSFW: config.ProviderWeb.AllowNSFW,
+				AssetConcurrency: config.ProviderWeb.AssetConcurrency, ExpandConcurrency: config.ProviderWeb.ExpandConcurrency,
+				PromptSlots: config.ProviderWeb.PromptSlots, SSESlots: config.ProviderWeb.SSESlots, AllowNSFW: config.ProviderWeb.AllowNSFW,
 				RecoveryBackoffBase: config.ProviderWeb.RecoveryBackoffBase, RecoveryBackoffMax: config.ProviderWeb.RecoveryBackoffMax,
 			},
 			ProviderConsole: providerConsoleConfigDTO{

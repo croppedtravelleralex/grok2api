@@ -48,6 +48,8 @@ type openAIRequest struct {
 	ImageConfig        *struct {
 		Count          *int   `json:"n"`
 		ResponseFormat string `json:"response_format"`
+		ExpandPrompt   *bool  `json:"expand_prompt"`
+		MultiImageMode string `json:"multi_image_mode"`
 	} `json:"image_config"`
 }
 

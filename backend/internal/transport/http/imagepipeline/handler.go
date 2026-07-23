@@ -77,7 +77,7 @@ func (h *Handler) timeline(c *gin.Context) {
 	response.Success(c, http.StatusOK, gin.H{
 		"from":     timeline.From.Format(time.RFC3339Nano),
 		"to":       timeline.To.Format(time.RFC3339Nano),
-		"lanes":    timeline.Lanes,
+		"lanes":    gin.H{"ps": timeline.Lanes.PS, "ss": timeline.Lanes.SS},
 		"snapshot": snapshotDTO(timeline.Snapshot),
 		"traces":   tracesDTO(timeline.Traces),
 	})
@@ -85,12 +85,17 @@ func (h *Handler) timeline(c *gin.Context) {
 
 func snapshotDTO(value domain.Snapshot) gin.H {
 	return gin.H{
+		"promptSlots": value.PromptSlots, "promptActive": value.PromptActive, "promptQueued": value.PromptQueued,
+		"sseSlots": value.SSESlots, "sseActive": value.SSEActive, "sseQueued": value.SSEQueued,
+		"uploadActive": value.UploadActive, "uploadLimit": value.UploadLimit, "uploadQueued": value.UploadQueued,
+		"downloadActive": value.DownloadActive, "downloadLimit": value.DownloadLimit, "downloadQueued": value.DownloadQueued,
+		"inFlight": value.InFlight, "queueCapacity": value.QueueCapacity,
+		"psSlots": slotsDTO(value.PSSlots), "ssSlots": slotsDTO(value.SSSlots),
 		"pipelineSlots": value.PipelineSlots, "activeSlots": value.ActiveSlots,
-		"queueDepth": value.QueueDepth, "queueCapacity": value.QueueCapacity,
+		"queueDepth": value.QueueDepth,
 		"expandActive": value.ExpandActive, "expandLimit": value.ExpandLimit,
-		"sseActive": value.SSEActive, "sseLimit": value.SSELimit, "sseTarget": value.SSETarget,
-		"downloadActive": value.DownloadActive, "downloadLimit": value.DownloadLimit,
-		"expandQueued": value.ExpandQueued, "sseQueued": value.SSEQueued, "downloadQueued": value.DownloadQueued,
+		"sseLimit": value.SSELimit, "sseTarget": value.SSETarget,
+		"expandQueued": value.ExpandQueued,
 		"oldestQueueMs": value.OldestQueueMS, "slots": slotsDTO(value.Slots), "queue": queueDTO(value.Queue),
 		"successRate": value.SuccessRate, "sampleCount": value.SampleCount,
 		"p50TotalMs": value.P50TotalMS, "p90TotalMs": value.P90TotalMS, "p95TotalMs": value.P95TotalMS,
@@ -104,7 +109,7 @@ func snapshotDTO(value domain.Snapshot) gin.H {
 func slotsDTO(values []domain.SlotSnapshot) []gin.H {
 	items := make([]gin.H, 0, len(values))
 	for _, slot := range values {
-		item := gin.H{"lane": slot.Lane, "occupied": slot.Occupied}
+		item := gin.H{"lane": slot.Lane, "pool": slot.Pool, "occupied": slot.Occupied}
 		if slot.Occupied {
 			item["traceId"] = slot.TraceID
 			item["requestId"] = slot.RequestID
@@ -125,7 +130,7 @@ func queueDTO(values []domain.QueueSnapshot) []gin.H {
 	items := make([]gin.H, 0, len(values))
 	for _, queued := range values {
 		items = append(items, gin.H{
-			"position": queued.Position, "traceId": queued.TraceID, "requestId": queued.RequestID,
+			"position": queued.Position, "pool": queued.Pool, "traceId": queued.TraceID, "requestId": queued.RequestID,
 			"model": queued.Model, "enqueuedAt": queued.EnqueuedAt.Format(time.RFC3339Nano), "waitMs": queued.WaitMS,
 		})
 	}
@@ -139,7 +144,9 @@ func tracesDTO(values []domain.Trace) []gin.H {
 			"id": trace.ID, "requestId": trace.RequestID, "lane": trace.Lane, "status": string(trace.Status),
 			"model": trace.Model, "accountName": trace.AccountName, "errorCode": trace.ErrorCode,
 			"startedAt": trace.StartedAt.Format(time.RFC3339Nano),
-			"queueMs":   trace.QueueMS, "expandMs": trace.ExpandMS, "sseMs": trace.SSEMS,
+			"queueMs": trace.QueueMS, "uploadQueueMs": trace.UploadQueueMS, "psQueueMs": trace.PSQueueMS,
+			"ssQueueMs": trace.SSQueueMS, "downloadQueueMs": trace.DownloadQueueMS,
+			"expandMs": trace.ExpandMS, "sseMs": trace.SSEMS,
 			"downloadMs": trace.DownloadMS, "totalMs": trace.TotalMS, "softStop": trace.SoftStop,
 			"segments": segmentsDTO(trace.Segments),
 		}
@@ -158,7 +165,7 @@ func segmentsDTO(values []domain.Segment) []gin.H {
 	items := make([]gin.H, 0, len(values))
 	for _, segment := range values {
 		item := gin.H{
-			"id": segment.ID, "stage": string(segment.Stage), "sequence": segment.Sequence,
+			"id": segment.ID, "stage": string(segment.Stage), "slot": segment.Slot, "sequence": segment.Sequence,
 			"startedAt": segment.StartedAt.Format(time.RFC3339Nano), "outcome": segment.Outcome,
 		}
 		if segment.EndedAt != nil {

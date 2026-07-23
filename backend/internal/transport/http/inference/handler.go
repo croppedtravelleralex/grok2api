@@ -82,15 +82,17 @@ type messagesRequest struct {
 }
 
 type imageGenerationRequest struct {
-	Model          string          `json:"model"`
-	Prompt         string          `json:"prompt"`
-	Count          *int            `json:"n"`
-	Size           string          `json:"size"`
-	AspectRatio    string          `json:"aspect_ratio"`
-	Resolution     string          `json:"resolution"`
-	ResponseFormat string          `json:"response_format"`
-	StorageOptions json.RawMessage `json:"storage_options"`
-	Stream         bool            `json:"stream"`
+	Model            string          `json:"model"`
+	Prompt           string          `json:"prompt"`
+	Count            *int            `json:"n"`
+	Size             string          `json:"size"`
+	AspectRatio      string          `json:"aspect_ratio"`
+	Resolution       string          `json:"resolution"`
+	ResponseFormat   string          `json:"response_format"`
+	StorageOptions   json.RawMessage `json:"storage_options"`
+	Stream           bool            `json:"stream"`
+	ExpandPrompt     *bool           `json:"expand_prompt"`
+	MultiImageMode   string          `json:"multi_image_mode"`
 }
 
 type imageEditJSONImage struct {
@@ -99,14 +101,16 @@ type imageEditJSONImage struct {
 }
 
 type imageEditJSONRequest struct {
-	Model          string               `json:"model"`
-	Prompt         string               `json:"prompt"`
-	Image          *imageEditJSONImage  `json:"image"`
-	Images         []imageEditJSONImage `json:"images"`
-	Count          *int                 `json:"n"`
-	Resolution     string               `json:"resolution"`
-	ResponseFormat string               `json:"response_format"`
-	StorageOptions json.RawMessage      `json:"storage_options"`
+	Model            string               `json:"model"`
+	Prompt           string               `json:"prompt"`
+	Image            *imageEditJSONImage  `json:"image"`
+	Images           []imageEditJSONImage `json:"images"`
+	Count            *int                 `json:"n"`
+	Resolution       string               `json:"resolution"`
+	ResponseFormat   string               `json:"response_format"`
+	StorageOptions   json.RawMessage      `json:"storage_options"`
+	ExpandPrompt     *bool                `json:"expand_prompt"`
+	MultiImageMode   string               `json:"multi_image_mode"`
 }
 
 type videoGenerationImage struct {
@@ -271,6 +275,7 @@ func (h *Handler) generateImage(c *gin.Context) {
 		RequestID: requestID, ClientKey: clientKey, PublicModel: request.Model, Prompt: request.Prompt,
 		Count: count, Size: request.Size, AspectRatio: request.AspectRatio,
 		Resolution: request.Resolution, ResponseFormat: request.ResponseFormat, Streaming: request.Stream,
+		ExpandPrompt: coalesceExpandPrompt(request.ExpandPrompt), MultiImageMode: request.MultiImageMode,
 	})
 	if err != nil {
 		writeGatewayError(c, err)
@@ -426,12 +431,20 @@ func (h *Handler) editImage(c *gin.Context) {
 	result, err := h.gateway.EditImage(c.Request.Context(), gateway.ImageEditInput{
 		RequestID: requestID, ClientKey: clientKey, PublicModel: model, Prompt: prompt,
 		ImageURLs: imageURLs, Count: count, Resolution: resolution, ResponseFormat: request.ResponseFormat,
+		ExpandPrompt: coalesceExpandPrompt(request.ExpandPrompt), MultiImageMode: request.MultiImageMode,
 	})
 	if err != nil {
 		writeGatewayError(c, err)
 		return
 	}
 	h.writeResult(c, result, false)
+}
+
+func coalesceExpandPrompt(value *bool) bool {
+	if value == nil {
+		return true
+	}
+	return *value
 }
 
 func requestIdentity(c *gin.Context) (clientkeydomain.Key, string, bool) {

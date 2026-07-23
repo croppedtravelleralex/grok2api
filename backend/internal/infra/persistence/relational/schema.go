@@ -101,6 +101,9 @@ func (d *Database) InitializeSchema(ctx context.Context) error {
 	if err := d.ensureImagePipelineLaneConstraint(ctx); err != nil {
 		return fmt.Errorf("迁移生图流水线 lane 约束: %w", err)
 	}
+	if err := d.ensureImagePipelineSegmentStageConstraint(ctx); err != nil {
+		return fmt.Errorf("迁移生图流水线 segment stage 约束: %w", err)
+	}
 	for _, statement := range schemaIndexes {
 		if err := db.Exec(statement).Error; err != nil {
 			return fmt.Errorf("初始化数据库索引: %w", err)
@@ -166,6 +169,37 @@ func (d *Database) ensureImagePipelineLaneConstraint(ctx context.Context) error 
 			return err
 		}
 		if strings.Contains(definition, "lane >= -1") || strings.Contains(definition, "lane>=-1") {
+			return nil
+		}
+		if definition != "" {
+			if err := db.Migrator().DropConstraint(value.model, value.name); err != nil {
+				return fmt.Errorf("删除旧约束 %s: %w", value.name, err)
+			}
+		}
+		if err := db.Migrator().CreateConstraint(value.model, value.name); err != nil {
+			return fmt.Errorf("创建约束 %s: %w", value.name, err)
+		}
+		return nil
+	}
+	if d.dialect == "sqlite" {
+		return d.withSQLiteForeignKeysDisabled(ctx, migrate)
+	}
+	return migrate()
+}
+
+// ensureImagePipelineSegmentStageConstraint 扩展 segment stage CHECK 以支持 v2 分阶段 trace。
+func (d *Database) ensureImagePipelineSegmentStageConstraint(ctx context.Context) error {
+	if !d.db.WithContext(ctx).Migrator().HasTable(&imagePipelineSegmentModel{}) {
+		return nil
+	}
+	value := consoleConstraint{model: &imagePipelineSegmentModel{}, table: "image_pipeline_segments", name: "chk_image_pipeline_segments_stage"}
+	migrate := func() error {
+		db := d.db.WithContext(ctx)
+		definition, err := d.constraintDefinition(ctx, value)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(definition, "queue_ps") && strings.Contains(definition, "queue_ss") {
 			return nil
 		}
 		if definition != "" {

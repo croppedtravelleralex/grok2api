@@ -248,13 +248,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	gatewayService.SetLogger(logger)
 	gatewayService.ConfigureMedia(mediaJobRepo, cfg.Provider.Web.MediaConcurrency)
 	imagePipelineConfig := imagepipelineapp.DefaultConfig()
-	imagePipelineConfig.ExpandConcurrency = cfg.Provider.Web.ExpandConcurrency
+	imagePipelineConfig.PromptSlots = cfg.Provider.Web.PromptSlots
+	imagePipelineConfig.SSESlots = cfg.Provider.Web.SSESlots
+	imagePipelineConfig.UploadConcurrency = cfg.Provider.Web.AssetConcurrency
 	imagePipelineConfig.DownloadConcurrency = cfg.Provider.Web.AssetConcurrency
 	imagePipeline := imagepipelineapp.NewScheduler(imagePipelineRepo, imagePipelineConfig, logger)
 	gatewayService.ConfigureImagePipeline(imagePipeline)
 	accountService.SetWebProbePipelineOccupancy(func() (int, int) {
 		snap := imagePipeline.Snapshot()
-		return snap.ActiveSlots, snap.PipelineSlots
+		return snap.PromptActive + snap.SSEActive, snap.PromptSlots + snap.SSESlots
 	})
 	accountService.ApplyWebProbeConfig(cfg.WebProbe)
 	quotaRecoveryService := quotarecoveryapp.NewService(logger, quotaQueue, accountService, cfg.Provider.Web.RecoveryBackoffBase.Value(), cfg.Provider.Web.RecoveryBackoffMax.Value())

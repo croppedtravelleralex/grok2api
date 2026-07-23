@@ -915,3 +915,55 @@ func (f failingConcurrencyLimiter) Acquire(context.Context, string, int) (func()
 func (f failingConcurrencyLimiter) Current(context.Context, string) (int, error) {
 	return 0, nil
 }
+
+func TestExplorationShuffleSkipsWhenEpsilonZero(t *testing.T) {
+	selector := &Selector{explorationEpsilon: 0, randFloat: func() float64 { return 0 }}
+	values := []account.RoutingCandidate{
+		{Credential: account.Credential{ID: 1, Priority: 10}},
+		{Credential: account.Credential{ID: 2, Priority: 1}},
+	}
+	selector.maybeExploreShuffle(values)
+	if values[0].Credential.ID != 1 {
+		t.Fatalf("epsilon=0 should preserve order, got %#v", values)
+	}
+}
+
+func TestExplorationShuffleReordersWhenEpsilonOne(t *testing.T) {
+	step := 0
+	selector := &Selector{
+		explorationEpsilon: 1,
+		randFloat: func() float64 {
+			step++
+			if step == 1 {
+				return 0 // trigger explore
+			}
+			return 0 // always pick index 0 in Fisher-Yates
+		},
+	}
+	values := []account.RoutingCandidate{
+		{Credential: account.Credential{ID: 1, Priority: 100}},
+		{Credential: account.Credential{ID: 2, Priority: 1}},
+		{Credential: account.Credential{ID: 3, Priority: 1}},
+	}
+	selector.maybeExploreShuffle(values)
+	if values[0].Credential.ID == 1 {
+		t.Fatal("epsilon=1 should shuffle candidate order")
+	}
+}
+
+func TestExplorationShufflePreservesCandidateSet(t *testing.T) {
+	selector := &Selector{explorationEpsilon: 1, randFloat: func() float64 { return 0.42 }}
+	values := []account.RoutingCandidate{
+		{Credential: account.Credential{ID: 10}},
+		{Credential: account.Credential{ID: 20}},
+		{Credential: account.Credential{ID: 30}},
+	}
+	selector.maybeExploreShuffle(values)
+	seen := map[uint64]bool{}
+	for _, value := range values {
+		seen[value.Credential.ID] = true
+	}
+	if len(seen) != 3 || !seen[10] || !seen[20] || !seen[30] {
+		t.Fatalf("shuffle must preserve candidate set: %#v", values)
+	}
+}

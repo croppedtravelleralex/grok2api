@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -36,6 +38,7 @@ const modelSoftStopBaseCooldown = 30 * time.Second
 const modelSoftStopMaxCooldown = 5 * time.Minute
 const modelOutcomeRetention = time.Hour
 const webLiteImageUpstreamModel = "grok-imagine-image"
+const defaultExplorationEpsilon = 0.05
 
 type candidateSnapshot struct {
 	values    []account.RoutingCandidate
@@ -141,6 +144,8 @@ type Selector struct {
 	tierOrders     interface {
 		TierOrder(account.Provider, string) []account.WebTier
 	}
+	explorationEpsilon float64
+	randFloat          func() float64
 }
 
 // SetBuildDispatchSource 接入 Build 四池调度索引。
@@ -164,7 +169,13 @@ func NewSelector(accounts repository.AccountRepository, concurrency repository.C
 	if len(capacityWait) > 0 && capacityWait[0] > 0 {
 		wait = capacityWait[0]
 	}
-	return &Selector{accounts: accounts, concurrency: concurrency, sticky: sticky, tierOrders: tierOrders, stickyTTL: stickyTTL, cooldownBase: cooldownBase, cooldownMax: cooldownMax, capacityWait: wait, leaseWake: make(chan struct{}), lastSelectedAt: make(map[uint64]time.Time), lastSuccessAt: make(map[uint64]time.Time), modelOutcomes: make(map[modelOutcomeKey]modelOutcome), candidates: make(map[candidateCacheKey]candidateSnapshot)}
+	return &Selector{
+		accounts: accounts, concurrency: concurrency, sticky: sticky, tierOrders: tierOrders,
+		stickyTTL: stickyTTL, cooldownBase: cooldownBase, cooldownMax: cooldownMax, capacityWait: wait,
+		leaseWake: make(chan struct{}), lastSelectedAt: make(map[uint64]time.Time),
+		lastSuccessAt: make(map[uint64]time.Time), modelOutcomes: make(map[modelOutcomeKey]modelOutcome),
+		candidates: make(map[candidateCacheKey]candidateSnapshot), explorationEpsilon: defaultExplorationEpsilon,
+	}
 }
 
 func (s *Selector) UpdateConfig(stickyTTL, cooldownBase, cooldownMax time.Duration, capacityWait ...time.Duration) {
@@ -268,6 +279,7 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 		if err := s.sortCandidates(ctx, probeCandidates, now, s.resolveTierOrder(provider, upstreamModel), upstreamModel); err != nil {
 			return nil, err
 		}
+		s.maybeExploreShuffle(probeCandidates)
 		for _, candidate := range probeCandidates {
 			lease, err := s.claimAccountSlot(ctx, candidate.Credential, upstreamModel)
 			if err != nil {
@@ -333,8 +345,11 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 		currentTime := time.Now().UTC()
 		if provider == account.ProviderBuild {
 			normalCandidates = s.orderBuildDispatchCandidates(normalCandidates)
+			s.maybeExploreShuffle(normalCandidates)
 		} else if err := s.sortCandidates(ctx, normalCandidates, currentTime, s.resolveTierOrder(provider, upstreamModel), upstreamModel); err != nil {
 			return nil, err
+		} else {
+			s.maybeExploreShuffle(normalCandidates)
 		}
 		for _, candidate := range normalCandidates {
 			lease, err := s.claimAccountSlot(ctx, candidate.Credential, upstreamModel)
@@ -1120,4 +1135,51 @@ func tierOrderRank(order []account.WebTier, tier account.WebTier) int {
 		}
 	}
 	return len(order)
+}
+
+func (s *Selector) explorationRate() float64 {
+	s.mu.Lock()
+	epsilon := s.explorationEpsilon
+	s.mu.Unlock()
+	if epsilon <= 0 {
+		return 0
+	}
+	if epsilon > 1 {
+		return 1
+	}
+	return epsilon
+}
+
+func (s *Selector) randomUnit() float64 {
+	if s.randFloat != nil {
+		return s.randFloat()
+	}
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return 0
+	}
+	return float64(binary.LittleEndian.Uint64(buf[:])>>11) / float64(1<<53)
+}
+
+func (s *Selector) maybeExploreShuffle(values []account.RoutingCandidate) {
+	if len(values) <= 1 {
+		return
+	}
+	if s.randomUnit() >= s.explorationRate() {
+		return
+	}
+	shuffleRoutingCandidates(values, s.randomUnit)
+}
+
+func shuffleRoutingCandidates(values []account.RoutingCandidate, random func() float64) {
+	for i := len(values) - 1; i > 0; i-- {
+		j := int(random() * float64(i+1))
+		if j < 0 {
+			j = 0
+		}
+		if j > i {
+			j = i
+		}
+		values[i], values[j] = values[j], values[i]
+	}
 }

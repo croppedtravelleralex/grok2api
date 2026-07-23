@@ -129,6 +129,8 @@ type WebProviderConfig struct {
 	WebConcurrency      int      `yaml:"webConcurrency"`
 	AssetConcurrency    int      `yaml:"assetConcurrency"`
 	ExpandConcurrency   int      `yaml:"expandConcurrency"`
+	PromptSlots         int      `yaml:"promptSlots"`
+	SSESlots            int      `yaml:"sseSlots"`
 	AllowNSFW           bool     `yaml:"allowNSFW"`
 	RecoveryBackoffBase Duration `yaml:"recoveryBackoffBase"`
 	RecoveryBackoffMax  Duration `yaml:"recoveryBackoffMax"`
@@ -265,6 +267,12 @@ func (c *Config) NormalizeConcurrencyDefaults() {
 	}
 	if c.Provider.Web.ExpandConcurrency == 0 {
 		c.Provider.Web.ExpandConcurrency = 2
+	}
+	if c.Provider.Web.PromptSlots == 0 {
+		c.Provider.Web.PromptSlots = 10
+	}
+	if c.Provider.Web.SSESlots == 0 {
+		c.Provider.Web.SSESlots = 10
 	}
 }
 
@@ -416,6 +424,12 @@ func (c Config) Validate() error {
 	if c.Provider.Web.ExpandConcurrency < 1 || c.Provider.Web.ExpandConcurrency > 20 {
 		return errors.New("provider.web Expand 并发必须在 1 到 20 之间")
 	}
+	if c.Provider.Web.PromptSlots < 1 || c.Provider.Web.PromptSlots > 64 {
+		return errors.New("provider.web pS 槽位数必须在 1 到 64 之间")
+	}
+	if c.Provider.Web.SSESlots < 1 || c.Provider.Web.SSESlots > 64 {
+		return errors.New("provider.web sS 槽位数必须在 1 到 64 之间")
+	}
 	consoleURL, err := url.ParseRequestURI(strings.TrimSpace(c.Provider.Console.BaseURL))
 	if err != nil || consoleURL.Scheme != "https" || consoleURL.Host == "" || consoleURL.User != nil {
 		return errors.New("provider.console.baseURL 必须是无凭据的 HTTPS URL")
@@ -514,7 +528,7 @@ func defaultConfig() Config {
 				QuotaTimeout: Duration(25 * time.Second),
 				ChatTimeout:  Duration(2 * time.Minute), ImageTimeout: Duration(3 * time.Minute),
 				VideoTimeout:     Duration(15 * time.Minute),
-				MediaConcurrency: 1, WebConcurrency: 2, AssetConcurrency: 8, ExpandConcurrency: 2,
+				MediaConcurrency: 1, WebConcurrency: 2, AssetConcurrency: 8, ExpandConcurrency: 2, PromptSlots: 10, SSESlots: 10,
 				RecoveryBackoffBase: Duration(30 * time.Second),
 				RecoveryBackoffMax:  Duration(30 * time.Minute),
 			},

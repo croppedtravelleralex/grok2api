@@ -47,6 +47,8 @@ type ProviderWebConfig struct {
 	WebConcurrency          int
 	AssetConcurrency        int
 	ExpandConcurrency       int
+	PromptSlots             int
+	SSESlots                int
 	AllowNSFW               bool
 	RecoveryBackoffBase     string
 	RecoveryBackoffMax      string
@@ -144,6 +146,8 @@ type Service struct {
 	activeWebConcurrency    int
 	activeAssetConcurrency  int
 	activeExpandConcurrency int
+	activePromptSlots       int
+	activeSSESlots          int
 	repository              repository.RuntimeSettingsRepository
 	notify                  func(context.Context)
 	apply                   func(config.Config)
@@ -158,6 +162,8 @@ func NewService(cfg config.Config, updatedAt time.Time, revision uint64, reposit
 		activeMediaConcurrency: cfg.Provider.Web.MediaConcurrency, activeWebConcurrency: cfg.Provider.Web.WebConcurrency,
 		activeAssetConcurrency: cfg.Provider.Web.AssetConcurrency, repository: repository, notify: notify, apply: apply,
 		activeExpandConcurrency: cfg.Provider.Web.ExpandConcurrency,
+		activePromptSlots:       cfg.Provider.Web.PromptSlots,
+		activeSSESlots:          cfg.Provider.Web.SSESlots,
 	}
 }
 
@@ -273,7 +279,8 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		ChatTimeout: config.Duration(value.ProviderWeb.ChatTimeout), ImageTimeout: config.Duration(value.ProviderWeb.ImageTimeout),
 		VideoTimeout:     config.Duration(value.ProviderWeb.VideoTimeout),
 		MediaConcurrency: value.ProviderWeb.MediaConcurrency, WebConcurrency: value.ProviderWeb.WebConcurrency,
-		AssetConcurrency: value.ProviderWeb.AssetConcurrency, ExpandConcurrency: value.ProviderWeb.ExpandConcurrency, AllowNSFW: value.ProviderWeb.AllowNSFW,
+		AssetConcurrency: value.ProviderWeb.AssetConcurrency, ExpandConcurrency: value.ProviderWeb.ExpandConcurrency,
+		PromptSlots: value.ProviderWeb.PromptSlots, SSESlots: value.ProviderWeb.SSESlots, AllowNSFW: value.ProviderWeb.AllowNSFW,
 		RecoveryBackoffBase: config.Duration(value.ProviderWeb.RecoveryBackoffBase), RecoveryBackoffMax: config.Duration(value.ProviderWeb.RecoveryBackoffMax),
 	}
 	base.NormalizeConcurrencyDefaults()
@@ -348,7 +355,8 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			ChatTimeout:      value.Provider.Web.ChatTimeout.Value(), ImageTimeout: value.Provider.Web.ImageTimeout.Value(),
 			VideoTimeout:     value.Provider.Web.VideoTimeout.Value(),
 			MediaConcurrency: value.Provider.Web.MediaConcurrency, WebConcurrency: value.Provider.Web.WebConcurrency,
-			AssetConcurrency: value.Provider.Web.AssetConcurrency, ExpandConcurrency: value.Provider.Web.ExpandConcurrency, AllowNSFW: value.Provider.Web.AllowNSFW,
+			AssetConcurrency: value.Provider.Web.AssetConcurrency, ExpandConcurrency: value.Provider.Web.ExpandConcurrency,
+			PromptSlots: value.Provider.Web.PromptSlots, SSESlots: value.Provider.Web.SSESlots, AllowNSFW: value.Provider.Web.AllowNSFW,
 			RecoveryBackoffBase: value.Provider.Web.RecoveryBackoffBase.Value(), RecoveryBackoffMax: value.Provider.Web.RecoveryBackoffMax.Value(),
 		},
 		ProviderConsole: settingsdomain.ProviderConsoleConfig{
@@ -395,6 +403,12 @@ func (s *Service) snapshotLocked() Snapshot {
 	if s.cfg.Provider.Web.ExpandConcurrency != s.activeExpandConcurrency {
 		restartRequired = append(restartRequired, "providerWeb.expandConcurrency")
 	}
+	if s.cfg.Provider.Web.PromptSlots != s.activePromptSlots {
+		restartRequired = append(restartRequired, "providerWeb.promptSlots")
+	}
+	if s.cfg.Provider.Web.SSESlots != s.activeSSESlots {
+		restartRequired = append(restartRequired, "providerWeb.sseSlots")
+	}
 	return Snapshot{
 		Config: toEditable(s.cfg),
 		RecommendedProviderBuild: ProviderBuildRecommendation{
@@ -428,6 +442,8 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Provider.Web.WebConcurrency = input.ProviderWeb.WebConcurrency
 	next.Provider.Web.AssetConcurrency = input.ProviderWeb.AssetConcurrency
 	next.Provider.Web.ExpandConcurrency = input.ProviderWeb.ExpandConcurrency
+	next.Provider.Web.PromptSlots = input.ProviderWeb.PromptSlots
+	next.Provider.Web.SSESlots = input.ProviderWeb.SSESlots
 	next.Provider.Web.AllowNSFW = input.ProviderWeb.AllowNSFW
 	next.Provider.Console.BaseURL = strings.TrimSpace(input.ProviderConsole.BaseURL)
 	next.Provider.Console.UserAgent = strings.TrimSpace(input.ProviderConsole.UserAgent)
@@ -502,7 +518,8 @@ func toEditable(cfg config.Config) EditableConfig {
 			ChatTimeout:      cfg.Provider.Web.ChatTimeout.String(), ImageTimeout: cfg.Provider.Web.ImageTimeout.String(),
 			VideoTimeout:     cfg.Provider.Web.VideoTimeout.String(),
 			MediaConcurrency: cfg.Provider.Web.MediaConcurrency, WebConcurrency: cfg.Provider.Web.WebConcurrency,
-			AssetConcurrency: cfg.Provider.Web.AssetConcurrency, ExpandConcurrency: cfg.Provider.Web.ExpandConcurrency, AllowNSFW: cfg.Provider.Web.AllowNSFW,
+			AssetConcurrency: cfg.Provider.Web.AssetConcurrency, ExpandConcurrency: cfg.Provider.Web.ExpandConcurrency,
+			PromptSlots: cfg.Provider.Web.PromptSlots, SSESlots: cfg.Provider.Web.SSESlots, AllowNSFW: cfg.Provider.Web.AllowNSFW,
 			RecoveryBackoffBase: cfg.Provider.Web.RecoveryBackoffBase.String(), RecoveryBackoffMax: cfg.Provider.Web.RecoveryBackoffMax.String(),
 		},
 		ProviderConsole: ProviderConsoleConfig{

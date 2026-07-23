@@ -5,10 +5,33 @@ import "time"
 type Stage string
 
 const (
-	StageQueue    Stage = "queue"
-	StageExpand   Stage = "expand"
-	StageSSE      Stage = "sse"
-	StageDownload Stage = "download"
+	StageQueue         Stage = "queue"
+	StageQueueUpload   Stage = "queue_upload"
+	StageUpload        Stage = "upload"
+	StageQueuePS       Stage = "queue_ps"
+	StagePS            Stage = "ps"
+	StageExpand        Stage = "expand" // legacy read alias for ps
+	StageQueueSS       Stage = "queue_ss"
+	StageSSE           Stage = "sse"
+	StageQueueDownload Stage = "queue_download"
+	StageDownload      Stage = "download"
+)
+
+func NormalizeStage(stage Stage) Stage {
+	if stage == StageExpand {
+		return StagePS
+	}
+	return stage
+}
+
+type PhaseCursor string
+
+const (
+	PhaseAdmitted      PhaseCursor = "admitted"
+	PhaseUploadDone    PhaseCursor = "upload_done"
+	PhasePSDone        PhaseCursor = "ps_done"
+	PhaseSSDone        PhaseCursor = "ss_done"
+	PhaseDownloadDone  PhaseCursor = "download_done"
 )
 
 type Status string
@@ -33,6 +56,10 @@ type Trace struct {
 	StartedAt   time.Time
 	EndedAt     *time.Time
 	QueueMS     int64
+	UploadQueueMS   int64
+	PSQueueMS       int64
+	SSQueueMS       int64
+	DownloadQueueMS int64
 	ExpandMS    int64
 	SSEMS       int64
 	DownloadMS  int64
@@ -45,6 +72,7 @@ type Segment struct {
 	ID        uint64
 	TraceID   string
 	Stage     Stage
+	Slot      int
 	Sequence  int
 	StartedAt time.Time
 	EndedAt   *time.Time
@@ -52,20 +80,22 @@ type Segment struct {
 }
 
 type Snapshot struct {
-	PipelineSlots  int
-	ActiveSlots    int
-	QueueDepth     int
-	QueueCapacity  int
-	ExpandActive   int
-	ExpandLimit    int
+	PromptSlots    int
+	PromptActive   int
+	PromptQueued   int
+	SSESlots       int
 	SSEActive      int
-	SSELimit       int
-	SSETarget      int
+	SSEQueued      int
+	UploadActive   int
+	UploadLimit    int
+	UploadQueued   int
 	DownloadActive int
 	DownloadLimit  int
-	ExpandQueued   int
-	SSEQueued      int
 	DownloadQueued int
+	InFlight       int
+	QueueCapacity  int
+	PSSlots        []SlotSnapshot
+	SSSlots        []SlotSnapshot
 	SuccessRate    float64
 	SampleCount    int
 	P50TotalMS     int64
@@ -78,13 +108,24 @@ type Snapshot struct {
 	P50DownloadMS  int64
 	P90DownloadMS  int64
 	OldestQueueMS  int64
+	UpdatedAt      time.Time
+
+	// Legacy fields for gradual API migration.
+	PipelineSlots  int
+	ActiveSlots    int
+	QueueDepth     int
+	ExpandActive   int
+	ExpandLimit    int
+	SSELimit       int
+	SSETarget      int
+	ExpandQueued   int
 	Slots          []SlotSnapshot
 	Queue          []QueueSnapshot
-	UpdatedAt      time.Time
 }
 
 type SlotSnapshot struct {
 	Lane        int
+	Pool        string
 	Occupied    bool
 	TraceID     string
 	RequestID   string
@@ -99,6 +140,7 @@ type SlotSnapshot struct {
 
 type QueueSnapshot struct {
 	Position   int
+	Pool       string
 	TraceID    string
 	RequestID  string
 	Model      string
@@ -106,10 +148,15 @@ type QueueSnapshot struct {
 	WaitMS     int64
 }
 
+type LaneLayout struct {
+	PS int
+	SS int
+}
+
 type Timeline struct {
 	From     time.Time
 	To       time.Time
 	Snapshot Snapshot
-	Lanes    int
+	Lanes    LaneLayout
 	Traces   []Trace
 }

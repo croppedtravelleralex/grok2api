@@ -7,7 +7,8 @@ export type SettingsConfigDTO = {
   providerWeb: {
     baseURL: string; quotaTimeout: string; chatTimeout: string; imageTimeout: string; videoTimeout: string;
     statsigMode: "manual" | "url"; statsigManualValue?: string; statsigManualConfigured: boolean; statsigSignerURL: string;
-    mediaConcurrency: number; webConcurrency: number; assetConcurrency: number; expandConcurrency: number; allowNSFW: boolean;
+    mediaConcurrency: number; webConcurrency: number; assetConcurrency: number; expandConcurrency: number;
+    promptSlots: number; sseSlots: number; allowNSFW: boolean;
     recoveryBackoffBase: string; recoveryBackoffMax: string;
   };
   providerConsole: { baseURL: string; userAgent: string; chatTimeout: string };
@@ -54,7 +55,8 @@ const settingsConfigValidator = hasShape({
   providerWeb: hasShape({
     baseURL: isString, quotaTimeout: isString, chatTimeout: isString, imageTimeout: isString, videoTimeout: isString,
     statsigMode: isOneOf("manual", "url"), statsigManualValue: isOptional(isString), statsigManualConfigured: isBoolean,
-    statsigSignerURL: isString, mediaConcurrency: isNumber, webConcurrency: isNumber, assetConcurrency: isNumber, expandConcurrency: isNumber, allowNSFW: isBoolean, recoveryBackoffBase: isString, recoveryBackoffMax: isString,
+    statsigSignerURL: isString, mediaConcurrency: isNumber, webConcurrency: isNumber, assetConcurrency: isNumber, expandConcurrency: isNumber,
+    promptSlots: isNumber, sseSlots: isNumber, allowNSFW: isBoolean, recoveryBackoffBase: isString, recoveryBackoffMax: isString,
   }),
   batch: hasShape({ importConcurrency: isNumber, conversionConcurrency: isNumber, syncConcurrency: isNumber, refreshConcurrency: isNumber, randomDelay: isString }),
   media: hasShape({ maxImageBytes: isNumber, maxTotalBytes: isNumber, cleanupThresholdPercent: isNumber, cleanupInterval: isString }),

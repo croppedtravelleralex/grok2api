@@ -41,6 +41,8 @@ type ProviderWebConfig struct {
 	WebConcurrency      int
 	AssetConcurrency    int
 	ExpandConcurrency   int
+	PromptSlots         int
+	SSESlots            int
 	AllowNSFW           bool
 	RecoveryBackoffBase time.Duration
 	RecoveryBackoffMax  time.Duration

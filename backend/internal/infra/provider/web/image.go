@@ -19,6 +19,7 @@ import (
 
 	imagepipelineapp "github.com/chenyme/grok2api/backend/internal/application/imagepipeline"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	domainimagepipeline "github.com/chenyme/grok2api/backend/internal/domain/imagepipeline"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/infra/egress"
@@ -259,8 +260,24 @@ func (a *Adapter) generateLiteImage(ctx context.Context, request provider.ImageG
 	urls := make([]string, 0, count)
 	revised := ""
 	run := imagepipelineapp.RunFromContext(ctx)
+	stageProvider := imagepipelineapp.AccountProviderFromContext(ctx)
+	prompt := request.Prompt
+	if run != nil && stageProvider != nil && run.MultiImageMode() != imagepipelineapp.MultiImageModeDiverse {
+		expanded, expandErr := a.maybeExpandPromptStaged(ctx, stageProvider, run, prompt)
+		if expandErr != nil {
+			return nil, expandErr
+		}
+		prompt = expanded
+	}
 	for len(urls) < count {
-		value, expanded, err := a.generateLiteImageURL(ctx, request.Credential, spec, request.Prompt)
+		if run != nil && stageProvider != nil && run.MultiImageMode() == imagepipelineapp.MultiImageModeDiverse {
+			expanded, expandErr := a.maybeExpandPromptStaged(ctx, stageProvider, run, request.Prompt)
+			if expandErr != nil {
+				return nil, expandErr
+			}
+			prompt = expanded
+		}
+		value, expanded, err := a.generateLiteImageURL(ctx, request.Credential, spec, prompt)
 		if err != nil {
 			var upstreamErr *liteUpstreamError
 			if errors.As(err, &upstreamErr) && len(urls) == 0 {
@@ -283,14 +300,38 @@ func (a *Adapter) generateLiteImage(ctx context.Context, request provider.ImageG
 	imagepipelineapp.EarlyAccountRelease(ctx)
 	if run != nil {
 		run.MarkAccountReleased()
-		if err := run.AcquireDownload(ctx); err != nil {
-			return nil, err
-		}
-		defer run.ReleaseDownload()
 	}
-	response, err := a.imageResponse(ctx, request.Credential, urls, nil, count, format, revised)
+	response, err := a.downloadLiteImages(ctx, request, run, stageProvider, urls, count, format, revised)
 	if response != nil {
 		response.QuotaUnits = count
+	}
+	return response, err
+}
+
+func (a *Adapter) downloadLiteImages(ctx context.Context, request provider.ImageGenerationRequest, run *imagepipelineapp.Run, stageProvider imagepipelineapp.AccountProvider, urls []string, count int, format, revised string) (*provider.Response, error) {
+	const maxDownloadAttempts = 3
+	var response *provider.Response
+	var err error
+	for attempt := 0; attempt < maxDownloadAttempts; attempt++ {
+		downloadURLs := urls
+		if run != nil {
+			if stored := run.Artifacts().ImageURLs; len(stored) >= len(urls) && len(stored) > 0 {
+				downloadURLs = stored
+			}
+			if err := run.AcquireDownload(ctx); err != nil {
+				return nil, err
+			}
+		}
+		response, err = a.imageResponse(ctx, downloadCredential(request.Credential, run, stageProvider), downloadURLs, nil, count, format, revised)
+		if run != nil {
+			run.ReleaseDownload()
+		}
+		if err == nil {
+			return response, nil
+		}
+		if run == nil || len(run.Artifacts().ImageURLs) == 0 {
+			return response, err
+		}
 	}
 	return response, err
 }
@@ -309,10 +350,55 @@ func (e *liteUpstreamError) Response() *provider.Response {
 	return &provider.Response{StatusCode: e.StatusCode, Status: e.Status, Header: jsonHeaders(), Body: io.NopCloser(bytes.NewReader(e.Body))}
 }
 
+func downloadCredential(fallback account.Credential, run *imagepipelineapp.Run, provider imagepipelineapp.AccountProvider) account.Credential {
+	if run == nil || provider == nil {
+		return fallback
+	}
+	if id := run.Artifacts().SSAccountID; id != nil && *id > 0 {
+		return account.Credential{ID: *id}
+	}
+	return fallback
+}
+
+func (a *Adapter) maybeExpandPromptStaged(ctx context.Context, provider imagepipelineapp.AccountProvider, run *imagepipelineapp.Run, prompt string) (string, error) {
+	if run == nil || !run.NeedsPS(prompt) {
+		if run != nil {
+			run.SkipExpand()
+		}
+		return prompt, nil
+	}
+	if run.ExpandedOnce() {
+		if expanded := run.Artifacts().ExpandedPrompt; expanded != "" {
+			return expanded, nil
+		}
+	}
+	if _, err := run.AcquirePS(ctx); err != nil {
+		return "", err
+	}
+	defer run.ReleasePS()
+	lease, err := provider.AcquireForPS(ctx, run)
+	if err != nil {
+		return "", err
+	}
+	defer lease.Release()
+	revised := a.expandImagePromptDirect(ctx, lease.Credential(), prompt)
+	if revised != "" {
+		run.SetExpandedPrompt(revised)
+		run.SetPhase(domainimagepipeline.PhasePSDone)
+		return revised, nil
+	}
+	return prompt, nil
+}
+
 func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.Credential, spec ModelSpec, prompt string) (string, string, error) {
 	expanded := strings.TrimSpace(prompt)
 	run := imagepipelineapp.RunFromContext(ctx)
-	if shouldExpandImagePrompt(expanded) {
+	stageProvider := imagepipelineapp.AccountProviderFromContext(ctx)
+	if run != nil && stageProvider != nil {
+		if art := run.Artifacts(); art.ExpandedPrompt != "" {
+			expanded = art.ExpandedPrompt
+		}
+	} else if shouldExpandImagePrompt(expanded) {
 		if revised := a.expandImagePrompt(ctx, credential, expanded); revised != "" {
 			expanded = revised
 		}
@@ -320,16 +406,28 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 		run.SkipExpand()
 	}
 	for attempt := 0; attempt < 2; attempt++ {
-		if run != nil {
+		activeCredential := credential
+		var accountLease imagepipelineapp.AccountLease
+		staged := run != nil && stageProvider != nil
+		if staged {
+			if _, err := run.AcquireSS(ctx); err != nil {
+				return "", "", err
+			}
+			var acquireErr error
+			accountLease, acquireErr = stageProvider.AcquireForSS(ctx, run)
+			if acquireErr != nil {
+				run.ReleaseSS()
+				return "", "", acquireErr
+			}
+			activeCredential = accountLease.Credential()
+		} else if run != nil {
 			if err := run.AcquireSSE(ctx); err != nil {
 				return "", "", err
 			}
 		}
-		upstream, lease, _, statsigTarget, err := a.openChat(ctx, credential, "", spec, normalizedChatInput{Prompt: "Drawing: " + expanded})
+		upstream, lease, _, statsigTarget, err := a.openChat(ctx, activeCredential, "", spec, normalizedChatInput{Prompt: "Drawing: " + expanded})
 		if err != nil {
-			if run != nil {
-				run.ReleaseSSE()
-			}
+			a.releaseSSStage(run, staged, accountLease)
 			return "", "", err
 		}
 		if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
@@ -338,17 +436,13 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 			if upstream.StatusCode == http.StatusForbidden {
 				if attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, statsigTarget) {
 					lease.Release()
-					if run != nil {
-						run.ReleaseSSE()
-					}
+					a.releaseSSStage(run, staged, accountLease)
 					continue
 				}
 			}
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, upstream.StatusCode, nil)
 			lease.Release()
-			if run != nil {
-				run.ReleaseSSE()
-			}
+			a.releaseSSStage(run, staged, accountLease)
 			return "", "", &liteUpstreamError{StatusCode: upstream.StatusCode, Status: upstream.Status, Body: body}
 		}
 		firstImage := ""
@@ -364,9 +458,7 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 		if consumeErr != nil && !errors.Is(consumeErr, errLiteImageReady) {
 			if errors.Is(consumeErr, errWebUsageLimit) {
 				lease.Release()
-				if run != nil {
-					run.ReleaseSSE()
-				}
+				a.releaseSSStage(run, staged, accountLease)
 				response := jsonProviderResponse(http.StatusTooManyRequests, map[string]any{"error": map[string]any{
 					"message": "Grok Imagine 速率限制中，请稍后重试",
 					"type":    "rate_limit_error",
@@ -381,17 +473,13 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 				status = http.StatusForbidden
 				if attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, statsigTarget) {
 					lease.Release()
-					if run != nil {
-						run.ReleaseSSE()
-					}
+					a.releaseSSStage(run, staged, accountLease)
 					continue
 				}
 			}
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, status, consumeErr)
 			lease.Release()
-			if run != nil {
-				run.ReleaseSSE()
-			}
+			a.releaseSSStage(run, staged, accountLease)
 			if status == http.StatusForbidden {
 				response := antiBotProviderResponse()
 				body, _ := io.ReadAll(response.Body)
@@ -402,9 +490,13 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 		}
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, http.StatusOK, nil)
 		lease.Release()
-		if run != nil {
-			run.ReleaseSSE()
+		if run != nil && staged {
+			run.SetPhase(domainimagepipeline.PhaseSSDone)
+			if firstImage != "" {
+				run.AppendImageURL(firstImage)
+			}
 		}
+		a.releaseSSStage(run, staged, accountLease)
 		if firstImage != "" {
 			return firstImage, expanded, nil
 		}
@@ -455,15 +547,22 @@ func shouldExpandImagePrompt(prompt string) bool {
 	return len(strings.Fields(trimmed)) < 8
 }
 
-func (a *Adapter) expandImagePrompt(ctx context.Context, credential account.Credential, prompt string) string {
-	run := imagepipelineapp.RunFromContext(ctx)
-	if run != nil {
-		if err := run.AcquireExpand(ctx); err != nil {
-			return ""
-		}
-		defer run.ReleaseExpand()
+func (a *Adapter) releaseSSStage(run *imagepipelineapp.Run, staged bool, accountLease imagepipelineapp.AccountLease) {
+	if accountLease != nil {
+		accountLease.Release()
 	}
-	message := "Expand the following into a detailed English product photography prompt suitable for text-to-image. Include subject, materials, lighting, camera angle, and background. Reply ONLY with the expanded prompt, no quotes or commentary.\n\n" + prompt
+	if run == nil {
+		return
+	}
+	if staged {
+		run.ReleaseSS()
+	} else {
+		run.ReleaseSSE()
+	}
+}
+
+func (a *Adapter) expandImagePromptDirect(ctx context.Context, credential account.Credential, prompt string) string {
+	message := expandImagePromptMessage(prompt)
 	upstream, lease, _, _, err := a.openChatWithScope(ctx, credential, "", ModelSpec{Mode: "fast"}, normalizedChatInput{Prompt: message, TextOnly: true}, domainegress.ScopeWebExpand)
 	if err != nil {
 		return ""
@@ -480,6 +579,21 @@ func (a *Adapter) expandImagePrompt(ctx context.Context, credential account.Cred
 		return ""
 	}
 	return sanitizeExpandedImagePrompt(parsed.Text.String())
+}
+
+func (a *Adapter) expandImagePrompt(ctx context.Context, credential account.Credential, prompt string) string {
+	run := imagepipelineapp.RunFromContext(ctx)
+	if run != nil && imagepipelineapp.AccountProviderFromContext(ctx) == nil {
+		if err := run.AcquireExpand(ctx); err != nil {
+			return ""
+		}
+		defer run.ReleaseExpand()
+	}
+	return a.expandImagePromptDirect(ctx, credential, prompt)
+}
+
+func expandImagePromptMessage(prompt string) string {
+	return "Expand the following into a detailed English product photography prompt suitable for text-to-image. Include subject, materials, lighting, camera angle, and background. Reply ONLY with the expanded prompt, no quotes or commentary.\n\n" + prompt
 }
 
 func sanitizeExpandedImagePrompt(value string) string {
@@ -506,12 +620,20 @@ func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provide
 	}
 	count := 1
 	format := "url"
+	expandPrompt := true
+	multiImageMode := imagepipelineapp.MultiImageModeFast
 	if input.ImageConfig != nil {
 		if input.ImageConfig.Count != nil {
 			count = *input.ImageConfig.Count
 		}
 		if strings.TrimSpace(input.ImageConfig.ResponseFormat) != "" {
 			format = strings.ToLower(strings.TrimSpace(input.ImageConfig.ResponseFormat))
+		}
+		if input.ImageConfig.ExpandPrompt != nil {
+			expandPrompt = *input.ImageConfig.ExpandPrompt
+		}
+		if mode := strings.TrimSpace(strings.ToLower(input.ImageConfig.MultiImageMode)); mode != "" {
+			multiImageMode = mode
 		}
 	}
 	if count < 1 || count > maxGeneratedImages {
@@ -520,32 +642,69 @@ func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provide
 	if format != "url" && format != "b64_json" {
 		return invalidImageRequest("image_config.response_format 必须是 url 或 b64_json")
 	}
+	if multiImageMode != imagepipelineapp.MultiImageModeDiverse {
+		multiImageMode = imagepipelineapp.MultiImageModeFast
+	}
 	responseID := newWebID("resp")
 	streaming := input.Stream || request.Streaming
 	if streaming {
 		reader, writer := io.Pipe()
 		streamCtx, cancel := context.WithCancel(ctx)
-		go a.streamLiteChatImages(streamCtx, writer, request.Credential, spec, responseID, input.Model, normalized.Prompt, count, format)
+		go a.streamLiteChatImages(streamCtx, writer, request.Credential, spec, responseID, input.Model, normalized.Prompt, count, format, expandPrompt, multiImageMode)
 		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: &cancelBody{ReadCloser: reader, cancel: cancel}, QuotaUnits: count}, nil
 	}
 	parsed := parsedChat{ResponseID: responseID, InputTokens: estimateTokens(normalized.Prompt)}
-	for range count {
-		rawURL, _, err := a.generateLiteImageURL(ctx, request.Credential, spec, normalized.Prompt)
-		if err != nil {
-			var upstreamErr *liteUpstreamError
-			if errors.As(err, &upstreamErr) && parsed.Text.Len() == 0 {
-				return upstreamErr.Response(), nil
+	prompt := normalized.Prompt
+	run := imagepipelineapp.RunFromContext(ctx)
+	stageProvider := imagepipelineapp.AccountProviderFromContext(ctx)
+	if run != nil && stageProvider != nil {
+		if multiImageMode != imagepipelineapp.MultiImageModeDiverse {
+			expanded, expandErr := a.maybeExpandPromptStaged(ctx, stageProvider, run, prompt)
+			if expandErr != nil {
+				return nil, expandErr
 			}
-			return nil, err
+			prompt = expanded
 		}
-		item, err := a.imageDataItem(ctx, request.Credential, imagineImageValue{URL: rawURL}, format, "")
-		if err != nil {
-			return nil, err
+		for emitted := 0; emitted < count; emitted++ {
+			if multiImageMode == imagepipelineapp.MultiImageModeDiverse {
+				expanded, expandErr := a.maybeExpandPromptStaged(ctx, stageProvider, run, normalized.Prompt)
+				if expandErr != nil {
+					return nil, expandErr
+				}
+				prompt = expanded
+			}
+			if err := a.appendLiteChatImage(ctx, request.Credential, spec, prompt, format, &parsed); err != nil {
+				var upstreamErr *liteUpstreamError
+				if errors.As(err, &upstreamErr) {
+					return upstreamErr.Response(), nil
+				}
+				return nil, err
+			}
 		}
-		if parsed.Text.Len() > 0 {
-			parsed.Text.WriteString("\n\n")
+	} else {
+		if expandPrompt && multiImageMode != imagepipelineapp.MultiImageModeDiverse {
+			if revised := a.expandImagePrompt(ctx, request.Credential, prompt); revised != "" {
+				prompt = revised
+			}
 		}
-		parsed.Text.WriteString(liteImageMarkdown(item))
+		for emitted := 0; emitted < count; emitted++ {
+			currentPrompt := prompt
+			if multiImageMode == imagepipelineapp.MultiImageModeDiverse {
+				currentPrompt = normalized.Prompt
+				if expandPrompt {
+					if revised := a.expandImagePrompt(ctx, request.Credential, currentPrompt); revised != "" {
+						currentPrompt = revised
+					}
+				}
+			}
+			if err := a.appendLiteChatImage(ctx, request.Credential, spec, currentPrompt, format, &parsed); err != nil {
+				var upstreamErr *liteUpstreamError
+				if errors.As(err, &upstreamErr) {
+					return upstreamErr.Response(), nil
+				}
+				return nil, err
+			}
+		}
 	}
 	payload := buildOpenAIResult("chat", responseID, input.Model, parsed, false)
 	data, err := json.Marshal(payload)
@@ -555,11 +714,62 @@ func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provide
 	return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: jsonHeaders(), Body: io.NopCloser(bytes.NewReader(data)), QuotaUnits: count}, nil
 }
 
-func (a *Adapter) streamLiteChatImages(ctx context.Context, writer *io.PipeWriter, credential account.Credential, spec ModelSpec, responseID, model, prompt string, count int, format string) {
+func (a *Adapter) appendLiteChatImage(ctx context.Context, credential account.Credential, spec ModelSpec, prompt, format string, parsed *parsedChat) error {
+	rawURL, _, err := a.generateLiteImageURL(ctx, credential, spec, prompt)
+	if err != nil {
+		var upstreamErr *liteUpstreamError
+		if errors.As(err, &upstreamErr) && parsed.Text.Len() == 0 && len(parsed.Images) == 0 {
+			return upstreamErr
+		}
+		return err
+	}
+	item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: rawURL}, format, "")
+	if err != nil {
+		return err
+	}
+	if parsed.Text.Len() > 0 {
+		parsed.Text.WriteString("\n\n")
+	}
+	parsed.Text.WriteString(liteImageMarkdown(item))
+	return nil
+}
+
+func (a *Adapter) streamLiteChatImages(ctx context.Context, writer *io.PipeWriter, credential account.Credential, spec ModelSpec, responseID, model, prompt string, count int, format string, expandPrompt bool, multiImageMode string) {
 	parsed := parsedChat{ResponseID: responseID, InputTokens: estimateTokens(prompt)}
 	writeStreamStart(writer, "chat", responseID, model, parsed.InputTokens)
-	for range count {
-		rawURL, _, err := a.generateLiteImageURL(ctx, credential, spec, prompt)
+	currentPrompt := prompt
+	run := imagepipelineapp.RunFromContext(ctx)
+	stageProvider := imagepipelineapp.AccountProviderFromContext(ctx)
+	if run != nil && stageProvider != nil && multiImageMode != imagepipelineapp.MultiImageModeDiverse {
+		expanded, expandErr := a.maybeExpandPromptStaged(ctx, stageProvider, run, currentPrompt)
+		if expandErr != nil {
+			_ = writer.CloseWithError(expandErr)
+			return
+		}
+		currentPrompt = expanded
+	} else if expandPrompt && multiImageMode != imagepipelineapp.MultiImageModeDiverse {
+		if revised := a.expandImagePrompt(ctx, credential, currentPrompt); revised != "" {
+			currentPrompt = revised
+		}
+	}
+	for emitted := 0; emitted < count; emitted++ {
+		loopPrompt := currentPrompt
+		if multiImageMode == imagepipelineapp.MultiImageModeDiverse {
+			loopPrompt = prompt
+			if run != nil && stageProvider != nil {
+				expanded, expandErr := a.maybeExpandPromptStaged(ctx, stageProvider, run, loopPrompt)
+				if expandErr != nil {
+					_ = writer.CloseWithError(expandErr)
+					return
+				}
+				loopPrompt = expanded
+			} else if expandPrompt {
+				if revised := a.expandImagePrompt(ctx, credential, loopPrompt); revised != "" {
+					loopPrompt = revised
+				}
+			}
+		}
+		rawURL, _, err := a.generateLiteImageURL(ctx, credential, spec, loopPrompt)
 		if err != nil {
 			_ = writer.CloseWithError(err)
 			return
@@ -848,11 +1058,30 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 		return invalidImageRequest("response_format 必须是 url 或 b64_json")
 	}
 	cfg := a.config()
-	token, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
+	run := imagepipelineapp.RunFromContext(ctx)
+	stageProvider := imagepipelineapp.AccountProviderFromContext(ctx)
+	staged := run != nil && stageProvider != nil && run.NeedsUpload()
+	credential := request.Credential
+	var uploadLease imagepipelineapp.AccountLease
+	if staged {
+		if err := run.AcquireUpload(ctx); err != nil {
+			return nil, err
+		}
+		defer run.ReleaseUpload()
+		var acquireErr error
+		uploadLease, acquireErr = stageProvider.AcquireForUpload(ctx)
+		if acquireErr != nil {
+			return nil, acquireErr
+		}
+		defer uploadLease.Release()
+		credential = uploadLease.Credential()
+		run.SetUploadAccount(credential.ID)
+	}
+	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
 		return nil, err
 	}
-	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWeb, fmt.Sprintf("%d", request.Credential.ID))
+	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWeb, fmt.Sprintf("%d", credential.ID))
 	if err != nil {
 		return nil, err
 	}
@@ -884,8 +1113,19 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 			parentID = postID
 		}
 	}
+	if staged {
+		run.SetPhase(domainimagepipeline.PhaseUploadDone)
+	}
+	prompt := request.Prompt
+	if staged {
+		expanded, expandErr := a.maybeExpandPromptStaged(ctx, stageProvider, run, prompt)
+		if expandErr != nil {
+			return nil, expandErr
+		}
+		prompt = expanded
+	}
 	payload := map[string]any{
-		"temporary": true, "modelName": "imagine-image-edit", "message": request.Prompt,
+		"temporary": true, "modelName": "imagine-image-edit", "message": prompt,
 		"enableImageGeneration": true, "returnImageBytes": false, "returnRawGrokInXaiRequest": false,
 		"enableImageStreaming": true, "imageGenerationCount": max(2, count), "forceConcise": false,
 		"enableSideBySide": true, "sendFinalMetadata": true, "isReasoning": false,
