@@ -17,11 +17,16 @@ const STAGE_COLORS: Record<ImageTimelineStage, string> = {
 };
 
 const WINDOWS: ImageTimelineWindow[] = ["30m", "1h", "6h", "12h"];
+const CHART_MIN_SPAN_MS = 60_000;
+const CHART_MAX_SPAN_MS = 15 * 60_000;
+const CHART_FOCUS_LOOKBACK_MS = 15 * 60_000;
+const CHART_PADDING_MS = 15_000;
+const TICK_INTERVAL_MS = 60_000;
 
 export function ImageTimelinePage() {
   const { t, i18n } = useTranslation();
   const [window, setWindow] = useState<ImageTimelineWindow>("30m");
-  const [paused, setPaused] = useState(false);
+  const [paused, setPaused] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const timeline = useQuery({
     queryKey: ["image-timeline", window],
@@ -34,6 +39,7 @@ export function ImageTimelinePage() {
     if (!data) return { from: updatedAt - 30 * 60_000, to: updatedAt };
     return { from: Date.parse(data.from), to: Date.parse(data.to) };
   }, [data, updatedAt]);
+  const chartRange = useMemo(() => computeChartRange(data?.traces ?? [], range.from, range.to), [data?.traces, range.from, range.to]);
   const selected = data?.traces.find((trace) => trace.id === selectedId) ?? null;
   const lanes = data?.lanes ?? 10;
 
@@ -99,11 +105,12 @@ export function ImageTimelinePage() {
 
       {data && data.traces.length > 0 ? (
         <div className="overflow-x-auto rounded-xl border bg-card">
+          <p className="border-b px-4 py-2 text-xs text-muted-foreground">{t("imageTimeline.chartFocus")}</p>
           <GanttChartView
             lanes={lanes}
             traces={data.traces}
-            fromMs={range.from}
-            toMs={range.to}
+            fromMs={chartRange.from}
+            toMs={chartRange.to}
             nowMs={range.to}
             selectedId={selectedId}
             onSelect={setSelectedId}
@@ -142,17 +149,17 @@ function GanttChartView({
   const labelWidth = 72;
   const width = 960;
   const height = 36 + lanes * rowHeight;
-  const ticks = 6;
+  const ticks = buildMinuteTicks(fromMs, toMs);
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="min-w-[720px] w-full" role="img" aria-label={t("imageTimeline.chartLabel")}>
       <rect x={0} y={0} width={width} height={height} fill="transparent" />
-      {Array.from({ length: ticks + 1 }, (_, index) => {
-        const ratio = index / ticks;
+      {ticks.map((tickMs) => {
+        const ratio = (tickMs - fromMs) / span;
         const x = labelWidth + ratio * (width - labelWidth - 12);
-        const time = new Date(fromMs + ratio * span);
+        const time = new Date(tickMs);
         return (
-          <g key={index}>
+          <g key={tickMs}>
             <line x1={x} y1={24} x2={x} y2={height} stroke="currentColor" strokeOpacity={0.08} />
             <text x={x} y={16} textAnchor="middle" className="fill-muted-foreground" fontSize={10}>
               {time.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
@@ -321,4 +328,66 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 function formatPercent(value: number, locale: string) {
   return `${formatNumber(value * 100, locale, 0)}%`;
+}
+
+type TraceSpan = { start: number; end: number };
+
+function computeChartRange(traces: ImageTimelineTraceDTO[], windowFrom: number, windowTo: number) {
+  if (!traces.length || Number.isNaN(windowFrom) || Number.isNaN(windowTo)) {
+    return { from: windowFrom, to: windowTo };
+  }
+
+  const spans: TraceSpan[] = traces
+    .map((trace) => {
+      const start = Date.parse(trace.startedAt);
+      const end = start + Math.max(trace.totalMs, 0);
+      return Number.isNaN(start) ? null : { start, end };
+    })
+    .filter((value): value is TraceSpan => value !== null);
+
+  if (!spans.length) {
+    return { from: windowFrom, to: windowTo };
+  }
+
+  const latestEnd = Math.max(...spans.map((span) => span.end));
+  const focusCutoff = latestEnd - CHART_FOCUS_LOOKBACK_MS;
+  const focused = spans.filter((span) => span.end >= focusCutoff);
+  let from = Math.min(...focused.map((span) => span.start)) - CHART_PADDING_MS;
+  let to = Math.max(...focused.map((span) => span.end)) + CHART_PADDING_MS;
+
+  if (to - from < CHART_MIN_SPAN_MS) {
+    const mid = (from + to) / 2;
+    from = mid - CHART_MIN_SPAN_MS / 2;
+    to = mid + CHART_MIN_SPAN_MS / 2;
+  }
+  if (to - from > CHART_MAX_SPAN_MS) {
+    from = latestEnd - CHART_MAX_SPAN_MS;
+    to = latestEnd + CHART_PADDING_MS;
+  }
+
+  from = Math.max(windowFrom, from);
+  to = Math.min(windowTo, to);
+  if (to <= from) {
+    return { from: windowFrom, to: windowTo };
+  }
+  return { from, to };
+}
+
+function buildMinuteTicks(fromMs: number, toMs: number) {
+  const ticks: number[] = [];
+  if (Number.isNaN(fromMs) || Number.isNaN(toMs) || toMs <= fromMs) {
+    return ticks;
+  }
+  let cursor = Math.ceil(fromMs / TICK_INTERVAL_MS) * TICK_INTERVAL_MS;
+  while (cursor <= toMs) {
+    ticks.push(cursor);
+    cursor += TICK_INTERVAL_MS;
+  }
+  if (!ticks.length || ticks[0] > fromMs) {
+    ticks.unshift(fromMs);
+  }
+  if (ticks[ticks.length - 1] < toMs) {
+    ticks.push(toMs);
+  }
+  return ticks;
 }
