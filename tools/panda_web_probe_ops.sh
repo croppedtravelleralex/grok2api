@@ -35,10 +35,13 @@ token = os.environ["TOKEN"]
 dry = os.environ.get("DRY_RUN", "0") == "1"
 
 def call(method, path, body=None):
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
     req = urllib.request.Request(
         f"{base}{path}",
         data=None if body is None else json.dumps(body).encode(),
-        headers={"Authorization": f"Bearer {token}", "Accept": "application/json", **({} if body is None else {"Content-Type": "application/json"}))},
+        headers=headers,
         method=method,
     )
     with urllib.request.urlopen(req, timeout=120) as resp:
@@ -85,7 +88,18 @@ if not dry:
     updated = call("PUT", "/settings", {"revision": settings["revision"], "config": cfg})
     print("settings revision ->", updated["revision"])
 
-# collect deletable unauthorized chat-dead accounts
+def should_delete(item):
+    err = (item.get("lastError") or "").lower()
+    auth = item.get("authStatus") or ""
+    enabled = bool(item.get("enabled"))
+    if auth == "reauthRequired":
+        return True
+    markers = ("unauthorized", "credential rejected", "sso credential rejected", "web_dead:")
+    if any(marker in err for marker in markers) and (not enabled or auth == "reauthRequired"):
+        return True
+    return False
+
+# collect deletable chat-dead / credential-dead accounts
 delete_ids = []
 page = 1
 page_size = 200
@@ -95,19 +109,20 @@ while True:
     if not items:
         break
     for item in items:
-        err = (item.get("lastError") or "").lower()
-        auth = item.get("authStatus") or ""
-        enabled = bool(item.get("enabled"))
-        failures = int(item.get("failureCount") or 0)
-        unauthorized = "unauthorized" in err or "credential unauthorized" in err
-        if auth == "reauthRequired":
-            delete_ids.append(str(item["id"]))
-            continue
-        if unauthorized and (err.startswith("web_dead:") or not enabled or failures >= 2):
+        if should_delete(item):
             delete_ids.append(str(item["id"]))
     if len(items) < page_size:
         break
     page += 1
+
+# also include recent chat dead probe failures with credential errors
+recent = probe.get("recent", [])
+for item in recent:
+    if item.get("lane") != "chat" or item.get("outcome") != "failed":
+        continue
+    err = (item.get("error") or "").lower()
+    if "unauthorized" in err or "credential" in err:
+        delete_ids.append(str(item.get("accountId")))
 
 delete_ids = sorted(set(delete_ids), key=int)
 print("=== delete candidates ===")
