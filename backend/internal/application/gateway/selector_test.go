@@ -611,6 +611,7 @@ func TestSelectorPersistsModelOutcomeRankingAcrossRestart(t *testing.T) {
 		if createErr != nil {
 			t.Fatal(createErr)
 		}
+		seedImagineQuota(t, accounts, ctx, value.ID, 5, 10)
 		return value
 	}
 	softStopped := create("soft-stopped")
@@ -681,11 +682,14 @@ func TestSelectorTreatsZeroTotalModelQuotaAsUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
-	lease, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false)
-	if err != nil {
-		t.Fatalf("0/0 model quota should stay routable as unknown: %v", err)
+	if _, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false); err == nil {
+		t.Fatal("0/0 imagine quota should be blocked until positive upstream evidence exists")
+	} else {
+		var unavailable *SelectionUnavailableError
+		if !errors.As(err, &unavailable) || unavailable.Reason != SelectionQuotaExhausted {
+			t.Fatalf("0/0 imagine quota error = %v", err)
+		}
 	}
-	lease.Release()
 	if err := accounts.SaveQuotaWindows(ctx, credential.ID, account.WebTierBasic, now, []account.QuotaWindow{{
 		AccountID: credential.ID, Mode: "imagine", Remaining: 0, Total: 10,
 		SyncedAt: &now, Source: account.QuotaSourceUpstream, UpdatedAt: now,
@@ -714,7 +718,7 @@ func TestSelectorTreatsZeroTotalModelQuotaAsUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	selector = NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
-	lease, err = selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false)
+	lease, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false)
 	if err != nil {
 		t.Fatalf("explicit Imagine quota should take precedence over weekly: %v", err)
 	}
@@ -797,12 +801,14 @@ func TestSelectorSerializesWebLiteImagePerAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedImagineQuota(t, accounts, ctx, preferred.ID, 8, 10)
+	seedImagineQuota(t, accounts, ctx, alternate.ID, 6, 10)
 	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	if err := selector.MarkModelSuccess(ctx, preferred.ID, "grok-imagine-image"); err != nil {
 		t.Fatal(err)
 	}
 
-	first, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "", "", nil, false)
+	first, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -811,7 +817,7 @@ func TestSelectorSerializesWebLiteImagePerAccount(t *testing.T) {
 		t.Fatalf("first account = %d, want preferred %d", first.Credential.ID, preferred.ID)
 	}
 
-	second, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "", "", nil, false)
+	second, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -965,5 +971,16 @@ func TestExplorationShufflePreservesCandidateSet(t *testing.T) {
 	}
 	if len(seen) != 3 || !seen[10] || !seen[20] || !seen[30] {
 		t.Fatalf("shuffle must preserve candidate set: %#v", values)
+	}
+}
+
+func seedImagineQuota(t *testing.T, accounts *relational.AccountRepository, ctx context.Context, accountID uint64, remaining, total int) {
+	t.Helper()
+	now := time.Now().UTC()
+	if err := accounts.SaveQuotaWindows(ctx, accountID, account.WebTierBasic, now, []account.QuotaWindow{{
+		AccountID: accountID, Mode: "imagine", Remaining: remaining, Total: total,
+		SyncedAt: &now, Source: account.QuotaSourceUpstream, UpdatedAt: now,
+	}}); err != nil {
+		t.Fatal(err)
 	}
 }

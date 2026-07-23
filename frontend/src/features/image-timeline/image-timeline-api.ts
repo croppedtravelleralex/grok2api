@@ -1,7 +1,8 @@
 import { apiRequest } from "@/shared/api/client";
 import { createObjectDecoder, hasShape, isArrayOf, isBoolean, isNumber, isOptional, isString } from "@/shared/api/decoder";
 
-export type ImageTimelineWindow = "30m" | "1h" | "6h" | "12h";
+export type ImageTimelineWindow = "1m" | "30m" | "1h" | "6h" | "12h";
+export type ImageTimelineChartSpan = "1m" | "5m" | "15m" | "full";
 export type ImageTimelineStage =
   | "queue"
   | "queue_upload"

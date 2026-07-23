@@ -13,6 +13,7 @@ const (
 	webImagePoolCap = 50
 	webChatPoolCap  = 50
 	imagineUpstream = "grok-imagine-image"
+	imagineQuotaFreshTTL = 30 * time.Minute
 )
 
 // WebPoolSnapshot 描述图池 / 对话池当前调度位。
@@ -240,6 +241,19 @@ func findModelState(states []accountdomain.ModelState, upstreamModel string) *ac
 	return nil
 }
 
+func imagineQuotaFresh(window *accountdomain.QuotaWindow, now time.Time) bool {
+	if window == nil || window.Mode != "imagine" {
+		return false
+	}
+	if window.Source != accountdomain.QuotaSourceUpstream || window.Total <= 0 || window.Remaining <= 0 {
+		return false
+	}
+	if window.SyncedAt == nil || now.Sub(*window.SyncedAt) > imagineQuotaFreshTTL {
+		return false
+	}
+	return true
+}
+
 func imagePoolEligible(candidate webPoolCandidate, now time.Time) bool {
 	if !candidate.enabled || !candidate.active || candidate.cooling {
 		return false
@@ -258,7 +272,7 @@ func imagePoolEligible(candidate webPoolCandidate, now time.Time) bool {
 		}
 	}
 	if candidate.modelState == nil {
-		return true
+		return positiveQuota && imagineQuotaFresh(candidate.imagineWindow, now)
 	}
 	switch candidate.modelState.Status {
 	case accountdomain.ModelStatusAuthFailed, accountdomain.ModelStatusSignatureFailed, accountdomain.ModelStatusQuotaExhausted:

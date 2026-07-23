@@ -48,6 +48,8 @@ func (h *Handler) timeline(c *gin.Context) {
 	}
 	if window := c.Query("window"); window != "" {
 		switch window {
+		case "1m":
+			from = to.Add(-time.Minute)
 		case "30m":
 			from = to.Add(-30 * time.Minute)
 		case "1h":
@@ -57,7 +59,7 @@ func (h *Handler) timeline(c *gin.Context) {
 		case "12h":
 			from = to.Add(-12 * time.Hour)
 		default:
-			response.Error(c, http.StatusBadRequest, "invalidWindow", "window 必须是 30m、1h、6h 或 12h")
+			response.Error(c, http.StatusBadRequest, "invalidWindow", "window 必须是 1m、30m、1h、6h 或 12h")
 			return
 		}
 	}

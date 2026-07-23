@@ -39,6 +39,7 @@ const modelSoftStopMaxCooldown = 5 * time.Minute
 const modelOutcomeRetention = time.Hour
 const webLiteImageUpstreamModel = "grok-imagine-image"
 const defaultExplorationEpsilon = 0.05
+const imagineQuotaFreshTTL = 30 * time.Minute
 
 type candidateSnapshot struct {
 	values    []account.RoutingCandidate
@@ -256,6 +257,14 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 			quotaCandidates++
 			if candidate.QuotaWindow.ResetAt != nil {
 				earliestRetry = earlierFuture(earliestRetry, *candidate.QuotaWindow.ResetAt, now)
+			}
+			continue
+		}
+		if requiresImagineQuotaAdmission(upstreamModel, quotaMode) && !candidateImagineQuotaAdmissible(candidate, now) {
+			quotaCandidates++
+			if candidate.QuotaWindow != nil && candidate.QuotaWindow.SyncedAt != nil {
+				retryAt := candidate.QuotaWindow.SyncedAt.Add(imagineQuotaFreshTTL)
+				earliestRetry = earlierFuture(earliestRetry, retryAt, now)
 			}
 			continue
 		}
@@ -504,6 +513,9 @@ func (s *Selector) AcquirePinned(ctx context.Context, provider account.Provider,
 					retryAfter = retryDelay(now, *candidate.QuotaWindow.ResetAt)
 				}
 				return nil, &SelectionUnavailableError{Reason: SelectionQuotaExhausted, RetryAfter: retryAfter}
+			}
+			if requiresImagineQuotaAdmission(upstreamModel, quotaMode) && !candidateImagineQuotaAdmissible(candidate, now) {
+				return nil, &SelectionUnavailableError{Reason: SelectionQuotaExhausted}
 			}
 		}
 		lease, err := s.acquirePinnedCapacity(ctx, value, upstreamModel)
@@ -1036,6 +1048,7 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 	}
 	s.mu.Unlock()
 	remaining := make(map[uint64]float64, len(values))
+	imagineRemaining := make(map[uint64]int, len(values))
 	fresh := make(map[uint64]bool, len(values))
 	inFlight := make(map[uint64]int, len(values))
 	concurrencyKeys := make([]string, 0, len(values))
@@ -1069,6 +1082,9 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 			remaining[value.ID] = candidate.Billing.Remaining()
 			fresh[value.ID] = now.Sub(candidate.Billing.SyncedAt) <= 30*time.Minute
 		}
+		if candidate.QuotaWindow != nil && candidate.QuotaWindow.Mode == "imagine" {
+			imagineRemaining[value.ID] = candidate.QuotaWindow.Remaining
+		}
 	}
 	sort.SliceStable(values, func(i, j int) bool {
 		leftCandidate, rightCandidate := values[i], values[j]
@@ -1100,6 +1116,16 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 		}
 		if leftRank != rightRank {
 			return leftRank < rightRank
+		}
+		if strings.EqualFold(upstreamModel, webLiteImageUpstreamModel) {
+			leftImagine, leftOK := imagineRemaining[left.ID]
+			rightImagine, rightOK := imagineRemaining[right.ID]
+			if leftOK != rightOK {
+				return leftOK
+			}
+			if leftImagine != rightImagine {
+				return leftImagine > rightImagine
+			}
 		}
 		if left.Priority != right.Priority {
 			return left.Priority > right.Priority
@@ -1182,4 +1208,28 @@ func shuffleRoutingCandidates(values []account.RoutingCandidate, random func() f
 		}
 		values[i], values[j] = values[j], values[i]
 	}
+}
+
+func requiresImagineQuotaAdmission(upstreamModel, quotaMode string) bool {
+	if strings.EqualFold(strings.TrimSpace(upstreamModel), webLiteImageUpstreamModel) {
+		return true
+	}
+	return strings.TrimSpace(quotaMode) == "imagine"
+}
+
+func candidateImagineQuotaAdmissible(candidate account.RoutingCandidate, now time.Time) bool {
+	window := candidate.QuotaWindow
+	if window == nil || window.Mode != "imagine" {
+		return false
+	}
+	if window.Source != account.QuotaSourceUpstream {
+		return false
+	}
+	if window.Total <= 0 || window.Remaining <= 0 {
+		return false
+	}
+	if window.SyncedAt == nil || now.Sub(*window.SyncedAt) > imagineQuotaFreshTTL {
+		return false
+	}
+	return true
 }

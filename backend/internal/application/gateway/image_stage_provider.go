@@ -99,6 +99,24 @@ func (p *stageAccountProvider) acquire(ctx context.Context, run *imagepipelineap
 			lastErr = err
 			continue
 		}
+		if p.upstream == webLiteImageUpstreamModel && p.service.accounts != nil {
+			refreshed, refreshErr := p.service.accounts.RefreshQuotaMode(ctx, lease.Credential.ID, "imagine")
+			if refreshErr != nil {
+				lease.Release()
+				excluded[lease.Credential.ID] = true
+				p.excluded[lease.Credential.ID] = true
+				lastErr = refreshErr
+				continue
+			}
+			if refreshed.Total <= 0 || refreshed.Remaining <= 0 {
+				lease.Release()
+				excluded[lease.Credential.ID] = true
+				p.excluded[lease.Credential.ID] = true
+				lastErr = fmt.Errorf("imagine quota exhausted after refresh")
+				continue
+			}
+			p.service.selector.MarkQuotaStateChanged(p.provider)
+		}
 		credential, err := p.ensureCred(ctx, lease.Credential)
 		if err != nil {
 			lease.Release()

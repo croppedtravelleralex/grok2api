@@ -28,18 +28,25 @@ func TestSelectWebPoolIDsRespectsCapAndOrdering(t *testing.T) {
 	}
 }
 
-func TestImagePoolEligibilityKeepsUnknownImagineQuotaRoutable(t *testing.T) {
+func TestImagePoolEligibilityRequiresFreshPositiveImagineQuota(t *testing.T) {
 	now := time.Now().UTC()
+	synced := now.Add(-5 * time.Minute)
+	freshWindow := func(total, remaining int) *accountdomain.QuotaWindow {
+		return &accountdomain.QuotaWindow{
+			Mode: "imagine", Total: total, Remaining: remaining,
+			SyncedAt: &synced, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: synced,
+		}
+	}
 	tests := []struct {
 		name      string
 		candidate webPoolCandidate
 		want      bool
 	}{
-		{name: "zero over zero is unknown", candidate: webPoolCandidate{enabled: true, active: true, imagineWindow: &accountdomain.QuotaWindow{Total: 0, Remaining: 0}}, want: true},
-		{name: "known zero is exhausted", candidate: webPoolCandidate{enabled: true, active: true, imagineWindow: &accountdomain.QuotaWindow{Total: 10, Remaining: 0}}, want: false},
-		{name: "known positive is available", candidate: webPoolCandidate{enabled: true, active: true, imagineWindow: &accountdomain.QuotaWindow{Total: 10, Remaining: 3}}, want: true},
+		{name: "zero over zero is blocked", candidate: webPoolCandidate{enabled: true, active: true, imagineWindow: freshWindow(0, 0)}, want: false},
+		{name: "known zero is exhausted", candidate: webPoolCandidate{enabled: true, active: true, imagineWindow: freshWindow(10, 0)}, want: false},
+		{name: "known positive is available", candidate: webPoolCandidate{enabled: true, active: true, imagineWindow: freshWindow(10, 3)}, want: true},
 		{name: "signature failure is unavailable", candidate: webPoolCandidate{enabled: true, active: true, modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusSignatureFailed}}, want: false},
-		{name: "old quota exhaustion cleared by positive refresh", candidate: webPoolCandidate{enabled: true, active: true, imagineBlocked: true, imagineWindow: &accountdomain.QuotaWindow{Total: 10, Remaining: 3}, modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusQuotaExhausted}}, want: true},
+		{name: "old quota exhaustion cleared by positive refresh", candidate: webPoolCandidate{enabled: true, active: true, imagineBlocked: true, imagineWindow: freshWindow(10, 3), modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusQuotaExhausted}}, want: true},
 		{name: "active soft stop is unavailable", candidate: webPoolCandidate{enabled: true, active: true, modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusSoftStop, CooldownUntil: timePointer(now.Add(time.Minute))}}, want: false},
 	}
 	for _, test := range tests {
