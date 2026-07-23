@@ -996,7 +996,9 @@ finalizeResponse:
 		_ = s.accounts.MarkReauthRequired(ctx, credential.ID, fmt.Sprintf("%s SSO credential rejected", credential.Provider))
 		s.selector.MarkFailure(ctx, credential, http.StatusUnauthorized, 0)
 	}
-	effectiveQuotaMode = lease.QuotaMode
+	if lease != nil && lease.QuotaMode != "" {
+		effectiveQuotaMode = lease.QuotaMode
+	}
 	accountID := credential.ID
 	var once sync.Once
 	finalize := func(_ Usage, _ string, errorCode string) {
