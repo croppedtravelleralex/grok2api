@@ -68,4 +68,16 @@ type AccountRepository interface {
 	ListDueQuotaWindows(ctx context.Context, now time.Time, limit int) ([]account.QuotaWindow, error)
 	ListQuotaRecoveryWindows(ctx context.Context, limit int) ([]account.QuotaWindow, error)
 	ListStaleWebQuotaAccountIDs(ctx context.Context, before time.Time, limit int) ([]uint64, error)
+	SummarizeWebLaneQuota(ctx context.Context) (WebLaneQuotaSummary, error)
+}
+
+type WebLaneQuotaSummary struct {
+	EnabledAccounts   int
+	ChatRemaining     int
+	ChatTotal         int
+	ChatKnownAccounts int
+	ImageRemaining    int
+	ImageTotal        int
+	ImageKnownAccounts int
+	ImageUnknownAccounts int
 }

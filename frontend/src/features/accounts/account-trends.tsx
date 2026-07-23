@@ -88,7 +88,10 @@ export function AccountTrends({ provider }: { provider: AccountProvider }) {
               </LineChart>
             </ChartContainer>
           </TrendPanel>
-          <TrendPanel title={t("accounts.trendQuotaTitle")}>
+          <TrendPanel title={provider === "grok_web" ? t("accounts.trendQuotaWebTitle") : t("accounts.trendQuotaTitle")}>
+            {provider === "grok_web" ? (
+              <p className="mb-2 text-[11px] text-muted-foreground">{t("accounts.trendQuotaWebNote")}</p>
+            ) : null}
             <ChartContainer config={quotaConfig} className="h-56 w-full aspect-auto">
               <AreaChart data={points} margin={{ left: -12, right: 8, top: 8 }}>
                 <CartesianGrid vertical={false} />

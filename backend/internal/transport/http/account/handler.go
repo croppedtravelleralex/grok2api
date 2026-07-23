@@ -134,6 +134,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.PATCH("/accounts/build-probe", h.updateBuildProbe)
 	router.GET("/accounts/web-probe", h.webProbeStatus)
 	router.PATCH("/accounts/web-probe", h.webProbeStatus)
+	router.GET("/accounts/web-lane-quota", h.webLaneQuotaSummary)
 	router.GET("/accounts/export", h.exportCredentials)
 	router.GET("/accounts/:id", h.get)
 	router.POST("/accounts/device/start", h.startDevice)
@@ -386,6 +387,20 @@ func (h *Handler) summary(c *gin.Context) {
 		},
 		"recovery": gin.H{"cooldown": value.Recovery.Cooldown, "waitingReset": value.Recovery.WaitingReset, "probing": value.Recovery.Probing},
 		"issues":   gin.H{"disabled": value.Issues.Disabled, "reauthRequired": value.Issues.ReauthRequired},
+	})
+}
+
+func (h *Handler) webLaneQuotaSummary(c *gin.Context) {
+	value, err := h.service.WebLaneQuotaSummary(c.Request.Context())
+	if err != nil {
+		h.writeServiceError(c, "webLaneQuotaSummaryFailed", err, http.StatusInternalServerError, "读取 Web 双轨额度失败")
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{
+		"enabledAccounts": value.EnabledAccounts,
+		"chatRemaining":   value.ChatRemaining, "chatTotal": value.ChatTotal, "chatKnownAccounts": value.ChatKnownAccounts,
+		"imageRemaining": value.ImageRemaining, "imageTotal": value.ImageTotal,
+		"imageKnownAccounts": value.ImageKnownAccounts, "imageUnknownAccounts": value.ImageUnknownAccounts,
 	})
 }
 

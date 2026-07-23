@@ -70,6 +70,7 @@ import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/accoun
 import { AccountTrends } from "@/features/accounts/account-trends";
 import { BuildProbePanel } from "@/features/accounts/build-probe-panel";
 import { WebProbePanel } from "@/features/accounts/web-probe-panel";
+import { WebLaneQuotaPanel } from "@/features/accounts/web-lane-quota-panel";
 
 function isAbortError(error: unknown): boolean {
   return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
@@ -598,6 +599,7 @@ export function AccountsPage() {
         <AccountMetricPanel icon={<Webhook />} loading={summaryLoading} label={t("accounts.consoleAccountCount")} value={summaryUnavailable ? "-" : formatNumber(consoleSummary.total, i18n.language, 0)} detail={t("accounts.routableAccountCount", { count: formatNumber(consoleSummary.available, i18n.language, 0) })} />
         <AccountMetricPanel icon={<TriangleAlert />} loading={summaryLoading} label={t("accounts.abnormalAccountCount")} value={summaryUnavailable ? "-" : formatNumber(abnormalAccounts, i18n.language, 0)} detail={t("accounts.abnormalAccountBreakdown", { recovering: formatNumber(recoveringAccounts, i18n.language, 0), attention: formatNumber(attentionAccounts, i18n.language, 0) })} />
       </section>
+      {provider === "grok_web" ? <WebLaneQuotaPanel refreshKey={accountsQuery.dataUpdatedAt} /> : null}
       <AccountTrends provider={provider} />
       <div className="space-y-6">
         <Tabs value={provider} onValueChange={(value) => changeProvider(value as AccountProvider)}>

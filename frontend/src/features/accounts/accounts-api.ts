@@ -156,6 +156,17 @@ export type AccountAnalyticsDTO = {
   points: AccountAnalyticsPointDTO[];
 };
 
+export type WebLaneQuotaSummaryDTO = {
+  enabledAccounts: number;
+  chatRemaining: number;
+  chatTotal: number;
+  chatKnownAccounts: number;
+  imageRemaining: number;
+  imageTotal: number;
+  imageKnownAccounts: number;
+  imageUnknownAccounts: number;
+};
+
 export type WebProbeLane = "image" | "chat";
 export type WebProbeMode = "dispatch" | "recoveryVerify" | "recoveryCooldown" | "dead";
 export type WebProbeOutcome = "dispatchOk" | "recoveryOk" | "deadOk" | "cooldown" | "failed";
@@ -420,6 +431,10 @@ const accountAnalyticsPointValidator = hasShape({
 const decodeAccountAnalytics = createObjectDecoder<AccountAnalyticsDTO>("account analytics", {
   from: isString, to: isString, intervalMinutes: isNumber, points: isArrayOf(accountAnalyticsPointValidator),
 });
+const decodeWebLaneQuotaSummary = createObjectDecoder<WebLaneQuotaSummaryDTO>("web lane quota summary", {
+  enabledAccounts: isNumber, chatRemaining: isNumber, chatTotal: isNumber, chatKnownAccounts: isNumber,
+  imageRemaining: isNumber, imageTotal: isNumber, imageKnownAccounts: isNumber, imageUnknownAccounts: isNumber,
+});
 const decodeAccountReauthenticate = createObjectDecoder<AccountReauthenticateResultDTO>("account reauthentication", {
   account: accountValidator, synced: isNumber, syncFailed: isNumber,
 });
@@ -475,6 +490,10 @@ export function updateBuildProbePurgeApply(purgeApply: boolean): Promise<BuildPr
 
 export function getWebProbeStatus(): Promise<WebProbeStatusDTO> {
   return apiRequest("/api/admin/v1/accounts/web-probe", {}, decodeWebProbeStatus);
+}
+
+export function getWebLaneQuotaSummary(): Promise<WebLaneQuotaSummaryDTO> {
+  return apiRequest("/api/admin/v1/accounts/web-lane-quota", {}, decodeWebLaneQuotaSummary);
 }
 
 export function updateAccount(id: string, input: AccountUpdateInput): Promise<AccountDTO> {

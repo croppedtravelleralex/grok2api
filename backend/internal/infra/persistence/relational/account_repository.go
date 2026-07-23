@@ -1100,6 +1100,57 @@ func (r *AccountRepository) ListStaleWebQuotaAccountIDs(ctx context.Context, bef
 	return ids, err
 }
 
+func (r *AccountRepository) SummarizeWebLaneQuota(ctx context.Context) (repository.WebLaneQuotaSummary, error) {
+	type quotaRow struct {
+		AccountID uint64
+		Mode      string
+		Remaining int
+		Total     int
+	}
+	var rows []quotaRow
+	if err := r.db.db.WithContext(ctx).Table("account_quota_windows AS q").
+		Select("q.account_id, q.mode, q.remaining, q.total").
+		Joins("JOIN provider_accounts AS a ON a.id = q.account_id").
+		Where("a.provider = ? AND a.enabled = 1", string(account.ProviderWeb)).
+		Where("q.mode IN ?", []string{"fast", "auto", "expert", "heavy", "imagine"}).
+		Scan(&rows).Error; err != nil {
+		return repository.WebLaneQuotaSummary{}, err
+	}
+	var enabled int64
+	if err := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Where("provider = ? AND enabled = 1", string(account.ProviderWeb)).
+		Count(&enabled).Error; err != nil {
+		return repository.WebLaneQuotaSummary{}, err
+	}
+
+	summary := repository.WebLaneQuotaSummary{EnabledAccounts: int(enabled)}
+	chatKnown := make(map[uint64]struct{})
+	for _, row := range rows {
+		switch row.Mode {
+		case "fast", "auto", "expert", "heavy":
+			if row.Total > 0 || row.Remaining > 0 {
+				chatKnown[row.AccountID] = struct{}{}
+			}
+			summary.ChatRemaining += row.Remaining
+			summary.ChatTotal += row.Total
+		case "imagine":
+			if row.Total <= 0 && row.Remaining <= 0 {
+				summary.ImageUnknownAccounts++
+				continue
+			}
+			summary.ImageKnownAccounts++
+			if remaining, ok := account.ImagineGenerations(row.Remaining, row.Total); ok {
+				summary.ImageRemaining += remaining
+			}
+			if total, ok := account.ImagineGenerationsTotal(row.Total); ok {
+				summary.ImageTotal += total
+			}
+		}
+	}
+	summary.ChatKnownAccounts = len(chatKnown)
+	return summary, nil
+}
+
 func toQuotaWindowDomain(row quotaWindowModel) account.QuotaWindow {
 	var serializedBreakdown []quotaBreakdownJSON
 	_ = json.Unmarshal([]byte(row.BreakdownJSON), &serializedBreakdown)
