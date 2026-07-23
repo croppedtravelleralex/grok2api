@@ -17,6 +17,7 @@ import (
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
+	imagepipelineapp "github.com/chenyme/grok2api/backend/internal/application/imagepipeline"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
@@ -184,6 +185,27 @@ func TestImageExecutionAttemptLimitOnlyExpandsWebLiteSoftStopBudget(t *testing.T
 	}
 	if got := imageSoftStopRetryDelay(4); got != 4*time.Second {
 		t.Fatalf("capped soft-stop delay=%s, want 4s", got)
+	}
+}
+
+func TestStagedImageSoftStopUsesFullAttemptBudget(t *testing.T) {
+	attempts := imageExecutionAttemptLimit(account.ProviderWeb, audit.OperationImage, 3)
+	retry, code, softStop := imageExecutionErrorPolicy(fmt.Errorf("%w: test", provider.ErrImageSoftStop), 0, attempts)
+	if !retry || code != "soft_stop" || !softStop {
+		t.Fatalf("first staged soft-stop should retry with full budget, got retry=%v code=%q softStop=%v", retry, code, softStop)
+	}
+	retry, _, _ = imageExecutionErrorPolicy(fmt.Errorf("%w: test", provider.ErrImageSoftStop), attempts-1, attempts)
+	if retry {
+		t.Fatal("final staged soft-stop attempt must not retry")
+	}
+}
+
+func TestPipelineAttemptAccountIDPrefersSSAccount(t *testing.T) {
+	ssID := uint64(42)
+	run := &imagepipelineapp.Run{}
+	run.SetSSAccount(ssID)
+	if got := pipelineAttemptAccountID(run); got != ssID {
+		t.Fatalf("pipelineAttemptAccountID() = %d, want %d", got, ssID)
 	}
 }
 

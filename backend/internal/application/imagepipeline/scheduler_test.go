@@ -326,3 +326,12 @@ func waitForSnapshot(t *testing.T, scheduler *Scheduler, ok func(domain.Snapshot
 	}
 	t.Fatal("等待快照条件超时")
 }
+
+func TestPrepareRetryClearsSoftStop(t *testing.T) {
+	run := &Run{}
+	run.MarkSoftStop()
+	run.PrepareRetry()
+	if run.trace.SoftStop {
+		t.Fatal("PrepareRetry should clear soft stop marker")
+	}
+}

@@ -41,10 +41,14 @@ type stageAccountProvider struct {
 	ensureCred func(context.Context, accountdomain.Credential) (accountdomain.Credential, error)
 }
 
-func (s *Service) newStageAccountProvider(run *imagepipelineapp.Run, route accountdomain.Provider, upstream, quotaMode string, attempts int, markSelection func(time.Duration), ensureCred func(context.Context, accountdomain.Credential) (accountdomain.Credential, error)) *stageAccountProvider {
+func (s *Service) newStageAccountProvider(run *imagepipelineapp.Run, route accountdomain.Provider, upstream, quotaMode string, attempts int, excluded map[uint64]bool, markSelection func(time.Duration), ensureCred func(context.Context, accountdomain.Credential) (accountdomain.Credential, error)) *stageAccountProvider {
+	sharedExcluded := excluded
+	if sharedExcluded == nil {
+		sharedExcluded = make(map[uint64]bool)
+	}
 	return &stageAccountProvider{
 		service: s, provider: route, upstream: upstream, quotaMode: quotaMode, run: run,
-		excluded: make(map[uint64]bool), attempts: attempts, markTiming: markSelection, ensureCred: ensureCred,
+		excluded: sharedExcluded, attempts: attempts, markTiming: markSelection, ensureCred: ensureCred,
 	}
 }
 

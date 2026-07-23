@@ -691,6 +691,13 @@ func (r *Run) MarkSoftStop() {
 	r.mu.Unlock()
 }
 
+// PrepareRetry clears transient failure markers before another staged upstream attempt.
+func (r *Run) PrepareRetry() {
+	r.mu.Lock()
+	r.trace.SoftStop = false
+	r.mu.Unlock()
+}
+
 func (r *Run) Finish(status domain.Status, errorCode string, softStop bool) {
 	ended := time.Now().UTC()
 	heldStages := r.finishLocked(status, errorCode, ended)

@@ -858,16 +858,65 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 			timing.markCredential(time.Since(credStart))
 			return cred, credErr
 		}
-		stageProvider := s.newStageAccountProvider(pipelineRun, route.Provider, route.UpstreamModel, quotaMode, attempts, timing.markSelection, ensureCred)
-		ctx = imagepipelineapp.WithAccountProvider(ctx, stageProvider)
-		upstreamStart := time.Now()
-		response, err = execute(ctx, adapter, accountdomain.Credential{}, route.UpstreamModel)
-		timing.markUpstream(time.Since(upstreamStart))
-		if err != nil {
-			_, errorCode, softStop := imageExecutionErrorPolicy(err, 0, 1)
+		stageExcluded := make(map[uint64]bool)
+		var stagedErr error
+		for attempt := 0; attempt < attempts; attempt++ {
+			if attempt > 0 && pipelineRun != nil {
+				pipelineRun.PrepareRetry()
+			}
+			stageProvider := s.newStageAccountProvider(pipelineRun, route.Provider, route.UpstreamModel, quotaMode, attempts, stageExcluded, timing.markSelection, ensureCred)
+			attemptCtx := imagepipelineapp.WithAccountProvider(ctx, stageProvider)
+			upstreamStart := time.Now()
+			response, err = execute(attemptCtx, adapter, accountdomain.Credential{}, route.UpstreamModel)
+			timing.markUpstream(time.Since(upstreamStart))
+			if err == nil {
+				stagedErr = nil
+				break
+			}
+			stagedErr = err
+			retry, errorCode, softStop := imageExecutionErrorPolicy(err, attempt, attempts)
+			accountID := pipelineAttemptAccountID(pipelineRun)
+			if softStop {
+				if accountID != 0 {
+					if stateErr := s.selector.MarkModelSoftStop(ctx, accountID, route.UpstreamModel); stateErr != nil {
+						s.logger.Warn("image_model_state_persist_failed", "event_id", eventID, "request_id", requestID, "account_id", accountID, "model", route.UpstreamModel, "status", accountdomain.ModelStatusSoftStop, "error", stateErr)
+					}
+					stageExcluded[accountID] = true
+				}
+				s.logger.Warn("image_upstream_soft_stop", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", accountID, "attempt", attempt+1, "staged", true)
+			} else {
+				s.logger.Error("image_upstream_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", accountID, "error", err, "staged", true)
+				if accountID != 0 {
+					s.selector.MarkFailure(ctx, accountdomain.Credential{ID: accountID}, 0, 0)
+					stageExcluded[accountID] = true
+				}
+			}
+			if !retry {
+				finishPipeline(imagedomain.StatusFailed, errorCode, softStop)
+				timing.finish(s.logger, errorCode)
+				return nil, err
+			}
+			delay := imageSoftStopRetryDelay(attempt)
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				finishPipeline(imagedomain.StatusCanceled, "retry_canceled", softStop)
+				timing.finish(s.logger, "retry_canceled")
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+		if stagedErr != nil {
+			_, errorCode, softStop := imageExecutionErrorPolicy(stagedErr, attempts-1, attempts)
 			finishPipeline(imagedomain.StatusFailed, errorCode, softStop)
 			timing.finish(s.logger, errorCode)
-			return nil, err
+			return nil, stagedErr
 		}
 		if pipelineRun != nil {
 			trace := pipelineRun.Artifacts()
@@ -1092,6 +1141,23 @@ func imageExecutionAttemptLimit(providerValue accountdomain.Provider, operation 
 func imageSoftStopRetryDelay(attempt int) time.Duration {
 	delay := time.Second << min(max(0, attempt), 2)
 	return min(delay, 4*time.Second)
+}
+
+func pipelineAttemptAccountID(run *imagepipelineapp.Run) uint64 {
+	if run == nil {
+		return 0
+	}
+	art := run.Artifacts()
+	if art.SSAccountID != nil {
+		return *art.SSAccountID
+	}
+	if art.PSAccountID != nil {
+		return *art.PSAccountID
+	}
+	if art.UploadAccountID != nil {
+		return *art.UploadAccountID
+	}
+	return 0
 }
 
 func (s *Service) cancelBillingReservation(eventID string) {

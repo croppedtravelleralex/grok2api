@@ -509,7 +509,7 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 		if len(parsed.Images) == 0 {
 			diagnostics := inspectLiteCapture(capture.Bytes())
 			a.log().Warn("web_lite_image_not_found",
-				"account_id", credential.ID,
+				"account_id", activeCredential.ID,
 				"captured_bytes", len(capture.Bytes()),
 				"frames", diagnostics.Frames,
 				"response_fields", diagnostics.ResponseFields,
