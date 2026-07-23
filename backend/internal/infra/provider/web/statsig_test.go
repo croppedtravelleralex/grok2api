@@ -132,11 +132,11 @@ func TestStatsigSignerRefreshesSignaturePerRequestAndCachesMeta(t *testing.T) {
 		body, _ := json.Marshal(map[string]string{"x-statsig-id": encoded})
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(body))), Header: http.Header{}}, nil
 	})}
-	first, _, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token-a", nil, http.MethodPost, "https://grok.com/rest/test")
+	first, _, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token-a", nil, http.MethodPost, "https://grok.com/rest/test", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, _, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token-b", nil, http.MethodPost, "https://grok.com/rest/test")
+	second, _, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token-b", nil, http.MethodPost, "https://grok.com/rest/test", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestStatsigSignerRefreshesSignaturePerRequestAndCachesMeta(t *testing.T) {
 	}
 
 	now = now.Add(time.Hour)
-	third, _, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token-b", nil, http.MethodPost, "https://grok.com/rest/test")
+	third, _, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token-b", nil, http.MethodPost, "https://grok.com/rest/test", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestStatsigSignerRefreshesSignaturePerRequestAndCachesMeta(t *testing.T) {
 	}
 
 	signer.Invalidate("https://grok.com", "https://signer.example/sign", http.MethodPost, "https://grok.com/rest/test")
-	fourth, _, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token-a", nil, http.MethodPost, "https://grok.com/rest/test")
+	fourth, _, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token-a", nil, http.MethodPost, "https://grok.com/rest/test", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestStatsigSignerRefreshesSignaturePerRequestAndCachesMeta(t *testing.T) {
 		t.Fatalf("invalidation fetches=%d third=%q fourth=%q", fetches, third, fourth)
 	}
 
-	if _, _, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token-a", nil, http.MethodPost, "https://grok.com/rest/other"); err != nil {
+	if _, _, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token-a", nil, http.MethodPost, "https://grok.com/rest/other", ""); err != nil {
 		t.Fatal(err)
 	}
 	if fetches != 3 || len(signedMeta) != 5 {
@@ -253,7 +253,7 @@ func TestStatsigSignerUsesExpiredMetaOnlyToMintFreshSignature(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(body))), Header: http.Header{}}, nil
 	})}
 
-	value, source, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token", nil, http.MethodPost, "https://grok.com/rest/chat")
+	value, source, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token", nil, http.MethodPost, "https://grok.com/rest/chat", "")
 	if err != nil || source != "stale" || !validStatsigID(value) {
 		t.Fatalf("value=%q source=%q err=%v", value, source, err)
 	}
@@ -272,7 +272,7 @@ func TestStatsigInvalidationDoesNotReuseRejectedValue(t *testing.T) {
 		return "", errors.New("signer unavailable")
 	}
 	signer.Invalidate("https://grok.com", "https://signer.example/sign", http.MethodPost, "https://grok.com/rest/test")
-	value, source, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token", nil, http.MethodPost, "https://grok.com/rest/test")
+	value, source, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token", nil, http.MethodPost, "https://grok.com/rest/test", "")
 	if err == nil || value != "" || source != "" {
 		t.Fatalf("value=%q source=%q err=%v", value, source, err)
 	}

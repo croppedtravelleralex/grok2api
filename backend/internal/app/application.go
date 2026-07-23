@@ -16,6 +16,7 @@ import (
 	accountsyncapp "github.com/chenyme/grok2api/backend/internal/application/accountsync"
 	"github.com/chenyme/grok2api/backend/internal/application/adminauth"
 	auditapp "github.com/chenyme/grok2api/backend/internal/application/audit"
+	chrometicketapp "github.com/chenyme/grok2api/backend/internal/application/chrometicket"
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
 	dashboardapp "github.com/chenyme/grok2api/backend/internal/application/dashboard"
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
@@ -63,6 +64,7 @@ type Application struct {
 	modelRepo     repository.ModelRepository
 	providers     *provider.Registry
 	web           *webprovider.Adapter
+	chromeTickets *chrometicketapp.Pool
 	startup       *startupState
 }
 
@@ -104,6 +106,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	mediaJobRepo := relational.NewMediaJobRepository(database)
 	mediaAssetRepo := relational.NewMediaAssetRepository(database)
 	imagePipelineRepo := relational.NewImagePipelineRepository(database)
+	chromeTicketRepo := relational.NewChromeTicketRepository(database)
+	chromeTicketPool := chrometicketapp.NewPool(chromeTicketRepo, logger)
 	config.ApplyWebProbeEnvOverrides(&cfg.WebProbe)
 	loadedConfig, settingsUpdatedAt, settingsRevision, err := settingsapp.LoadPersisted(ctx, cfg, runtimeSettingsRepo)
 	if err != nil {
@@ -165,6 +169,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	cliAdapter.SetEgress(egressManager)
 	webAdapter := webprovider.NewAdapter(webProviderConfig(cfg), egressManager, cipher, responseRepo, mediaService)
 	webAdapter.SetLogger(logger)
+	webAdapter.SetChromeTicketPool(chromeTicketPool)
 	consoleAdapter := consoleprovider.NewAdapter(consoleProviderConfig(cfg), egressManager, cipher)
 	providers := provider.NewRegistry(cliAdapter, webAdapter, consoleAdapter)
 	if err := providers.Validate(); err != nil {
@@ -302,13 +307,13 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	readiness := func(readyCtx context.Context) httpserver.ReadinessSnapshot {
 		return readinessSnapshot(readyCtx, startup, runtimeHealth, modelRepo, accountRepo, providers)
 	}
-	router := httpserver.New(httpserver.Dependencies{Logger: logger, RequestTimeout: cfg.Server.RequestTimeout.Value(), MaxBodyBytes: cfg.Server.MaxBodyBytes, SecureCookies: cfg.Auth.SecureCookies, SwaggerEnabled: cfg.Server.SwaggerEnabled, PublicAPIBaseURL: cfg.Frontend.PublicAPIBaseURL, FrontendStaticPath: cfg.Frontend.StaticPath, Readiness: readiness, TrafficReady: startup.acceptsTraffic, AdminAuth: adminService, Accounts: accountService, AccountSync: accountSyncService, Models: modelService, ClientKeys: clientKeyService, Audits: auditService, Dashboard: dashboardService, Gateway: gatewayService, Media: mediaService, Settings: settingsService, Egress: egressService, ImagePipeline: imagePipeline})
+	router := httpserver.New(httpserver.Dependencies{Logger: logger, RequestTimeout: cfg.Server.RequestTimeout.Value(), MaxBodyBytes: cfg.Server.MaxBodyBytes, SecureCookies: cfg.Auth.SecureCookies, SwaggerEnabled: cfg.Server.SwaggerEnabled, PublicAPIBaseURL: cfg.Frontend.PublicAPIBaseURL, FrontendStaticPath: cfg.Frontend.StaticPath, Readiness: readiness, TrafficReady: startup.acceptsTraffic, AdminAuth: adminService, Accounts: accountService, AccountSync: accountSyncService, Models: modelService, ClientKeys: clientKeyService, Audits: auditService, Dashboard: dashboardService, Gateway: gatewayService, Media: mediaService, Settings: settingsService, Egress: egressService, ImagePipeline: imagePipeline, ChromeTickets: chromeTicketPool})
 	server := &http.Server{Addr: cfg.Server.Listen, Handler: router, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: cfg.Server.ReadTimeout.Value(), IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 64 << 10}
 	return &Application{
 		logger: logger, database: database, server: server,
 		audits: auditService, responses: responseRepo, runtime: runtimeStore,
 		settingsBus: settingsBus, settings: settingsService, gateway: gatewayService, media: mediaService, imagePipeline: imagePipeline, quotaRecovery: quotaRecoveryService, accounts: accountService, models: modelService, clientKeys: clientKeyService,
-		accountRepo: accountRepo, modelRepo: modelRepo, providers: providers, web: webAdapter, startup: startup,
+		accountRepo: accountRepo, modelRepo: modelRepo, providers: providers, web: webAdapter, chromeTickets: chromeTicketPool, startup: startup,
 	}, nil
 }
 
@@ -321,6 +326,7 @@ func webProviderConfig(cfg config.Config) webprovider.Config {
 		BaseURL: cfg.Provider.Web.BaseURL, QuotaTimeoutSeconds: int(cfg.Provider.Web.QuotaTimeout.Value().Seconds()),
 		BrowserBridgeURL: strings.TrimSpace(os.Getenv("GROK2API_BROWSER_BRIDGE_URL")),
 		BrowserBridgeKey: readOptionalSecretFile(os.Getenv("GROK2API_BROWSER_BRIDGE_KEY_FILE")),
+		AssetBridgeURL:   assetBridgeURLFromEnv(),
 		StatsigMode:      cfg.Provider.Web.StatsigMode, StatsigManualValue: cfg.Provider.Web.StatsigManualValue,
 		StatsigSignerURL:   cfg.Provider.Web.StatsigSignerURL,
 		ChatTimeoutSeconds: int(cfg.Provider.Web.ChatTimeout.Value().Seconds()), ImageTimeoutSeconds: int(cfg.Provider.Web.ImageTimeout.Value().Seconds()),
@@ -346,6 +352,13 @@ func readOptionalSecretFile(path string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(value))
+}
+
+func assetBridgeURLFromEnv() string {
+	if value := strings.TrimSpace(os.Getenv("GROK2API_ASSET_BRIDGE_URL")); value != "" {
+		return value
+	}
+	return "http://grok2api-browser-bridge:8192"
 }
 
 func mediaConfig(cfg config.Config) mediaapp.Config {
@@ -472,6 +485,22 @@ func (a *Application) Run(ctx context.Context) error {
 	startBackground("media_cleanup", func(taskCtx context.Context) error {
 		a.media.RunCleanup(taskCtx, func(err error) {
 			a.logger.Warn("media_cleanup_failed", "error", err)
+		})
+		return nil
+	})
+	startBackground("chrome_ticket_pool_sweep", func(taskCtx context.Context) error {
+		a.runPeriodicTask(taskCtx, 15*time.Minute, "chrome_ticket_pool_sweep", func(runCtx context.Context) error {
+			if a.chromeTickets == nil {
+				return nil
+			}
+			expired, err := a.chromeTickets.Sweep(runCtx)
+			if err != nil {
+				return err
+			}
+			if expired > 0 {
+				a.logger.Info("chrome_ticket_pool_sweep", "expired", expired)
+			}
+			return nil
 		})
 		return nil
 	})

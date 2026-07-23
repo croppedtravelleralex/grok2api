@@ -12,7 +12,9 @@
 5. 需要继续接手维护时看 [05-ai-maintenance-playbook.md](./05-ai-maintenance-playbook.md)。
 6. Build 号池状态机看 [08-build-four-pool-dual-probe-todos-2026-07-22.md](./08-build-four-pool-dual-probe-todos-2026-07-22.md)。
 7. Imagine 额度、模型状态和 10 并发接续看 [09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md](./09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md)。
-8. 需要追溯历史上下文时看 [logs/](./logs/) 下的月度记录。
+8. Web Lite 两阶段失败（soft_stop / asset 403）看 [12-web-lite-two-stage-failure-asset-403-2026-07-23.md](./12-web-lite-two-stage-failure-asset-403-2026-07-23.md)。
+9. Chrome 票池 + Panda 生图 API 看 [13-chrome-ticket-pool-panda-api-2026-07-23.md](./13-chrome-ticket-pool-panda-api-2026-07-23.md)。
+10. 需要追溯历史上下文时看 [logs/](./logs/) 下的月度记录。
 
 ## 目录地图
 
@@ -28,6 +30,9 @@
 | [08-build-four-pool-dual-probe-todos-2026-07-22.md](./08-build-four-pool-dual-probe-todos-2026-07-22.md) | Build 四池+双探针：已做/部分做/未做全量盘点与 FP-* 待办 | 四池方案推进或验收时 |
 | [09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md](./09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md) | Imagine 次数、独立模型状态、10 并发：已做/未做/分档验收清单 | Web Lite 生图继续开发、部署或验收时 |
 | [pure-http-transfer-and-zero-browser.md](./pure-http-transfer-and-zero-browser.md) | 票/钥/CF/零浏览器分层与可验证 AC | 纯 HTTP 结论变化时 |
+| [http-reverse-lite-chain.md](./http-reverse-lite-chain.md) | **冻结** Chrome 短签 + curl_cffi HTTP Lite 开发链路 | 出票/Lite canary 行为变化时 |
+| [12-web-lite-two-stage-failure-asset-403-2026-07-23.md](./12-web-lite-two-stage-failure-asset-403-2026-07-23.md) | Panda 生图两阶段失败、asset 403、探针与 Chrome/生产链路对照 | 排障或出口/重试策略变更时 |
+| [13-chrome-ticket-pool-panda-api-2026-07-23.md](./13-chrome-ticket-pool-panda-api-2026-07-23.md) | Chrome 票池、Panda signer 现签、实验 API、10 并发与 Chrome 关系 | 票池/开票/生图 API 开发时 |
 | [logs/](./logs/) | 月度历史记录 | 每轮工作结束时追加 |
 
 ## 真相来源优先级

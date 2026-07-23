@@ -2,8 +2,8 @@
 
 ## 最后更新时间
 
-- 日期：2026-07-22
-- 维护目的：记录 Build 四池主路径已清零删除池；后续增强待办见 [08](./08-build-four-pool-dual-probe-todos-2026-07-22.md)。
+- 日期：2026-07-23
+- 维护目的：Chrome 票池 E2E 验收；票池/grok-signer 现签链见 [13](./13-chrome-ticket-pool-panda-api-2026-07-23.md)。
 
 ## 整体状态摘要
 
@@ -19,6 +19,7 @@
 - **NewAPI 文生图已验收**：同机 e2e 曾 **200**（约 7–11s），媒体 URL 落在 `https://grokimage.relai.asia/v1/media/images/...`（token 须 `group=grok`、DB key 48 位无连字符、无 `sk-` 前缀）；池薄时仍会 `429 usage_limit`。
 - **10 并发状态**：10 槽/100 queue、Expand 2、SSE AIMD 1→6、Download 8 已部署；这表示 10 个客户端请求可同时进入流水线，不表示单出口同时发 10 条 SSE。最终单请求仍连续 `usage_limit_reached`，所以 4/10 生产档未运行，10/10 成功尚未验收。
 - NewAPI 图片名称仍为 `grok-imagine-image` / `quality` / `edit`；edit/video 渠道保持 disabled。
+- **Chrome 票池实验链（2026-07-23）**：本机 Chrome 捕获 `statsig_meta` → Panda `grok-signer` 现签 → Lite → asset 下载；账号 **1467** E2E 成功（128KB JPEG）。账号须有 **imagine 额度**（1468 为 0 → `systemErrCode:1010`）。工具与架构见 [13](./13-chrome-ticket-pool-panda-api-2026-07-23.md)。
 
 ## 已完成功能
 

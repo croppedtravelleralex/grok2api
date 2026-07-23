@@ -425,7 +425,8 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 				return "", "", err
 			}
 		}
-		upstream, lease, _, statsigTarget, err := a.openChat(ctx, activeCredential, "", spec, normalizedChatInput{Prompt: "Drawing: " + expanded})
+		chatCtx := a.attachChromeTicket(ctx, activeCredential.ID)
+		upstream, lease, _, statsigTarget, err := a.openChat(chatCtx, activeCredential, "", spec, normalizedChatInput{Prompt: "Drawing: " + expanded})
 		if err != nil {
 			a.releaseSSStage(run, staged, accountLease)
 			return "", "", err
@@ -1578,34 +1579,82 @@ func (a *Adapter) downloadImage(ctx context.Context, credential account.Credenti
 	if err != nil {
 		return nil, err
 	}
-	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWebAsset, fmt.Sprintf("%d", credential.ID))
+	deviceCookie := chromeTicketCookieFromContext(ctx)
+	warmedCF := ""
+	if deviceCookie != "" {
+		if cf, warmErr := a.warmChromeTicketCloudflare(ctx, credential, deviceCookie); warmErr != nil {
+			a.log().Warn("web_lite_asset_cf_warm_failed", "account_id", credential.ID, "error", warmErr)
+		} else {
+			warmedCF = cf
+			a.log().Info("web_lite_asset_cf_warm", "account_id", credential.ID, "cf_set", warmedCF != "")
+		}
+	}
+	scopes := []domainegress.Scope{domainegress.ScopeWebAsset, domainegress.ScopeWeb}
+	var lastErr error
+	for index, scope := range scopes {
+		raw, status, downloadErr := a.downloadImageWithScope(ctx, credential, parsed, token, scope, deviceCookie, warmedCF)
+		if downloadErr == nil {
+			return raw, nil
+		}
+		lastErr = downloadErr
+		if index == 0 && status == http.StatusForbidden {
+			a.log().Info("web_lite_asset_download_fallback", "account_id", credential.ID, "from_scope", string(scopes[0]), "to_scope", string(scopes[1]))
+			continue
+		}
+		break
+	}
+	return nil, lastErr
+}
+
+func (a *Adapter) downloadImageWithScope(ctx context.Context, credential account.Credential, parsed *url.URL, token string, scope domainegress.Scope, deviceCookie, warmedCF string) ([]byte, int, error) {
+	lease, err := a.egress.Acquire(ctx, scope, fmt.Sprintf("%d", credential.ID))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer lease.Release()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	request.Header = buildHeaders(token, lease, "")
+	request.Header.Set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+	applyAppHeaders(request.Header, a.cfg.BaseURL, a.cfg.BaseURL+"/")
+	request.Header.Set("Sec-Fetch-Dest", "image")
+	request.Header.Set("Sec-Fetch-Mode", "cors")
+	if deviceCookie != "" {
+		request.Header.Set("Cookie", buildChromeTicketDownloadCookie(token, lease.CFCookies, warmedCF, deviceCookie))
+	}
 	request.Header.Del("Content-Type")
 	response, err := lease.Do(request)
 	if err != nil {
-		return nil, err
+		a.log().Warn("web_lite_asset_download_failed",
+			"account_id", credential.ID,
+			"scope", scope,
+			"status_code", 0,
+			"asset_url_tail", assetURLTailForLog(parsed.String()),
+			"error", err,
+		)
+		return nil, 0, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("下载图片返回 %d", response.StatusCode)
+		a.log().Warn("web_lite_asset_download_failed",
+			"account_id", credential.ID,
+			"scope", scope,
+			"status_code", response.StatusCode,
+			"asset_url_tail", assetURLTailForLog(parsed.String()),
+		)
+		return nil, response.StatusCode, fmt.Errorf("下载图片返回 %d", response.StatusCode)
 	}
 	contentType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
 	if contentType != "" && !strings.HasPrefix(contentType, "image/") {
-		return nil, fmt.Errorf("上游图片 Content-Type 无效")
+		return nil, response.StatusCode, fmt.Errorf("上游图片 Content-Type 无效")
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, (32<<20)+1))
 	if err != nil || len(raw) > 32<<20 {
-		return nil, fmt.Errorf("图片下载失败或超过 32 MiB")
+		return nil, response.StatusCode, fmt.Errorf("图片下载失败或超过 32 MiB")
 	}
-	return raw, nil
+	return raw, response.StatusCode, nil
 }
 
 func decodeImageBlob(value string) ([]byte, error) {
@@ -1700,6 +1749,18 @@ func absoluteAssetURL(value string) string {
 		return value
 	}
 	return "https://assets.grok.com/" + strings.TrimPrefix(value, "/")
+}
+
+func assetURLTailForLog(rawURL string) string {
+	const maxTail = 120
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return ""
+	}
+	if len(trimmed) <= maxTail {
+		return trimmed
+	}
+	return trimmed[len(trimmed)-maxTail:]
 }
 
 func extractMarkdownImages(value string) []string {

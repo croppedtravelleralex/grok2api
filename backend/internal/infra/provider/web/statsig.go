@@ -15,6 +15,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	chrometicketdomain "github.com/chenyme/grok2api/backend/internal/domain/chrometicket"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/pkg/signerurl"
 	"golang.org/x/net/html"
@@ -67,14 +68,20 @@ func newStatsigSigner() *statsigSigner {
 	}
 }
 
-func (s *statsigSigner) Sign(ctx context.Context, baseURL, signerURL, token string, lease *infraegress.Lease, method, target string) (string, string, error) {
+func (s *statsigSigner) Sign(ctx context.Context, baseURL, signerURL, token string, lease *infraegress.Lease, method, target, metaOverride string) (string, string, error) {
 	_, path, err := statsigSignatureKey(baseURL, signerURL, method, target)
 	if err != nil {
 		return "", "", err
 	}
-	meta, source, err := s.metaContent(ctx, baseURL, signerURL, token, lease)
-	if err != nil {
-		return "", "", err
+	var meta, source string
+	if trimmed := strings.TrimSpace(metaOverride); trimmed != "" {
+		meta, source = trimmed, "chrome_ticket_pool"
+	} else {
+		var metaErr error
+		meta, source, metaErr = s.metaContent(ctx, baseURL, signerURL, token, lease)
+		if metaErr != nil {
+			return "", "", metaErr
+		}
 	}
 	value, err := s.requestSignature(ctx, signerURL, method, path, meta)
 	if err != nil {
@@ -363,7 +370,11 @@ func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request,
 	if a.statsig == nil {
 		return
 	}
-	value, source, err := a.statsig.Sign(ctx, cfg.BaseURL, cfg.StatsigSignerURL, token, lease, request.Method, request.URL.String())
+	metaOverride := ""
+	if ticket, ok := chrometicketdomain.LeaseFromContext(ctx); ok {
+		metaOverride = ticket.StatsigMeta
+	}
+	value, source, err := a.statsig.Sign(ctx, cfg.BaseURL, cfg.StatsigSignerURL, token, lease, request.Method, request.URL.String(), metaOverride)
 	if err == nil {
 		request.Header.Set("x-statsig-id", value)
 		if source == "refresh" {

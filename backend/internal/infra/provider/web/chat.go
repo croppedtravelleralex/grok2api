@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	chrometicketdomain "github.com/chenyme/grok2api/backend/internal/domain/chrometicket"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	inferencedomain "github.com/chenyme/grok2api/backend/internal/domain/inference"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
@@ -329,6 +330,9 @@ func (a *Adapter) openChatWithScope(ctx context.Context, credential account.Cred
 		return nil, nil, nil, "", err
 	}
 	request.Header = buildHeaders(token, lease, "application/json")
+	if ticket, ok := chrometicketdomain.LeaseFromContext(ctx); ok {
+		request.Header.Set("Cookie", mergeChromeTicketCookie(request.Header.Get("Cookie"), ticket.DeviceCookie))
+	}
 	applyAppHeaders(request.Header, cfg.BaseURL, cfg.BaseURL+"/")
 	a.applySignedStatsig(requestCtx, request, token, lease)
 	response, err := a.doModelRequest(requestCtx, lease, request, time.Duration(cfg.ChatTimeoutSeconds)*time.Second)

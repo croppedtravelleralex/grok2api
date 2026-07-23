@@ -34,6 +34,8 @@
 | BE-011 | DispatchIndex 真实额度序 | 索引 Upsert 未写入 quota_remaining | 同步 billing/recovery 到索引 key | P1 | Todo | = FP-002 |
 | BE-012 | 探针 DRR 占比可观测 | 生产无法验证 5:3:2 / 7:3 | statistics 增加 per-lane 计数 | P1 | Todo | = FP-003 |
 | BE-013 | 清理恢复/purge 仓储死 API | `ListRecoveryCandidates`/`ListPurgeCandidates` 仍在 | 删除或正式 Deprecated 且无调用 | P1 | Todo | = FP-004 |
+| BE-014 | Web Lite asset 下载 403 | SSE 出 URL 后 `assets.grok.com` 频繁 403；同 udeal IP 偶发成功 | 增加 asset 出口、403 换节点重试；失败打 `asset_url_tail` | P0 | In Progress | [12](./12-web-lite-two-stage-failure-asset-403-2026-07-23.md)；`web_lite_asset_download_failed` 日志已加 |
+| BE-015 | Chrome 票池 + grok2api 生图 | 本机 Chrome 批捕 meta；Go 票池 + signer 现签 + `image.go` 集成 | Go 已落地；Panda 联调待部署验收 | P1 | In Progress | [13](./13-chrome-ticket-pool-panda-api-2026-07-23.md)；E2E 1467 已验收 |
 
 ## 稳定性与可维护性
 

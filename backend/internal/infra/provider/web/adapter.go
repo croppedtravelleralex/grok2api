@@ -10,6 +10,7 @@ import (
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	chrometicketapp "github.com/chenyme/grok2api/backend/internal/application/chrometicket"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -17,6 +18,7 @@ type Config struct {
 	BaseURL             string
 	BrowserBridgeURL    string
 	BrowserBridgeKey    string
+	AssetBridgeURL      string
 	StatsigMode         string
 	StatsigManualValue  string
 	StatsigSignerURL    string
@@ -36,21 +38,36 @@ type Adapter struct {
 	states  repository.ResponseRepository
 	assets  provider.ImageAssetStore
 	statsig *statsigSigner
-	bridge  *browserBridge
-	logger  *slog.Logger
+	bridge      *browserBridge
+	assetBridge *browserBridge
+	logger      *slog.Logger
+	ticketPool  *chrometicketapp.Pool
 }
 
 func NewAdapter(cfg Config, egress *infraegress.Manager, cipher *security.Cipher, states repository.ResponseRepository, assets provider.ImageAssetStore) *Adapter {
 	cfg = normalizedConfig(cfg)
 	bridge := newBrowserBridge(cfg.BrowserBridgeURL, cfg.BrowserBridgeKey)
+	assetBridge := newBrowserBridge(cfg.AssetBridgeURL, cfg.BrowserBridgeKey)
 	signer := newStatsigSigner()
-	return &Adapter{cfg: cfg, egress: egress, cipher: cipher, states: states, assets: assets, statsig: signer, bridge: bridge, logger: slog.Default()}
+	return &Adapter{cfg: cfg, egress: egress, cipher: cipher, states: states, assets: assets, statsig: signer, bridge: bridge, assetBridge: assetBridge, logger: slog.Default()}
 }
 
 func (a *Adapter) SetLogger(logger *slog.Logger) {
 	if logger != nil {
 		a.logger = logger
 	}
+}
+
+func (a *Adapter) SetChromeTicketPool(pool *chrometicketapp.Pool) {
+	a.mu.Lock()
+	a.ticketPool = pool
+	a.mu.Unlock()
+}
+
+func (a *Adapter) chromeTicketPool() *chrometicketapp.Pool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ticketPool
 }
 
 func (a *Adapter) log() *slog.Logger {
@@ -94,6 +111,7 @@ func (a *Adapter) UpdateConfig(cfg Config) {
 	changed := a.cfg.StatsigMode != cfg.StatsigMode || a.cfg.StatsigManualValue != cfg.StatsigManualValue || a.cfg.StatsigSignerURL != cfg.StatsigSignerURL || a.cfg.BaseURL != cfg.BaseURL
 	a.cfg = cfg
 	a.bridge = newBrowserBridge(cfg.BrowserBridgeURL, cfg.BrowserBridgeKey)
+	a.assetBridge = newBrowserBridge(cfg.AssetBridgeURL, cfg.BrowserBridgeKey)
 	a.mu.Unlock()
 	if changed && a.statsig != nil {
 		a.statsig.Clear()

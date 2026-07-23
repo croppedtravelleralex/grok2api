@@ -544,6 +544,18 @@ func TestGeneratedImageAssetHostsRemainStrict(t *testing.T) {
 	}
 }
 
+func TestAssetURLTailForLog(t *testing.T) {
+	short := "https://assets.grok.com/users/u1/generated/img.jpg"
+	if got := assetURLTailForLog(short); got != short {
+		t.Fatalf("short tail = %q", got)
+	}
+	long := strings.Repeat("a", 200) + "/image.jpg"
+	got := assetURLTailForLog(long)
+	if len(got) != 120 || !strings.HasSuffix(got, "/image.jpg") {
+		t.Fatalf("long tail = %q", got)
+	}
+}
+
 func TestImageStreamExtensionEventsAndPayloads(t *testing.T) {
 	adapter := &Adapter{assets: imageAssetStoreStub{}}
 	urlItem, err := adapter.imageDataItem(context.Background(), account.Credential{}, imagineImageValue{URL: "https://imgen.x.ai/image.jpg", Blob: "aW1hZ2U="}, "url", "")

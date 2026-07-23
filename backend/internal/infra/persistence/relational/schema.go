@@ -36,6 +36,7 @@ var schemaModels = []any{
 	&egressNodeModel{},
 	&imagePipelineTraceModel{},
 	&imagePipelineSegmentModel{},
+	&chromeTicketModel{},
 }
 
 var schemaIndexes = []string{
@@ -81,6 +82,7 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_media_assets_created ON media_assets(created_at DESC, id)",
 	"CREATE INDEX IF NOT EXISTS idx_image_pipeline_traces_started ON image_pipeline_traces(started_at DESC, id)",
 	"CREATE INDEX IF NOT EXISTS idx_image_pipeline_segments_trace ON image_pipeline_segments(trace_id, sequence ASC, id ASC)",
+	"CREATE INDEX IF NOT EXISTS idx_chrome_tickets_avail ON chrome_tickets(status, expires_at, account_id, created_at)",
 }
 
 // InitializeSchema 以当前持久化模型作为首版数据库结构基线。

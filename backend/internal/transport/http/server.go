@@ -11,6 +11,7 @@ import (
 	accountsyncapp "github.com/chenyme/grok2api/backend/internal/application/accountsync"
 	adminauthapp "github.com/chenyme/grok2api/backend/internal/application/adminauth"
 	auditapp "github.com/chenyme/grok2api/backend/internal/application/audit"
+	chrometicketapp "github.com/chenyme/grok2api/backend/internal/application/chrometicket"
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
 	dashboardapp "github.com/chenyme/grok2api/backend/internal/application/dashboard"
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
@@ -22,6 +23,7 @@ import (
 	accounthttp "github.com/chenyme/grok2api/backend/internal/transport/http/account"
 	adminauthhttp "github.com/chenyme/grok2api/backend/internal/transport/http/adminauth"
 	audithttp "github.com/chenyme/grok2api/backend/internal/transport/http/audit"
+	chrometickethttp "github.com/chenyme/grok2api/backend/internal/transport/http/chrometicket"
 	clientkeyhttp "github.com/chenyme/grok2api/backend/internal/transport/http/clientkey"
 	dashboardhttp "github.com/chenyme/grok2api/backend/internal/transport/http/dashboard"
 	egresshttp "github.com/chenyme/grok2api/backend/internal/transport/http/egress"
@@ -61,6 +63,7 @@ type Dependencies struct {
 	Settings      *settingsapp.Service
 	Egress        *egressapp.Service
 	ImagePipeline *imagepipelineapp.Scheduler
+	ChromeTickets *chrometicketapp.Pool
 }
 
 type ReadinessComponent struct {
@@ -146,6 +149,7 @@ func New(deps Dependencies) *gin.Engine {
 	egresshttp.NewHandler(deps.Egress).Register(adminProtected)
 	mediahttp.NewHandler(deps.Media).RegisterAdmin(adminProtected)
 	imagepipelinehttp.NewHandler(deps.ImagePipeline).Register(adminProtected)
+	chrometickethttp.NewHandler(deps.ChromeTickets).Register(adminProtected)
 	systemhttp.NewHandler(deps.PublicAPIBaseURL).Register(adminProtected)
 
 	v1 := router.Group("/v1")
