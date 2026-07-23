@@ -96,7 +96,7 @@ func (s *Service) ReconcileWebPools(ctx context.Context) (WebPoolSnapshot, error
 		return c.enabled && c.active && !c.cooling && (c.fastRem > 0 || c.autoRem > 0)
 	}
 	imageIDs := selectWebPoolIDs(candidates, webImagePoolCap, imageEligible, func(a, b webPoolCandidate) bool {
-		return imagePoolLess(a, b)
+		return imagePoolLess(a, b, now)
 	})
 	chatIDs := selectWebPoolIDs(candidates, webChatPoolCap, chatEligible, func(a, b webPoolCandidate) bool {
 		if a.priority != b.priority {
@@ -190,7 +190,7 @@ func (s *Service) WebPools(ctx context.Context) (WebPoolSnapshot, error) {
 	imageIDs := selectWebPoolIDs(candidates, webImagePoolCap, func(c webPoolCandidate) bool {
 		return imagePoolEligible(c, now)
 	}, func(a, b webPoolCandidate) bool {
-		return imagePoolLess(a, b)
+		return imagePoolLess(a, b, now)
 	})
 	chatIDs := selectWebPoolIDs(candidates, webChatPoolCap, func(c webPoolCandidate) bool {
 		return c.enabled && c.active && !c.cooling && (c.fastRem > 0 || c.autoRem > 0)
@@ -268,7 +268,7 @@ func imagePoolEligible(candidate webPoolCandidate, now time.Time) bool {
 		}
 		// 新同步到的正额度能够解除旧的 quota_exhausted 结果。
 		if candidate.modelState != nil && candidate.modelState.Status == accountdomain.ModelStatusQuotaExhausted {
-			return true
+			return imagineQuotaFresh(candidate.imagineWindow, now)
 		}
 	}
 	if candidate.modelState == nil {
@@ -278,17 +278,35 @@ func imagePoolEligible(candidate webPoolCandidate, now time.Time) bool {
 	case accountdomain.ModelStatusAuthFailed, accountdomain.ModelStatusSignatureFailed, accountdomain.ModelStatusQuotaExhausted:
 		return false
 	case accountdomain.ModelStatusSoftStop:
-		return candidate.modelState.CooldownUntil != nil && !candidate.modelState.CooldownUntil.After(now)
+		if candidate.modelState.CooldownUntil != nil && candidate.modelState.CooldownUntil.After(now) {
+			return false
+		}
+		return positiveQuota && imagineQuotaFresh(candidate.imagineWindow, now)
+	case accountdomain.ModelStatusAvailable:
+		if positiveQuota && imagineQuotaFresh(candidate.imagineWindow, now) {
+			return true
+		}
+		if candidate.modelState.LastSuccessAt != nil &&
+			now.Sub(*candidate.modelState.LastSuccessAt) <= imagineQuotaFreshTTL &&
+			positiveQuota {
+			return true
+		}
+		return false
 	default:
-		return true
+		return positiveQuota && imagineQuotaFresh(candidate.imagineWindow, now)
 	}
 }
 
-func imagePoolLess(a, b webPoolCandidate) bool {
+func imagePoolLess(a, b webPoolCandidate, now time.Time) bool {
+	freshA := imagineQuotaFresh(a.imagineWindow, now)
+	freshB := imagineQuotaFresh(b.imagineWindow, now)
+	if freshA != freshB {
+		return freshA
+	}
 	if a.priority != b.priority {
 		return a.priority > b.priority
 	}
-	rankA, rankB := imagePoolRank(a), imagePoolRank(b)
+	rankA, rankB := imagePoolRank(a, now), imagePoolRank(b, now)
 	if rankA != rankB {
 		return rankA > rankB
 	}
@@ -305,7 +323,13 @@ func imagePoolLess(a, b webPoolCandidate) bool {
 	return a.id < b.id
 }
 
-func imagePoolRank(candidate webPoolCandidate) int {
+func imagePoolRank(candidate webPoolCandidate, now time.Time) int {
+	if imagineQuotaFresh(candidate.imagineWindow, now) {
+		if candidate.modelState != nil && candidate.modelState.Status == accountdomain.ModelStatusAvailable {
+			return 3
+		}
+		return 2
+	}
 	if candidate.modelState != nil && candidate.modelState.Status == accountdomain.ModelStatusAvailable {
 		return 2
 	}

@@ -161,10 +161,13 @@ export type WebLaneQuotaSummaryDTO = {
   chatRemaining: number;
   chatTotal: number;
   chatKnownAccounts: number;
-  imageRemaining: number;
-  imageTotal: number;
-  imageKnownAccounts: number;
-  imageUnknownAccounts: number;
+  imageBookRemaining: number;
+  imageBookTotal: number;
+  imageBookAccounts: number;
+  imageSchedulableRemaining: number;
+  imageSchedulableTotal: number;
+  imageSchedulableAccounts: number;
+  imageNoCapabilityAccounts: number;
 };
 
 export type WebProbeLane = "image" | "chat";
@@ -433,7 +436,9 @@ const decodeAccountAnalytics = createObjectDecoder<AccountAnalyticsDTO>("account
 });
 const decodeWebLaneQuotaSummary = createObjectDecoder<WebLaneQuotaSummaryDTO>("web lane quota summary", {
   enabledAccounts: isNumber, chatRemaining: isNumber, chatTotal: isNumber, chatKnownAccounts: isNumber,
-  imageRemaining: isNumber, imageTotal: isNumber, imageKnownAccounts: isNumber, imageUnknownAccounts: isNumber,
+  imageBookRemaining: isNumber, imageBookTotal: isNumber, imageBookAccounts: isNumber,
+  imageSchedulableRemaining: isNumber, imageSchedulableTotal: isNumber, imageSchedulableAccounts: isNumber,
+  imageNoCapabilityAccounts: isNumber,
 });
 const decodeAccountReauthenticate = createObjectDecoder<AccountReauthenticateResultDTO>("account reauthentication", {
   account: accountValidator, synced: isNumber, syncFailed: isNumber,

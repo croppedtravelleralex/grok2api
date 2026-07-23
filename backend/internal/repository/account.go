@@ -72,12 +72,18 @@ type AccountRepository interface {
 }
 
 type WebLaneQuotaSummary struct {
-	EnabledAccounts   int
-	ChatRemaining     int
-	ChatTotal         int
+	EnabledAccounts int
+	ChatRemaining   int
+	ChatTotal       int
 	ChatKnownAccounts int
-	ImageRemaining    int
-	ImageTotal        int
-	ImageKnownAccounts int
-	ImageUnknownAccounts int
+	// Image book totals only include accounts with a positive imagine window.
+	ImageBookRemaining int
+	ImageBookTotal     int
+	ImageBookAccounts  int
+	// Image schedulable totals only include fresh upstream imagine windows (30m).
+	ImageSchedulableRemaining int
+	ImageSchedulableTotal     int
+	ImageSchedulableAccounts  int
+	// Accounts without an imagine window are treated as having no image capability.
+	ImageNoCapabilityAccounts int
 }

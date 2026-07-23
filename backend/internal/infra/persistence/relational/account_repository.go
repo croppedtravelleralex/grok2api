@@ -1101,15 +1101,18 @@ func (r *AccountRepository) ListStaleWebQuotaAccountIDs(ctx context.Context, bef
 }
 
 func (r *AccountRepository) SummarizeWebLaneQuota(ctx context.Context) (repository.WebLaneQuotaSummary, error) {
+	const imagineFreshTTL = 30 * time.Minute
 	type quotaRow struct {
 		AccountID uint64
 		Mode      string
 		Remaining int
 		Total     int
+		Source    string
+		SyncedAt  *time.Time
 	}
 	var rows []quotaRow
 	if err := r.db.db.WithContext(ctx).Table("account_quota_windows AS q").
-		Select("q.account_id, q.mode, q.remaining, q.total").
+		Select("q.account_id, q.mode, q.remaining, q.total, q.source, q.synced_at").
 		Joins("JOIN provider_accounts AS a ON a.id = q.account_id").
 		Where("a.provider = ? AND a.enabled = 1", string(account.ProviderWeb)).
 		Where("q.mode IN ?", []string{"fast", "auto", "expert", "heavy", "imagine"}).
@@ -1122,8 +1125,19 @@ func (r *AccountRepository) SummarizeWebLaneQuota(ctx context.Context) (reposito
 		Count(&enabled).Error; err != nil {
 		return repository.WebLaneQuotaSummary{}, err
 	}
+	var noCapability int64
+	if err := r.db.db.WithContext(ctx).Table("provider_accounts AS a").
+		Where("a.provider = ? AND a.enabled = 1", string(account.ProviderWeb)).
+		Where("NOT EXISTS (SELECT 1 FROM account_quota_windows q WHERE q.account_id = a.id AND q.mode = ?)", "imagine").
+		Count(&noCapability).Error; err != nil {
+		return repository.WebLaneQuotaSummary{}, err
+	}
 
-	summary := repository.WebLaneQuotaSummary{EnabledAccounts: int(enabled)}
+	now := time.Now().UTC()
+	summary := repository.WebLaneQuotaSummary{
+		EnabledAccounts:           int(enabled),
+		ImageNoCapabilityAccounts: int(noCapability),
+	}
 	chatKnown := make(map[uint64]struct{})
 	for _, row := range rows {
 		switch row.Mode {
@@ -1135,15 +1149,26 @@ func (r *AccountRepository) SummarizeWebLaneQuota(ctx context.Context) (reposito
 			summary.ChatTotal += row.Total
 		case "imagine":
 			if row.Total <= 0 && row.Remaining <= 0 {
-				summary.ImageUnknownAccounts++
 				continue
 			}
-			summary.ImageKnownAccounts++
+			summary.ImageBookAccounts++
 			if remaining, ok := account.ImagineGenerations(row.Remaining, row.Total); ok {
-				summary.ImageRemaining += remaining
+				summary.ImageBookRemaining += remaining
 			}
 			if total, ok := account.ImagineGenerationsTotal(row.Total); ok {
-				summary.ImageTotal += total
+				summary.ImageBookTotal += total
+			}
+			fresh := row.Source == string(account.QuotaSourceUpstream) &&
+				row.SyncedAt != nil && now.Sub(row.SyncedAt.UTC()) <= imagineFreshTTL
+			if !fresh {
+				continue
+			}
+			summary.ImageSchedulableAccounts++
+			if remaining, ok := account.ImagineGenerations(row.Remaining, row.Total); ok {
+				summary.ImageSchedulableRemaining += remaining
+			}
+			if total, ok := account.ImagineGenerationsTotal(row.Total); ok {
+				summary.ImageSchedulableTotal += total
 			}
 		}
 	}

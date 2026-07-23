@@ -46,7 +46,7 @@ const responseOwnershipTTL = 30 * 24 * time.Hour
 const finalizationTimeout = 5 * time.Second
 const textBillingReservationTTL = 2 * time.Hour
 const mediaBillingReservationTTL = 24 * time.Hour
-const webLiteSoftStopAttempts = 6
+const webLiteSoftStopAttempts = 8
 
 var freeQuotaUsagePattern = regexp.MustCompile(`(?i)tokens\s*\(actual/limit\)\s*:\s*([0-9]+)\s*/\s*([0-9]+)`)
 

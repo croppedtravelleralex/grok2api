@@ -16,6 +16,9 @@ BASE = os.environ.get("GROK2API_BASE", "http://127.0.0.1:18000").rstrip("/")
 OUT = Path(os.environ.get("GROK2API_OUT", "/opt/grok2api/data/image-bench"))
 ROUNDS = int(os.environ.get("GROK2API_BENCH_ROUNDS", "5"))
 FAIL_FAST = os.environ.get("GROK2API_BENCH_FAIL_FAST", "1").strip().lower() not in {"0", "false", "no"}
+PREFLIGHT_SYNC = os.environ.get("GROK2API_BENCH_PREFLIGHT_SYNC", "1").strip().lower() not in {"0", "false", "no"}
+MIN_SCHEDULABLE = int(os.environ.get("GROK2API_BENCH_MIN_SCHEDULABLE", "1"))
+PREFLIGHT_TIMEOUT = int(os.environ.get("GROK2API_BENCH_PREFLIGHT_TIMEOUT", "900"))
 
 ROUNDS_SPEC = [
     ("grok-imagine-image", "zh_apple", "一只红苹果放在白色桌面上，产品摄影"),
@@ -47,6 +50,48 @@ def load_admin_token() -> str:
         if status == 200:
             return payload["data"]["tokens"]["accessToken"]
     return ""
+
+
+def lane_quota_summary(token: str) -> dict:
+    status, payload = admin_api("GET", "/api/admin/v1/accounts/web-lane-quota", token=token)
+    if status != 200:
+        raise RuntimeError(f"web-lane-quota failed: HTTP {status}")
+    return payload.get("data", {})
+
+
+def trigger_web_quota_sync(token: str) -> None:
+    req = urllib.request.Request(
+        f"{BASE}/api/admin/v1/accounts/web/refresh-quotas",
+        data=b"",
+        headers={"Authorization": f"Bearer {token}", "Accept": "text/event-stream"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read(256)
+    except Exception as exc:
+        print(f"preflight sync trigger warning: {exc}", flush=True)
+
+
+def wait_schedulable(token: str) -> dict:
+    deadline = time.time() + PREFLIGHT_TIMEOUT
+    last = {}
+    while time.time() < deadline:
+        last = lane_quota_summary(token)
+        sched_accounts = int(last.get("imageSchedulableAccounts", last.get("imageKnownAccounts", 0)))
+        sched_remaining = int(last.get("imageSchedulableRemaining", last.get("imageRemaining", 0)))
+        print(
+            f"preflight schedulable accounts={sched_accounts} remaining={sched_remaining}",
+            flush=True,
+        )
+        if sched_accounts >= MIN_SCHEDULABLE and sched_remaining > 0:
+            return last
+        if PREFLIGHT_SYNC:
+            trigger_web_quota_sync(token)
+        time.sleep(30)
+    raise SystemExit(
+        f"preflight timeout: need >={MIN_SCHEDULABLE} schedulable accounts with positive quota; last={last}"
+    )
 
 
 def admin_api(method: str, path: str, token: str = "", body: dict | None = None) -> tuple[int, dict]:
@@ -176,6 +221,10 @@ def main() -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     key = load_key()
     admin_token = load_admin_token()
+    preflight = {}
+    if admin_token:
+        print("running preflight quota check...", flush=True)
+        preflight = wait_schedulable(admin_token)
     results: list[dict] = []
     aborted = False
     print(f"starting {ROUNDS}-round serial bench base={BASE} fail_fast={FAIL_FAST}", flush=True)
@@ -201,6 +250,7 @@ def main() -> None:
     walls = [r["wall_seconds"] for r in results]
     summary = {
         "stamp": stamp,
+        "preflight": preflight,
         "rounds_planned": ROUNDS,
         "rounds_run": len(results),
         "success": sum(1 for r in results if r["ok"]),

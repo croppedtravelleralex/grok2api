@@ -7,14 +7,17 @@ import (
 )
 
 type WebLaneQuotaSummary struct {
-	EnabledAccounts      int `json:"enabledAccounts"`
-	ChatRemaining        int `json:"chatRemaining"`
-	ChatTotal            int `json:"chatTotal"`
-	ChatKnownAccounts    int `json:"chatKnownAccounts"`
-	ImageRemaining       int `json:"imageRemaining"`
-	ImageTotal           int `json:"imageTotal"`
-	ImageKnownAccounts   int `json:"imageKnownAccounts"`
-	ImageUnknownAccounts int `json:"imageUnknownAccounts"`
+	EnabledAccounts int `json:"enabledAccounts"`
+	ChatRemaining   int `json:"chatRemaining"`
+	ChatTotal       int `json:"chatTotal"`
+	ChatKnownAccounts int `json:"chatKnownAccounts"`
+	ImageBookRemaining int `json:"imageBookRemaining"`
+	ImageBookTotal     int `json:"imageBookTotal"`
+	ImageBookAccounts  int `json:"imageBookAccounts"`
+	ImageSchedulableRemaining int `json:"imageSchedulableRemaining"`
+	ImageSchedulableTotal     int `json:"imageSchedulableTotal"`
+	ImageSchedulableAccounts  int `json:"imageSchedulableAccounts"`
+	ImageNoCapabilityAccounts   int `json:"imageNoCapabilityAccounts"`
 }
 
 func (s *Service) WebLaneQuotaSummary(ctx context.Context) (WebLaneQuotaSummary, error) {
@@ -27,13 +30,16 @@ func (s *Service) WebLaneQuotaSummary(ctx context.Context) (WebLaneQuotaSummary,
 
 func webLaneQuotaFromRepository(value repository.WebLaneQuotaSummary) WebLaneQuotaSummary {
 	return WebLaneQuotaSummary{
-		EnabledAccounts:      value.EnabledAccounts,
-		ChatRemaining:        value.ChatRemaining,
-		ChatTotal:            value.ChatTotal,
-		ChatKnownAccounts:    value.ChatKnownAccounts,
-		ImageRemaining:       value.ImageRemaining,
-		ImageTotal:           value.ImageTotal,
-		ImageKnownAccounts:   value.ImageKnownAccounts,
-		ImageUnknownAccounts: value.ImageUnknownAccounts,
+		EnabledAccounts:           value.EnabledAccounts,
+		ChatRemaining:             value.ChatRemaining,
+		ChatTotal:                 value.ChatTotal,
+		ChatKnownAccounts:         value.ChatKnownAccounts,
+		ImageBookRemaining:        value.ImageBookRemaining,
+		ImageBookTotal:            value.ImageBookTotal,
+		ImageBookAccounts:         value.ImageBookAccounts,
+		ImageSchedulableRemaining: value.ImageSchedulableRemaining,
+		ImageSchedulableTotal:     value.ImageSchedulableTotal,
+		ImageSchedulableAccounts:  value.ImageSchedulableAccounts,
+		ImageNoCapabilityAccounts: value.ImageNoCapabilityAccounts,
 	}
 }

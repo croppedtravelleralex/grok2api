@@ -170,8 +170,8 @@ func TestImageExecutionErrorPolicyRetriesSoftStop(t *testing.T) {
 }
 
 func TestImageExecutionAttemptLimitOnlyExpandsWebLiteSoftStopBudget(t *testing.T) {
-	if got := imageExecutionAttemptLimit(account.ProviderWeb, audit.OperationImage, 3); got != 6 {
-		t.Fatalf("Web Lite attempt limit=%d, want 6", got)
+	if got := imageExecutionAttemptLimit(account.ProviderWeb, audit.OperationImage, 3); got != 8 {
+		t.Fatalf("Web Lite attempt limit=%d, want 8", got)
 	}
 	if got := imageExecutionAttemptLimit(account.ProviderBuild, audit.OperationImage, 3); got != 3 {
 		t.Fatalf("Build image attempt limit=%d, want 3", got)

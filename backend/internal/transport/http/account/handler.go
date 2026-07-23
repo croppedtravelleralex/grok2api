@@ -399,8 +399,9 @@ func (h *Handler) webLaneQuotaSummary(c *gin.Context) {
 	response.Success(c, http.StatusOK, gin.H{
 		"enabledAccounts": value.EnabledAccounts,
 		"chatRemaining":   value.ChatRemaining, "chatTotal": value.ChatTotal, "chatKnownAccounts": value.ChatKnownAccounts,
-		"imageRemaining": value.ImageRemaining, "imageTotal": value.ImageTotal,
-		"imageKnownAccounts": value.ImageKnownAccounts, "imageUnknownAccounts": value.ImageUnknownAccounts,
+		"imageBookRemaining": value.ImageBookRemaining, "imageBookTotal": value.ImageBookTotal, "imageBookAccounts": value.ImageBookAccounts,
+		"imageSchedulableRemaining": value.ImageSchedulableRemaining, "imageSchedulableTotal": value.ImageSchedulableTotal,
+		"imageSchedulableAccounts": value.ImageSchedulableAccounts, "imageNoCapabilityAccounts": value.ImageNoCapabilityAccounts,
 	})
 }
 

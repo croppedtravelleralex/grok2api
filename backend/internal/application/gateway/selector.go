@@ -1049,6 +1049,7 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 	s.mu.Unlock()
 	remaining := make(map[uint64]float64, len(values))
 	imagineRemaining := make(map[uint64]int, len(values))
+	imagineFresh := make(map[uint64]bool, len(values))
 	fresh := make(map[uint64]bool, len(values))
 	inFlight := make(map[uint64]int, len(values))
 	concurrencyKeys := make([]string, 0, len(values))
@@ -1084,6 +1085,7 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 		}
 		if candidate.QuotaWindow != nil && candidate.QuotaWindow.Mode == "imagine" {
 			imagineRemaining[value.ID] = candidate.QuotaWindow.Remaining
+			imagineFresh[value.ID] = candidateImagineQuotaAdmissible(candidate, now)
 		}
 	}
 	sort.SliceStable(values, func(i, j int) bool {
@@ -1118,6 +1120,10 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 			return leftRank < rightRank
 		}
 		if strings.EqualFold(upstreamModel, webLiteImageUpstreamModel) {
+			leftFresh, rightFresh := imagineFresh[left.ID], imagineFresh[right.ID]
+			if leftFresh != rightFresh {
+				return leftFresh
+			}
 			leftImagine, leftOK := imagineRemaining[left.ID]
 			rightImagine, rightOK := imagineRemaining[right.ID]
 			if leftOK != rightOK {
