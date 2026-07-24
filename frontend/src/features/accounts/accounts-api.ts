@@ -497,6 +497,50 @@ export function getWebProbeStatus(): Promise<WebProbeStatusDTO> {
   return apiRequest("/api/admin/v1/accounts/web-probe", {}, decodeWebProbeStatus);
 }
 
+export type ChromeTicketAccountCountDTO = {
+  accountId: string;
+  count: number;
+};
+
+export type ChromeTicketStatsDTO = {
+  byStatus: Record<string, number>;
+  availableByAccount: ChromeTicketAccountCountDTO[];
+};
+
+function readStatusMap(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object") return {};
+  const out: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw === "number" && Number.isFinite(raw)) out[key] = raw;
+  }
+  return out;
+}
+
+function readAccountCounts(value: unknown): ChromeTicketAccountCountDTO[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as Record<string, unknown>;
+    const accountId = row.accountId ?? row.AccountID ?? row.account_id;
+    const count = row.count ?? row.Count;
+    if ((typeof accountId !== "string" && typeof accountId !== "number") || typeof count !== "number") return [];
+    return [{ accountId: String(accountId), count }];
+  });
+}
+
+function decodeChromeTicketStats(value: unknown): ChromeTicketStatsDTO {
+  if (!value || typeof value !== "object") throw new Error("chrome ticket stats");
+  const raw = value as Record<string, unknown>;
+  return {
+    byStatus: readStatusMap(raw.byStatus ?? raw.ByStatus),
+    availableByAccount: readAccountCounts(raw.availableByAccount ?? raw.AvailableByAccount),
+  };
+}
+
+export function getChromeTicketStats(): Promise<ChromeTicketStatsDTO> {
+  return apiRequest("/api/admin/v1/chrome-tickets/stats", {}, decodeChromeTicketStats);
+}
+
 export function getWebLaneQuotaSummary(): Promise<WebLaneQuotaSummaryDTO> {
   return apiRequest("/api/admin/v1/accounts/web-lane-quota", {}, decodeWebLaneQuotaSummary);
 }

@@ -159,12 +159,17 @@ func (s *Service) WebProbeStatus(ctx context.Context) (WebProbeStatus, error) {
 }
 
 func (s *Service) summarizeWebThreePools(ctx context.Context) (WebThreePoolSummary, error) {
+	summary, _, err := s.summarizeWebPools(ctx)
+	return summary, err
+}
+
+func (s *Service) summarizeWebPools(ctx context.Context) (WebThreePoolSummary, WebFourPoolsPublic, error) {
 	values, _, err := s.accounts.List(ctx, repository.AccountListQuery{
 		Page:   repository.PageQuery{Limit: maxCredentialExportAccounts},
 		Filter: repository.AccountListFilter{Provider: string(accountdomain.ProviderWeb), Now: s.now()},
 	})
 	if err != nil {
-		return WebThreePoolSummary{}, mapRepositoryError(err)
+		return WebThreePoolSummary{}, WebFourPoolsPublic{}, mapRepositoryError(err)
 	}
 	ids := make([]uint64, 0, len(values))
 	for _, value := range values {
@@ -172,38 +177,48 @@ func (s *Service) summarizeWebThreePools(ctx context.Context) (WebThreePoolSumma
 	}
 	windowsByAccount, err := s.accounts.GetQuotaWindows(ctx, ids)
 	if err != nil {
-		return WebThreePoolSummary{}, mapRepositoryError(err)
+		return WebThreePoolSummary{}, WebFourPoolsPublic{}, mapRepositoryError(err)
 	}
 	blocks, err := s.accounts.GetActiveModelQuotaBlocks(ctx, ids, imagineUpstream, s.now())
 	if err != nil {
-		return WebThreePoolSummary{}, mapRepositoryError(err)
+		return WebThreePoolSummary{}, WebFourPoolsPublic{}, mapRepositoryError(err)
 	}
 	modelStates, err := s.accounts.GetModelStates(ctx, ids)
 	if err != nil {
-		return WebThreePoolSummary{}, mapRepositoryError(err)
+		return WebThreePoolSummary{}, WebFourPoolsPublic{}, mapRepositoryError(err)
 	}
 	now := s.now()
 	result := WebThreePoolSummary{}
+	four := WebFourPoolsPublic{}
 	for _, value := range values {
 		ctxInput := buildWebPoolContext(value, windowsByAccount[value.ID], modelStates[value.ID], blocks[value.ID], now)
 		switch WebPoolAt(WebLaneImage, ctxInput, now) {
 		case WebPoolDispatch:
 			result.Image.Dispatch++
-		case WebPoolRecovery:
+			four.Image.Dispatch++
+		case WebPoolNormal:
 			result.Image.Recovery++
-		case WebPoolDead:
+			four.Image.Normal++
+		case WebPoolVerification:
+			result.Image.Recovery++
+			four.Image.Verification++
+		case WebPoolDelete:
 			result.Image.Dead++
+			four.Image.Delete++
 		}
 		switch WebPoolAt(WebLaneChat, ctxInput, now) {
 		case WebPoolDispatch:
 			result.Chat.Dispatch++
+			four.Chat.Dispatch++
 		case WebPoolRecovery:
 			result.Chat.Recovery++
+			four.Chat.Recovery++
 		case WebPoolDead:
 			result.Chat.Dead++
+			four.Chat.Dead++
 		}
 	}
-	return result, nil
+	return result, four, nil
 }
 
 func (s *Service) observeWebProbe(ctx context.Context, candidate accountdomain.Credential, lane WebLane, mode WebProbeMode, run func() (uint64, bool, error)) (uint64, bool, error) {

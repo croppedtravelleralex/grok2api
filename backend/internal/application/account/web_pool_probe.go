@@ -12,10 +12,13 @@ import (
 )
 
 const (
-	WebPoolDispatch = "dispatch"
-	WebPoolRecovery = "recovery"
-	WebPoolDead     = "dead"
-	webDeadPrefix   = "web_dead:"
+	WebPoolDispatch     = "dispatch"
+	WebPoolNormal       = "normal"
+	WebPoolVerification = "verification"
+	WebPoolDelete       = "delete"
+	WebPoolRecovery     = "recovery" // chat 轨冷却池
+	WebPoolDead         = "dead"     // chat 轨删除池
+	webDeadPrefix       = "web_dead:"
 )
 
 // WebLane 调度/维护双轨。
@@ -51,6 +54,18 @@ type WebLanePoolCountsPublic struct {
 	Dead     int `json:"dead"`
 }
 
+type WebImageFourPoolCounts struct {
+	Dispatch     int `json:"dispatch"`
+	Normal       int `json:"normal"`
+	Verification int `json:"verification"`
+	Delete       int `json:"delete"`
+}
+
+type WebFourPoolsPublic struct {
+	Image WebImageFourPoolCounts `json:"image"`
+	Chat  WebLanePoolCountsPublic `json:"chat"`
+}
+
 type WebThreePoolsPublic struct {
 	Image WebLanePoolCountsPublic `json:"image"`
 	Chat  WebLanePoolCountsPublic `json:"chat"`
@@ -78,35 +93,58 @@ func buildWebPoolContext(value accountdomain.Credential, windows []accountdomain
 	}
 }
 
-// WebPoolAt 返回双轨三池之一：dispatch / recovery / dead；未入索引返回空串。
+// WebPoolAt 返回账号在指定轨的池位。Image 轨为四池；Chat 轨仍为三池。
 func WebPoolAt(lane WebLane, input WebPoolContext, now time.Time) string {
+	if lane == WebLaneImage {
+		return webImagePoolAt(input, now)
+	}
+	return webChatPoolAt(input, now)
+}
+
+func webImagePoolAt(input WebPoolContext, now time.Time) string {
+	value := input.Credential
+	errText := strings.ToLower(strings.TrimSpace(value.LastError))
+	if strings.HasPrefix(errText, webDeadPrefix) {
+		return WebPoolDelete
+	}
+	if value.AuthStatus == accountdomain.AuthStatusReauthRequired {
+		return WebPoolDelete
+	}
+	if input.ModelState != nil && input.ModelState.Status == accountdomain.ModelStatusSignatureFailed {
+		return WebPoolDelete
+	}
+	if !value.Enabled || value.AuthStatus != accountdomain.AuthStatusActive {
+		return ""
+	}
+	candidate := webPoolCandidateFromContext(input, now)
+	if imageDispatchAdmissible(candidate, now) {
+		return WebPoolDispatch
+	}
+	if imagePoolInVerification(candidate) {
+		return WebPoolVerification
+	}
+	return WebPoolNormal
+}
+
+func webChatPoolAt(input WebPoolContext, now time.Time) string {
 	value := input.Credential
 	errText := strings.ToLower(strings.TrimSpace(value.LastError))
 	if strings.HasPrefix(errText, webDeadPrefix) {
 		return WebPoolDead
 	}
-	if lane == WebLaneImage {
-		if value.AuthStatus == accountdomain.AuthStatusReauthRequired {
-			return WebPoolDead
-		}
-		if input.ModelState != nil && input.ModelState.Status == accountdomain.ModelStatusSignatureFailed {
-			return WebPoolDead
-		}
-	} else if lane == WebLaneChat {
-		if value.AuthStatus == accountdomain.AuthStatusReauthRequired {
-			return WebPoolDead
-		}
-		if input.ModelState != nil && input.ModelState.Status == accountdomain.ModelStatusAuthFailed {
-			return WebPoolDead
-		}
+	if value.AuthStatus == accountdomain.AuthStatusReauthRequired {
+		return WebPoolDead
+	}
+	if input.ModelState != nil && input.ModelState.Status == accountdomain.ModelStatusAuthFailed {
+		return WebPoolDead
 	}
 	if !value.Enabled || value.AuthStatus != accountdomain.AuthStatusActive {
 		return ""
 	}
-	if webLaneInRecovery(lane, input, now) {
+	if webLaneInRecovery(WebLaneChat, input, now) {
 		return WebPoolRecovery
 	}
-	if webLaneInDispatch(lane, input, now) {
+	if webLaneInDispatch(WebLaneChat, input, now) {
 		return WebPoolDispatch
 	}
 	return WebPoolRecovery
@@ -159,11 +197,7 @@ func webLaneInRecovery(lane WebLane, input WebPoolContext, now time.Time) bool {
 func webLaneInDispatch(lane WebLane, input WebPoolContext, now time.Time) bool {
 	switch lane {
 	case WebLaneImage:
-		return imagePoolEligible(webPoolCandidate{
-			id: input.Credential.ID, priority: input.Credential.Priority,
-			imagineWindow: input.ImagineWindow, modelState: input.ModelState,
-			enabled: true, active: true, cooling: false, imagineBlocked: input.ImagineBlocked,
-		}, now)
+		return imageDispatchAdmissible(webPoolCandidateFromContext(input, now), now)
 	case WebLaneChat:
 		return input.FastRem > 0 || input.AutoRem > 0
 	default:
@@ -287,14 +321,16 @@ func (s *Service) indexWebAccountLocked(lane WebLane, value accountdomain.Creden
 		due = *value.CooldownUntil
 	}
 	switch pool {
-	case WebPoolRecovery:
+	case WebPoolNormal, WebPoolRecovery:
 		sub := webRecoverySubLane(lane, input, now)
 		if sub == poolindex.WebLaneRecoveryCooldown {
 			idx.recoveryCooldown.Upsert(value.ID, due)
 		} else {
 			idx.recoveryVerify.Upsert(value.ID, value.CreatedAt)
 		}
-	case WebPoolDead:
+	case WebPoolVerification:
+		idx.recoveryVerify.Upsert(value.ID, value.CreatedAt)
+	case WebPoolDelete, WebPoolDead:
 		idx.deadHeap.Upsert(value.ID, value.UpdatedAt)
 	case WebPoolDispatch:
 		if !s.webLanePinAllowedLocked(lane, value.ID) {
@@ -615,16 +651,26 @@ func (s *Service) markWebDead(ctx context.Context, id uint64, reason string) err
 	return nil
 }
 
-// SummarizeWebThreePoolsForSnapshot 为 WebPools API 填充六池计数。
+// SummarizeWebThreePoolsForSnapshot 为 WebPools API 填充池计数（image 含四池明细）。
 func (s *Service) SummarizeWebThreePoolsForSnapshot(ctx context.Context) (WebThreePoolsPublic, error) {
-	summary, err := s.summarizeWebThreePools(ctx)
+	_, four, err := s.summarizeWebPools(ctx)
 	if err != nil {
 		return WebThreePoolsPublic{}, err
 	}
 	return WebThreePoolsPublic{
-		Image: WebLanePoolCountsPublic{Dispatch: int(summary.Image.Dispatch), Recovery: int(summary.Image.Recovery), Dead: int(summary.Image.Dead)},
-		Chat:  WebLanePoolCountsPublic{Dispatch: int(summary.Chat.Dispatch), Recovery: int(summary.Chat.Recovery), Dead: int(summary.Chat.Dead)},
+		Image: WebLanePoolCountsPublic{
+			Dispatch: four.Image.Dispatch,
+			Recovery: four.Image.Normal + four.Image.Verification,
+			Dead:     four.Image.Delete,
+		},
+		Chat: WebLanePoolCountsPublic{Dispatch: four.Chat.Dispatch, Recovery: four.Chat.Recovery, Dead: four.Chat.Dead},
 	}, nil
+}
+
+// SummarizeWebFourPoolsForSnapshot 返回 Image 四池 + Chat 三池明细。
+func (s *Service) SummarizeWebFourPoolsForSnapshot(ctx context.Context) (WebFourPoolsPublic, error) {
+	_, four, err := s.summarizeWebPools(ctx)
+	return four, err
 }
 
 func (s *Service) webPoolIndexStats() string {

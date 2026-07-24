@@ -30,6 +30,7 @@ type WebPoolSnapshot struct {
 	EnabledAdded         int                     `json:"enabledAdded"`
 	EnabledRemoved       int                     `json:"enabledRemoved"`
 	ThreePools           WebThreePoolsPublic     `json:"threePools,omitempty"`
+	FourPools            WebFourPoolsPublic      `json:"fourPools,omitempty"`
 	PinNotInDispatch     []uint64                `json:"pinNotInDispatch,omitempty"`
 	SelectionDiagnostics WebSelectionDiagnostics `json:"selectionDiagnostics,omitempty"`
 }
@@ -76,31 +77,29 @@ func (s *Service) ReconcileWebPools(ctx context.Context) (WebPoolSnapshot, error
 		return WebPoolSnapshot{}, err
 	}
 
-	candidates := make([]webPoolCandidate, 0, len(accounts))
+	// 出池：已启用但 auth 失效 / 账号冷却 / 图轨与对话轨均不可用 → disable。绝不自动 enable。
+	toDisable := make([]uint64, 0)
+	enabledNow := make([]uint64, 0)
 	for _, value := range accounts {
 		fastRem, autoRem := quotaRemaining(windowsByAccount[value.ID], "fast"), quotaRemaining(windowsByAccount[value.ID], "auto")
 		accountCooling := value.CooldownUntil != nil && value.CooldownUntil.After(now)
-		candidates = append(candidates, webPoolCandidate{
+		candidate := webPoolCandidate{
 			id: value.ID, priority: value.Priority, fastRem: fastRem, autoRem: autoRem,
 			imagineWindow: findQuotaWindow(windowsByAccount[value.ID], "imagine"),
 			modelState:    findModelState(modelStates[value.ID], imagineUpstream),
 			enabled:       value.Enabled, active: value.AuthStatus == accountdomain.AuthStatusActive,
-			// cooling=账号级冷却；Imagine model block 单独看，只挡图池，不整号出池。
-			cooling:        accountCooling,
-			imagineBlocked: blocks[value.ID],
-		})
-	}
-
-	// 出池：已启用但 auth 失效 / 账号冷却 / 图轨与对话轨均不可用 → disable。绝不自动 enable。
-	// 图轨资格与对话 fast/auto 解耦，避免 imagine 专用号被误踢。
-	toDisable := make([]uint64, 0)
-	enabledNow := make([]uint64, 0)
-	for _, candidate := range candidates {
+			cooling: accountCooling, imagineBlocked: blocks[value.ID],
+		}
 		if !candidate.enabled {
 			continue
 		}
 		chatOK := candidate.active && !candidate.cooling && (candidate.fastRem > 0 || candidate.autoRem > 0)
-		imageOK := candidate.active && !candidate.cooling && imagePoolEligible(candidate, now)
+		ctxInput := WebPoolContext{
+			Credential: value, FastRem: candidate.fastRem, AutoRem: candidate.autoRem,
+			ImagineWindow: candidate.imagineWindow, ModelState: candidate.modelState,
+			ImagineBlocked: candidate.imagineBlocked,
+		}
+		imageOK := candidate.active && !candidate.cooling && imageAccountRetained(ctxInput, now)
 		keep := candidate.active && !candidate.cooling && (chatOK || imageOK)
 		if !keep {
 			toDisable = append(toDisable, candidate.id)
@@ -135,12 +134,13 @@ func (s *Service) webPoolSnapshotFromIndex(ctx context.Context, now time.Time, e
 	pinNotIn := s.pinNotInDispatchLocked()
 	diagnostics := s.webSelectionDiagnosticsLocked()
 	threePools, _ := s.SummarizeWebThreePoolsForSnapshot(ctx)
+	fourPools, _ := s.SummarizeWebFourPoolsForSnapshot(ctx)
 	s.webProbeMu.Unlock()
 	return WebPoolSnapshot{
 		ImagePoolIDs: imageIDs, ChatPoolIDs: chatIDs, EnabledIDs: enabledIDs,
 		ImagePoolSize: len(imageIDs), ChatPoolSize: len(chatIDs), EnabledCount: len(enabledIDs),
 		ImagePoolCap: webImagePoolCap, ChatPoolCap: webChatPoolCap, ReconciledAt: now,
-		EnabledAdded: 0, EnabledRemoved: enabledRemoved, ThreePools: threePools,
+		EnabledAdded: 0, EnabledRemoved: enabledRemoved, ThreePools: threePools, FourPools: fourPools,
 		PinNotInDispatch: pinNotIn, SelectionDiagnostics: diagnostics,
 	}
 }
@@ -213,6 +213,59 @@ func imagineQuotaFresh(window *accountdomain.QuotaWindow, now time.Time) bool {
 		return false
 	}
 	return true
+}
+
+func webPoolCandidateFromContext(input WebPoolContext, now time.Time) webPoolCandidate {
+	value := input.Credential
+	cooling := value.CooldownUntil != nil && value.CooldownUntil.After(now)
+	return webPoolCandidate{
+		id: value.ID, priority: value.Priority,
+		imagineWindow: input.ImagineWindow, modelState: input.ModelState,
+		enabled: value.Enabled, active: value.AuthStatus == accountdomain.AuthStatusActive,
+		cooling: cooling, imagineBlocked: input.ImagineBlocked,
+	}
+}
+
+// imageDispatchAdmissible 与 gateway.candidateImagineQuotaAdmissible 对齐，并要求健康 modelState。
+func imageDispatchAdmissible(candidate webPoolCandidate, now time.Time) bool {
+	if !candidate.enabled || !candidate.active || candidate.cooling {
+		return false
+	}
+	if candidate.imagineBlocked {
+		positive := candidate.imagineWindow != nil && candidate.imagineWindow.Total > 0 && candidate.imagineWindow.Remaining > 0
+		if !positive {
+			return false
+		}
+	}
+	if !imagineQuotaFresh(candidate.imagineWindow, now) {
+		return false
+	}
+	if candidate.modelState == nil {
+		return false
+	}
+	switch candidate.modelState.Status {
+	case accountdomain.ModelStatusAvailable, accountdomain.ModelStatusQuotaAvailable:
+		return true
+	default:
+		return false
+	}
+}
+
+func imagePoolInVerification(candidate webPoolCandidate) bool {
+	if candidate.modelState == nil {
+		return true
+	}
+	switch candidate.modelState.Status {
+	case accountdomain.ModelStatusUnknown, accountdomain.ModelStatusQuotaAvailable:
+		return true
+	default:
+		return false
+	}
+}
+
+func imageAccountRetained(input WebPoolContext, now time.Time) bool {
+	pool := webImagePoolAt(input, now)
+	return pool != "" && pool != WebPoolDelete
 }
 
 func imagePoolEligible(candidate webPoolCandidate, now time.Time) bool {

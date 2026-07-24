@@ -2,15 +2,22 @@
 
 ## 最后更新时间
 
-- 日期：2026-07-23
-- 维护目的：Chrome 票池 E2E 验收；票池/grok-signer 现签链见 [13](./13-chrome-ticket-pool-panda-api-2026-07-23.md)。
+- 日期：2026-07-24（晚间）
+- 维护目的：**暂停生图压测**；BE-019/018/020/021 已落地；下一步 **Web 四池准入**（BE-023）。见 [plan.md](./plan.md)、[17](./17-web-four-pool-and-imaging-success-rates-2026-07-24.md)。
 
 ## 整体状态摘要
 
 - 后端为 Go 网关，前端为 React/Vite 管理端，支持 Grok Build、Web、Console 三个账号池。
-- Panda 为低资源生产机：**禁止在其上编译/构建**；标准链为本地改测 → GitHub 上传（Actions/GHCR）→ Panda 仅 `pull` 运行。
+- Panda 为低资源生产机：**禁止在其上编译/构建**；标准链为本地改测 → GitHub 上传（Actions/GHCR）→ Panda 仅 `pull` 运行。**禁止**用 tar/scp 传大包到 Panda 再 `go build`。
 - **Build（2026-07-22）**：四池主路径已上线；生产快照约 `dispatch≈211 / normal=2 / verification=0 / delete=0`。已做/未做全量盘点与 FP-* 待办见 [08-build-four-pool-dual-probe-todos-2026-07-22.md](./08-build-four-pool-dual-probe-todos-2026-07-22.md)。
-- **Web（2026-07-22）**：Lite 主路径已切纯 HTTP——关 browser-bridge + 本地 signer（`127.0.0.1:8788/sign`）+ 单住宅出口；文本与 Lite 均有 200 证据。当前生产镜像为 `5da879fc…15295` / `613a305`。
+- **Web（2026-07-23）**：Chrome 票池 + asset 下载修复已上生产。镜像 `sha256:49f23f31…7a841`（`c07cc2e`）；1467 `pool_hit` 后生图 **200**。持续灌票与生命周期实验见 [14](./14-chrome-ticket-lifecycle-experiments-2026-07-23.md)。
+- **票池实现**：**Go**（`chrometicket` + `chrome_tickets` 表）。本机灌池/实验脚本为 **Python PoC** → 验收后 **Rust** 工具链（见 [plan.md](./plan.md) 语言分层）。
+- **实现纪律**：**Python 只设计原型**；跑通后 **Rust** 实现本机/运维 CLI；**Go** 负责 Panda 服务端（调度/票池存储/egress）。
+- **后续主线（2026-07-24）**：**BE-019/018/020/021 已提交**（`96b664d`）；Phase B smoke：**503=0** 但 **生图 0/10**（429/soft_stop）。下一步 **Web 四池**（仅真实额度+真实可用进调度）。计划见 [plan.md](./plan.md)；成功率对照见 [17](./17-web-four-pool-and-imaging-success-rates-2026-07-24.md)。
+- **票实验门禁**：R-delay/S 部分完成；**V-conc / mint_fast / S-3h 验收冻结**，直至 plan §4 门禁通过。
+- **票实验（2026-07-23）**：S0 / D-1m/3m/5m 跨网延迟消费均 **200+pool_hit**；CF403/IP 认知重排见 [15](./15-chrome-ticket-cf403-ip-reframe-2026-07-23.md)。
+- **Admin 认证（2026-07-23 23:22）**：Panda 曾出现 secrets / DB / import `.tmp` **三套密码源不同步** → 实验脚本 401、import 仍 200；已重置并三源同步，login 200。工具：`_panda_reset_admin_password.py`、`_panda_admin_token.py`。
+- **Web（2026-07-22）**：Lite 主路径已切纯 HTTP——关 browser-bridge + 本地 signer + 单住宅出口。
 - **Imagine 次数读取（本地已实现、生产未部署）**：`GET /rest/usage/free-usage-gates` 可返回 `imagine.allowance/remaining`；上游不返回窗口长度或绝对重置时间。实测多个账号（含历史 Lite 成功号）均可能返回 `0/0`，因此 `0/0` 定义为“免费闸门不适用或上限未知”，只有 `total>0 && remaining=0` 才能判定额度耗尽。
 - **账号×模型独立状态（本地已实现、生产未部署）**：持久化 `unknown / quota_available / available / soft_stop / quota_exhausted / auth_failed / signature_failed`；额度窗口与真实请求结果分开保存。Accounts API/页面会同时展示 Imagine 次数和模型状态。
 - 本轮已做、未做、生产门禁与下一步完成定义统一见 [09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md](./09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md)。
@@ -19,7 +26,8 @@
 - **NewAPI 文生图已验收**：同机 e2e 曾 **200**（约 7–11s），媒体 URL 落在 `https://grokimage.relai.asia/v1/media/images/...`（token 须 `group=grok`、DB key 48 位无连字符、无 `sk-` 前缀）；池薄时仍会 `429 usage_limit`。
 - **10 并发状态**：10 槽/100 queue、Expand 2、SSE AIMD 1→6、Download 8 已部署；这表示 10 个客户端请求可同时进入流水线，不表示单出口同时发 10 条 SSE。最终单请求仍连续 `usage_limit_reached`，所以 4/10 生产档未运行，10/10 成功尚未验收。
 - NewAPI 图片名称仍为 `grok-imagine-image` / `quality` / `edit`；edit/video 渠道保持 disabled。
-- **Chrome 票池实验链（2026-07-23）**：本机 Chrome 捕获 `statsig_meta` → Panda `grok-signer` 现签 → Lite → asset 下载；账号 **1467** E2E 成功（128KB JPEG）。账号须有 **imagine 额度**（1468 为 0 → `systemErrCode:1010`）。工具与架构见 [13](./13-chrome-ticket-pool-panda-api-2026-07-23.md)。
+- **Chrome 票池（2026-07-23）**：Go 票池 + 本机 Chrome minter + signer 现签；**有票路径** E2E 200。运维：**本机持续出票**（池深≥3）；实验改 **分批短跑**（[14](./14-chrome-ticket-lifecycle-experiments-2026-07-23.md)），停止 30～60min 单次长测。
+- **Chrome 票池可视化（2026-07-24）**：账号页 Grok Web 下新增 **Chrome 票池** 面板（`GET /chrome-tickets/stats`）；展示 available/consumed/expired 与按账号分布。
 
 ## 已完成功能
 
@@ -62,12 +70,21 @@
 
 ## 进行中事项
 
-- **P0（2026-07-21）**：部署四池双探针后观察删除上涨与调度池稳定；外挂 timer 已收窄。
-- 历史待办 [06-open-todos-2026-07-16.md](./06-open-todos-2026-07-16.md)：探活可视化已完成。
+- **P0（新）**：**BE-023** Web Image 四池（对齐 Build；dispatch 门槛 = `candidateImagineQuotaAdmissible`）。见 [17](./17-web-four-pool-and-imaging-success-rates-2026-07-24.md)。
+- **Done（2026-07-24）**：`BE-018` egress 流量、`BE-019` pin∩dispatch、`BE-020` selection_reason、`BE-021` 选号偏好有票。
+- **冻结**：Chrome 票压测（S-3h/V-conc/mint_fast）至门禁 **生图 ok≥1** + 四池落地。
+- **P0（2026-07-21）**：Build 四池双探针观察。
+- 历史待办 [06](./06-open-todos-2026-07-16.md)：探活可视化已完成。
 
 ## 已知阻塞与风险
 
-- **Web 主路径架构已切纯 HTTP，但 10/10 生产验收未通过（2026-07-22）**：当前依赖 Panda `/tmp` signer + 单住宅出口。fresh browser matched pair 已消除 code 7；最终两次单请求分别 27.04s/34.97s 后返回真实 429，因此按门禁停止，未运行 2/4/10。
+- **调度池准入过宽（P0）**：`soft_stop`/`quota_exhausted` 号仍可进 dispatch（尤其 pin 脚本洗 `available`）；生图 429/502 非 503。→ **BE-023 四池**。
+- **号池索引（BE-019 已修）**：pin∩dispatch 已对齐；Phase B 验证 `pinNotInDispatch=[]`。展示池与 dispatch 仍须四池后统一投影。
+- **生图 E2E 低**：当前瓶颈是 **账号额度/soft_stop**，不是票失效；开票解决 asset 403，不解决 429。见 [17](./17-web-four-pool-and-imaging-success-rates-2026-07-24.md)。
+- **egress 流量**：BE-018 已插桩；smoke 脚本审计 API 路径待修。
+- **10 并发生产未验收**：冻结至双池门禁后恢复。
+- **出口与票分层**：票可跨 IP；消费须可用 egress（udeal）。Webshare 不能作 `grok_web`（CF challenge）。udeal 冷却 → 503，非票失效。
+- **独占 pin ∩ 内存图池**：须 pin 在 image dispatch 内，或重启重建索引。
 - signer 静态索引已从 `[31,16,43,8]` 漂移到 `[38,33,24,32]`；更严重的是 8 分钟动态 challenge 重算会生成服务端不接受的 pair。当前临时使用一次性 Chrome 捕获的 matched seed+HEX，并把刷新窗口放宽到 24h。signer 仍未镜像化，也没有“真实签名被上游接受”的强健康检查。
 - Webshare **不可**作 `grok_web`（CF Managed Challenge）；可仅试验 `grok_web_asset` CDN 下图。
 - 单住宅出口：上行 ~1.5 Mbps / 下行 ~15 Mbps；Lite 出图约 **170KB JPEG / 784×1168**。当前保持 `webConcurrency=2`、`assetConcurrency=8`、`expandConcurrency=2`、`mediaConcurrency=1`，SSE target 从 1 上探；账号接受率恢复前不得把 web/SSE 下限抬高。
@@ -76,11 +93,11 @@
 
 ## 下一步 3-5 项
 
-1. 对 Web dispatch 账号做低速、逐号 Lite 能力 canary，建立至少 10 个 fresh 模型成功证据；不要用聊天 active 代替生图可用。
-2. 先部署并单账号验证 Imagine 次数同步和模型状态迁移；确认 Accounts 页不会把 `0/0` 显示成耗尽，再按新图池排序观察调度。
-3. 将 signer 做成 compose sidecar：自动发现模块/索引、保存 matched pair、重建后强制真实 `/rest/modes` 验证，失败不放量。
-4. 账号池达标后重新从 1→2→4→10 执行生产门禁，并记录 success/P50/P90/max/soft-stop/429。
-5. `grok_web_asset` 挂高带宽口做下图 canary；上行握手/上传仍保持同出口，并继续观察 Build 四池。
+1. 实施 **BE-023**：Web Image 四池 + `WebPoolAt` 重写；pin 脚本禁止洗状态。
+2. 修 `panda_gate_smoke_phase_b.py`：`gate_passed` 要求 `ok≥1`；egress 审计路径对齐 Admin API。
+3. 重跑 Phase B smoke，确认 dispatch 仅含真实可用号。
+4. 通过 plan §4 全部门禁后，恢复 S-3h / V-conc / mint_fast。
+5. **BE-022** Rust 工具链（pool-ops / minter / experiment）PoC 契约冻结后推进。
 
 ## 与 README 或旧文档的不一致处
 

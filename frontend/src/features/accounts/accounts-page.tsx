@@ -70,6 +70,7 @@ import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/accoun
 import { AccountTrends } from "@/features/accounts/account-trends";
 import { BuildProbePanel } from "@/features/accounts/build-probe-panel";
 import { WebProbePanel } from "@/features/accounts/web-probe-panel";
+import { ChromeTicketPanel } from "@/features/accounts/chrome-ticket-panel";
 import { WebLaneQuotaPanel } from "@/features/accounts/web-lane-quota-panel";
 
 function isAbortError(error: unknown): boolean {
@@ -611,6 +612,7 @@ export function AccountsPage() {
         </Tabs>
         {provider === "grok_build" ? <BuildProbePanel onCompleted={() => { void accountsQuery.refetch(); void summaryQuery.refetch(); }} /> : null}
         {provider === "grok_web" ? <WebProbePanel onCompleted={() => { void accountsQuery.refetch(); void summaryQuery.refetch(); }} /> : null}
+        {provider === "grok_web" ? <ChromeTicketPanel /> : null}
         <input
           ref={fileInputRef}
           type="file"

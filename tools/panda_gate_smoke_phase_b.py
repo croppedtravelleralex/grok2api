@@ -57,16 +57,15 @@ def main() -> int:
 
     report: dict = {"account_ids": args.account_ids, "checks": {}, "probes": []}
 
-    # 1) pin + prepare (includes reconcile)
-    pin_cmd = ["python3", str(PIN_SCRIPT), *[str(x) for x in args.account_ids]]
-    subprocess.run(pin_cmd, check=True)
+    # prepare already pins; skip duplicate pin call here
     prep = subprocess.run(
         ["python3", str(PREPARE_SCRIPT), *[str(x) for x in args.account_ids]],
         capture_output=True,
         text=True,
         check=True,
     )
-    prep_data = json.loads(prep.stdout.strip())
+    prep_lines = [line.strip() for line in prep.stdout.splitlines() if line.strip()]
+    prep_data = json.loads(prep_lines[-1])
     report["prepare"] = prep_data
 
     tok = admin_token()
@@ -111,6 +110,7 @@ def main() -> int:
         "other": other,
     }
     report["checks"]["no_503"] = err503 == 0
+    report["checks"]["image_ok"] = ok >= 1
 
     # 3) egress traffic (first successful probe with request id in audit - best effort)
     try:
@@ -131,7 +131,7 @@ def main() -> int:
     except Exception as exc:
         report["egress_traffic_error"] = str(exc)[:200]
 
-    passed = all(report["checks"].get(k) for k in ("pin_in_dispatch", "no_503"))
+    passed = all(report["checks"].get(k) for k in ("pin_in_dispatch", "no_503", "image_ok"))
     report["gate_passed"] = passed
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if passed else 1

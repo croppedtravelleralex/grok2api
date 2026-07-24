@@ -57,6 +57,10 @@ func TestImagePoolEligibilityRequiresFreshPositiveImagineQuota(t *testing.T) {
 		{name: "signature failure is unavailable", candidate: webPoolCandidate{enabled: true, active: true, modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusSignatureFailed}}, want: false},
 		{name: "old quota exhaustion cleared by positive refresh", candidate: webPoolCandidate{enabled: true, active: true, imagineBlocked: true, imagineWindow: freshWindow(10, 3), modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusQuotaExhausted}}, want: true},
 		{name: "active soft stop is unavailable", candidate: webPoolCandidate{enabled: true, active: true, modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusSoftStop, CooldownUntil: timePointer(now.Add(time.Minute))}}, want: false},
+		{name: "dispatch requires available state", candidate: webPoolCandidate{
+			enabled: true, active: true, imagineWindow: freshWindow(10, 3),
+			modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusAvailable},
+		}, want: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -64,6 +68,32 @@ func TestImagePoolEligibilityRequiresFreshPositiveImagineQuota(t *testing.T) {
 				t.Fatalf("eligible = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestImageDispatchAdmissibleStricterThanEligible(t *testing.T) {
+	now := time.Now().UTC()
+	synced := now.Add(-5 * time.Minute)
+	fresh := &accountdomain.QuotaWindow{
+		Mode: "imagine", Total: 10, Remaining: 3,
+		SyncedAt: &synced, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: synced,
+	}
+	exhausted := webPoolCandidate{
+		enabled: true, active: true, imagineBlocked: true, imagineWindow: fresh,
+		modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusQuotaExhausted},
+	}
+	if !imagePoolEligible(exhausted, now) {
+		t.Fatal("eligible should allow refreshed exhaustion")
+	}
+	if imageDispatchAdmissible(exhausted, now) {
+		t.Fatal("dispatch must reject quota_exhausted even with fresh window")
+	}
+	available := webPoolCandidate{
+		enabled: true, active: true, imagineWindow: fresh,
+		modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusAvailable},
+	}
+	if !imageDispatchAdmissible(available, now) {
+		t.Fatal("dispatch should accept available + fresh quota")
 	}
 }
 

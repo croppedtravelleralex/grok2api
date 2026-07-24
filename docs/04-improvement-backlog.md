@@ -34,8 +34,16 @@
 | BE-011 | DispatchIndex 真实额度序 | 索引 Upsert 未写入 quota_remaining | 同步 billing/recovery 到索引 key | P1 | Todo | = FP-002 |
 | BE-012 | 探针 DRR 占比可观测 | 生产无法验证 5:3:2 / 7:3 | statistics 增加 per-lane 计数 | P1 | Todo | = FP-003 |
 | BE-013 | 清理恢复/purge 仓储死 API | `ListRecoveryCandidates`/`ListPurgeCandidates` 仍在 | 删除或正式 Deprecated 且无调用 | P1 | Todo | = FP-004 |
-| BE-014 | Web Lite asset 下载 403 | SSE 出 URL 后 `assets.grok.com` 频繁 403；同 udeal IP 偶发成功 | 增加 asset 出口、403 换节点重试；失败打 `asset_url_tail` | P0 | In Progress | [12](./12-web-lite-two-stage-failure-asset-403-2026-07-23.md)；`web_lite_asset_download_failed` 日志已加 |
-| BE-015 | Chrome 票池 + grok2api 生图 | 本机 Chrome 批捕 meta；Go 票池 + signer 现签 + `image.go` 集成 | Go 已落地；Panda 联调待部署验收 | P1 | In Progress | [13](./13-chrome-ticket-pool-panda-api-2026-07-23.md)；E2E 1467 已验收 |
+| BE-014 | Web Lite asset 下载 403 | 无票路径曾 403；有票路径已修 | SSE 前 warm + Python 下载头（`c07cc2e`） | P0 | Done（有票）/ In Progress（无票回退） | [12](./12-web-lite-two-stage-failure-asset-403-2026-07-23.md)；[13](./13-chrome-ticket-pool-panda-api-2026-07-23.md) |
+| BE-015 | Chrome 票池 + grok2api 生图 | 本机 Chrome 批捕 meta；Go 票池 + signer 现签 | 已部署 `c07cc2e`；持续 minter + 生命周期实验 | P1 | In Progress | [13](./13-chrome-ticket-pool-panda-api-2026-07-23.md)；[14](./14-chrome-ticket-lifecycle-experiments-2026-07-23.md) |
+| BE-016 | Chrome 票生命周期量化 | R-delay pass；S 下限 **≥60min**；S-3h 待 consume；V 4/5 | P1 | **Frozen** | 冻结至 [plan.md](./plan.md) §4 门禁；[16](./16-chrome-ticket-experiments-round2-2026-07-23.md) |
+| BE-017 | Admin 密码三源合一 | secrets / reset 硬编码 / import `.tmp` 不同步 → 401 与 import 200 并存 | 统一单一真相源；改密必写三处；禁用 reset 硬编码 | P1 | In Progress | 2026-07-23 已临时同步；见 [16](./16-chrome-ticket-experiments-round2-2026-07-23.md) |
+| BE-018 | Egress 全量流量统计 | 仅 07-21 单口压测 + media 体积；无逐请求代理字节 | **Go** `Lease.Do` 插桩 + `egress_traffic_hops`；CLI 读数 PoC→**Rust** | P0 | Done | [plan.md](./plan.md) §1；`96b664d` |
+| BE-019 | Web 号池单一真相源 | pin / imagePoolIds / dispatchIndex 三套不一致 → 503 | **Go** 索引∩pin + sync；运维 **Python PoC→Rust** pool-ops | P0 | Done | Phase B：`pinNotInDispatch=[]`；生图仍 429/502 |
+| BE-020 | Selector 诊断与指标 | 503 难区分 saturated vs 真空池 | `selection_reason` + dispatch/pin/stale 指标 | P1 | Done | `X-Grok-Selection-Reason` |
+| BE-021 | 票池与选号联动 | 选号不查票 → 无票回退 | Acquire 偏好有票；daemon 池深跟 SSESlots | P1 | Done | selector 有票优先；mint daemon 联动 |
+| BE-023 | Web Image 四池 | 软停/耗尽号进 dispatch；pin 洗状态 | 对齐 Build 四池；dispatch=`imageDispatchAdmissible` | P0 | Done | `web_pool_probe.go`；pin 脚本仅绑 route |
+| BE-022 | 运维/实验工具 Rust 化 | Python 脚本当生产依赖 | PoC 冻结 JSON 契约后：`grok-pool-ops-rs`、`grok-ticket-minter-rs`、`grok-experiment-rs` | P1 | Planned | [plan.md](./plan.md) 语言分层；参考 `web_http_chat_image_canary_rs` |
 
 ## 稳定性与可维护性
 
