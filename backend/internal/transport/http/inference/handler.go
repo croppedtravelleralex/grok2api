@@ -1235,6 +1235,10 @@ func selectionErrorResponse(c *gin.Context, failure *gateway.SelectionUnavailabl
 		status, code, message = http.StatusTooManyRequests, "upstream_model_cooling", "上游账号的目标模型正在冷却"
 	case gateway.SelectionQuotaExhausted:
 		status, code, message = http.StatusTooManyRequests, "upstream_quota_exhausted", "上游账号额度等待恢复"
+	case gateway.SelectionQuotaStale:
+		status, code, message = http.StatusTooManyRequests, "upstream_quota_stale", "上游账号 Imagine 额度未同步或已过期"
+	case gateway.SelectionNoDispatchIndex, gateway.SelectionPinFiltered:
+		code, message = "upstream_unavailable", "当前没有可用的上游账号"
 	case gateway.SelectionSaturated:
 		code, message = "upstream_saturated", "上游账号当前均达到并发上限"
 	case gateway.SelectionUnsupportedModel:
@@ -1243,6 +1247,11 @@ func selectionErrorResponse(c *gin.Context, failure *gateway.SelectionUnavailabl
 	if failure.RetryAfter > 0 {
 		seconds := max(int64(1), int64((failure.RetryAfter+time.Second-1)/time.Second))
 		c.Header("Retry-After", strconv.FormatInt(seconds, 10))
+	}
+	if reason := strings.TrimSpace(failure.SelectionReason); reason != "" {
+		c.Header("X-Grok-Selection-Reason", reason)
+	} else if failure.Reason != "" {
+		c.Header("X-Grok-Selection-Reason", string(failure.Reason))
 	}
 	return status, code, message
 }

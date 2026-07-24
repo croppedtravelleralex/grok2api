@@ -31,6 +31,7 @@ type Lease struct {
 	CFCookies string
 	client    requestClient
 	browser   *browserClient
+	recorder  TrafficRecorder
 	release   func()
 }
 
@@ -39,11 +40,25 @@ type requestClient interface {
 	CloseIdleConnections()
 }
 
+func (m *Manager) SetTrafficRecorder(recorder TrafficRecorder) {
+	m.mu.Lock()
+	m.recorder = recorder
+	m.mu.Unlock()
+}
+
 func (l *Lease) Do(request *http.Request) (*http.Response, error) {
 	if l == nil || l.client == nil {
 		return nil, errors.New("出口客户端未初始化")
 	}
-	return l.client.Do(request)
+	ctx := context.Background()
+	if request != nil && request.Context() != nil {
+		ctx = request.Context()
+	}
+	response, err := l.client.Do(request)
+	if l.recorder != nil {
+		l.recordTraffic(ctx, l.recorder, request, response)
+	}
+	return response, err
 }
 
 func (l *Lease) JarCloudflareCookies(target *url.URL) string {
@@ -63,6 +78,7 @@ func (l *Lease) Release() {
 type Manager struct {
 	repository repository.EgressRepository
 	cipher     *security.Cipher
+	recorder   TrafficRecorder
 	mu         sync.Mutex
 	clients    map[uint64]cachedClient
 	inflight   map[uint64]int
@@ -196,10 +212,11 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 	}
 	m.mu.Lock()
 	m.inflight[selected.ID]++
+	recorder := m.recorder
 	m.mu.Unlock()
 	var once sync.Once
 	releaseOnReturn = false
-	return &Lease{NodeID: selected.ID, Scope: scope, ProxyURL: proxyURL, UserAgent: userAgent, CFCookies: cookies, client: client.client, browser: client.browser, release: func() {
+	return &Lease{NodeID: selected.ID, Scope: scope, ProxyURL: proxyURL, UserAgent: userAgent, CFCookies: cookies, client: client.client, browser: client.browser, recorder: recorder, release: func() {
 		once.Do(func() {
 			m.mu.Lock()
 			m.inflight[selected.ID]--

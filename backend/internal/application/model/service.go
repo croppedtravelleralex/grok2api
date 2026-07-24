@@ -152,7 +152,13 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (modeldomain.Ro
 		Capability: input.Capability, Origin: modeldomain.OriginManual, Enabled: input.Enabled,
 	}
 	created, err := s.models.Create(ctx, value, accountIDs)
-	return created, mapRepositoryError(err)
+	if err != nil {
+		return modeldomain.Route{}, mapRepositoryError(err)
+	}
+	if len(accountIDs) > 0 && s.account != nil && created.Provider == account.ProviderWeb {
+		_ = s.account.RebuildWebPoolIndex(ctx)
+	}
+	return created, nil
 }
 
 func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (modeldomain.Route, error) {
@@ -179,7 +185,13 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (mod
 		accountIDs = &validated
 	}
 	updated, err := s.models.Update(ctx, value, accountIDs)
-	return updated, mapRepositoryError(err)
+	if err != nil {
+		return modeldomain.Route{}, mapRepositoryError(err)
+	}
+	if accountIDs != nil && s.account != nil && updated.Provider == account.ProviderWeb {
+		_ = s.account.RebuildWebPoolIndex(ctx)
+	}
+	return updated, nil
 }
 
 func (s *Service) Delete(ctx context.Context, id uint64) error {

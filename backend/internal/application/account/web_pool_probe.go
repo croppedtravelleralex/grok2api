@@ -260,6 +260,7 @@ func (s *Service) RebuildWebPoolIndex(ctx context.Context) error {
 	s.webProbeMu.Lock()
 	s.webImageLane = newWebLaneIndex()
 	s.webChatLane = newWebLaneIndex()
+	s.refreshWebRoutePinSets(ctx)
 	now := s.now()
 	for _, value := range values {
 		ctxInput := buildWebPoolContext(value, windowsByAccount[value.ID], modelStates[value.ID], blocks[value.ID], now)
@@ -296,6 +297,9 @@ func (s *Service) indexWebAccountLocked(lane WebLane, value accountdomain.Creden
 	case WebPoolDead:
 		idx.deadHeap.Upsert(value.ID, value.UpdatedAt)
 	case WebPoolDispatch:
+		if !s.webLanePinAllowedLocked(lane, value.ID) {
+			return
+		}
 		lastSelected := time.Time{}
 		if value.LastUsedAt != nil {
 			lastSelected = *value.LastUsedAt
@@ -334,6 +338,11 @@ func webDispatchQuota(lane WebLane, input WebPoolContext) (known bool, remaining
 	default:
 		return false, 0
 	}
+}
+
+// SyncWebAccountIndex 在账号状态、额度或 pin 变更后增量同步双轨调度索引。
+func (s *Service) SyncWebAccountIndex(ctx context.Context, id uint64) {
+	s.syncWebAccountIndex(ctx, id)
 }
 
 func (s *Service) syncWebAccountIndex(ctx context.Context, id uint64) {

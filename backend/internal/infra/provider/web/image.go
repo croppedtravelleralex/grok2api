@@ -1600,6 +1600,7 @@ func (a *Adapter) downloadImage(ctx context.Context, credential account.Credenti
 }
 
 func (a *Adapter) downloadImageWithScope(ctx context.Context, credential account.Credential, parsed *url.URL, token string, scope domainegress.Scope, deviceCookie string, downloadState chromeDownloadState) ([]byte, int, error) {
+	ctx = withEgressTrafficMeta(ctx, "image", "download", credential.ID)
 	lease, err := a.egress.Acquire(ctx, scope, fmt.Sprintf("%d", credential.ID))
 	if err != nil {
 		return nil, 0, err

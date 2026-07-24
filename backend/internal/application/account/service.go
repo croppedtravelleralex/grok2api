@@ -254,6 +254,7 @@ type Service struct {
 	webProbeCfg           config.WebProbeConfig
 	webImageLane          webLaneIndex
 	webChatLane           webLaneIndex
+	webRoutePins          webRoutePinSets
 	webProbeLaneCursor    int
 	logger                *slog.Logger
 	now                   func() time.Time
@@ -406,6 +407,11 @@ func (s *Service) BatchUpdate(ctx context.Context, ids []uint64, input UpdateInp
 	if input.Enabled != nil && !*input.Enabled {
 		for _, id := range ids {
 			_ = s.sticky.DeleteByAccount(ctx, id)
+		}
+	}
+	for _, id := range ids {
+		if value, err := s.accounts.Get(ctx, id); err == nil && value.Provider == accountdomain.ProviderWeb {
+			s.SyncWebAccountIndex(ctx, id)
 		}
 	}
 	return updated, nil
@@ -1310,6 +1316,9 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 	} else if updated.Enabled && s.providers != nil && s.providers.SupportsCredentialRefresh(updated.Provider) {
 		s.WakeCredentialRefresh()
 	}
+	if updated.Provider == accountdomain.ProviderWeb {
+		s.SyncWebAccountIndex(ctx, updated.ID)
+	}
 	return s.Get(ctx, updated.ID)
 }
 
@@ -1349,6 +1358,9 @@ func (s *Service) MarkReauthRequired(ctx context.Context, id uint64, reason stri
 	}
 	if s.sticky != nil {
 		_ = s.sticky.DeleteByAccount(ctx, id)
+	}
+	if value.Provider == accountdomain.ProviderWeb {
+		s.SyncWebAccountIndex(ctx, id)
 	}
 	return nil
 }
@@ -1800,6 +1812,9 @@ func (s *Service) refreshQuota(ctx context.Context, id uint64) ([]accountdomain.
 				return snapshot.Windows, fmt.Errorf("安排额度恢复事件: %w", err)
 			}
 		}
+	}
+	if value.Provider == accountdomain.ProviderWeb {
+		s.SyncWebAccountIndex(ctx, id)
 	}
 	return snapshot.Windows, nil
 }

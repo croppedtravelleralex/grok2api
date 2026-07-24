@@ -165,6 +165,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	mediaService := mediaapp.NewService(mediaAssetRepo, localMediaStore, refreshLock, mediaConfig(cfg))
 
 	egressManager := infraegress.NewManagerWithConcurrency(egressRepo, cipher, cfg.Provider.Web.WebConcurrency, cfg.Provider.Web.AssetConcurrency, cfg.Provider.Web.ExpandConcurrency)
+	egressTrafficRepo := relational.NewEgressTrafficRepository(database)
+	egressManager.SetTrafficRecorder(infraegress.NewRepositoryTrafficRecorder(egressTrafficRepo))
 	cliAdapter := cliprovider.NewAdapter(cliprovider.Config{BaseURL: cfg.Provider.Build.BaseURL, ClientVersion: cfg.Provider.Build.ClientVersion, ClientIdentifier: cfg.Provider.Build.ClientIdentifier, TokenAuth: cfg.Provider.Build.TokenAuth, UserAgent: cfg.Provider.Build.UserAgent}, cipher)
 	cliAdapter.SetEgress(egressManager)
 	webAdapter := webprovider.NewAdapter(webProviderConfig(cfg), egressManager, cipher, responseRepo, mediaService)
@@ -243,12 +245,14 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	accountSyncService.SetBulkPool(importPool)
 	accountSyncService.UpdateConcurrency(cfg.Batch.ImportConcurrency)
 	egressService := egressapp.NewService(egressRepo, cipher, infraegress.DefaultUserAgent, cfg.Provider.Console.UserAgent)
+	egressService.SetTrafficRepository(egressTrafficRepo)
 	clientKeyService := clientkeyapp.NewService(clientKeyRepo, rateLimiter, concurrency, cfg.ClientKeyDefaults.RPMLimit, cfg.ClientKeyDefaults.MaxConcurrent, cipher)
 	auditService := auditapp.NewService(auditRepo, logger, cfg.Audit.BufferSize, cfg.Audit.BatchSize, cfg.Audit.FlushInterval.Value())
 	dashboardService := dashboardapp.NewService(dashboardRepo)
 	selector := gateway.NewSelector(accountRepo, concurrency, sticky, providers, cfg.Routing.StickyTTL.Value(), cfg.Routing.CooldownBase.Value(), cfg.Routing.CooldownMax.Value(), cfg.Routing.CapacityWait.Value())
 	selector.SetBuildDispatchSource(accountService)
 	selector.SetWebDispatchSource(accountService)
+	selector.SetChromeTicketSource(chromeTicketSelectorSource{pool: chromeTicketPool})
 	gatewayService := gateway.NewService(modelService, auditService, accountService, clientKeyService, providers, selector, responseRepo, cfg.Routing.MaxAttempts)
 	gatewayService.SetLogger(logger)
 	gatewayService.ConfigureMedia(mediaJobRepo, cfg.Provider.Web.MediaConcurrency)
@@ -622,4 +626,23 @@ func maxDuration(left, right time.Duration) time.Duration {
 		return left
 	}
 	return right
+}
+
+type chromeTicketSelectorSource struct {
+	pool *chrometicketapp.Pool
+}
+
+func (s chromeTicketSelectorSource) AvailableCounts(ctx context.Context) map[uint64]int64 {
+	if s.pool == nil {
+		return nil
+	}
+	stats, err := s.pool.Stats(ctx)
+	if err != nil {
+		return nil
+	}
+	out := make(map[uint64]int64, len(stats.AvailableByAccount))
+	for _, item := range stats.AvailableByAccount {
+		out[item.AccountID] = item.Count
+	}
+	return out
 }

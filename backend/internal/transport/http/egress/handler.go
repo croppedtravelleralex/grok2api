@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
@@ -19,6 +20,7 @@ func NewHandler(service *egressapp.Service) *Handler { return &Handler{service: 
 
 func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/egress-nodes", h.list)
+	router.GET("/egress-traffic", h.listTraffic)
 	router.POST("/egress-nodes", h.create)
 	router.PUT("/egress-nodes/:id", h.update)
 	router.DELETE("/egress-nodes/:id", h.delete)
@@ -140,6 +142,36 @@ func (h *Handler) writeError(c *gin.Context, err error) {
 	default:
 		response.Error(c, http.StatusInternalServerError, "egressNodeOperationFailed", "代理节点操作失败")
 	}
+}
+
+func (h *Handler) listTraffic(c *gin.Context) {
+	requestID := strings.TrimSpace(c.Query("requestId"))
+	if requestID == "" {
+		response.Error(c, http.StatusBadRequest, "invalidRequestId", "requestId 不能为空")
+		return
+	}
+	hops, err := h.service.ListTrafficByRequestID(c.Request.Context(), requestID)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "egressTrafficListFailed", "读取 egress 流量失败")
+		return
+	}
+	items := make([]gin.H, 0, len(hops))
+	var requestBytes, responseBytes int64
+	for _, hop := range hops {
+		requestBytes += hop.RequestBytes
+		responseBytes += hop.ResponseBytes
+		items = append(items, gin.H{
+			"id": hop.ID, "requestId": hop.RequestID, "egressNodeId": hop.EgressNodeID,
+			"egressScope": hop.EgressScope, "provider": hop.Provider, "operation": hop.Operation,
+			"pipelineStage": hop.PipelineStage, "accountId": hop.AccountID,
+			"requestBytes": hop.RequestBytes, "responseBytes": hop.ResponseBytes,
+			"transport": hop.Transport, "createdAt": hop.CreatedAt,
+		})
+	}
+	response.Success(c, http.StatusOK, gin.H{
+		"requestId": requestID, "items": items,
+		"totals": gin.H{"requestBytes": requestBytes, "responseBytes": responseBytes},
+	})
 }
 
 func pathID(c *gin.Context) (uint64, bool) {

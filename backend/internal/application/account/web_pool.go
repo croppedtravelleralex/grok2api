@@ -18,18 +18,20 @@ const (
 
 // WebPoolSnapshot 描述图池 / 对话池当前调度位。
 type WebPoolSnapshot struct {
-	ImagePoolIDs   []uint64  `json:"imagePoolIds"`
-	ChatPoolIDs    []uint64  `json:"chatPoolIds"`
-	EnabledIDs     []uint64  `json:"enabledIds"`
-	ImagePoolSize  int       `json:"imagePoolSize"`
-	ChatPoolSize   int       `json:"chatPoolSize"`
-	EnabledCount   int       `json:"enabledCount"`
-	ImagePoolCap   int       `json:"imagePoolCap"`
-	ChatPoolCap    int       `json:"chatPoolCap"`
-	ReconciledAt   time.Time `json:"reconciledAt"`
-	EnabledAdded   int       `json:"enabledAdded"`
-	EnabledRemoved int       `json:"enabledRemoved"`
-	ThreePools     WebThreePoolsPublic `json:"threePools,omitempty"`
+	ImagePoolIDs         []uint64                `json:"imagePoolIds"`
+	ChatPoolIDs          []uint64                `json:"chatPoolIds"`
+	EnabledIDs           []uint64                `json:"enabledIds"`
+	ImagePoolSize        int                     `json:"imagePoolSize"`
+	ChatPoolSize         int                     `json:"chatPoolSize"`
+	EnabledCount         int                     `json:"enabledCount"`
+	ImagePoolCap         int                     `json:"imagePoolCap"`
+	ChatPoolCap          int                     `json:"chatPoolCap"`
+	ReconciledAt         time.Time               `json:"reconciledAt"`
+	EnabledAdded         int                     `json:"enabledAdded"`
+	EnabledRemoved       int                     `json:"enabledRemoved"`
+	ThreePools           WebThreePoolsPublic     `json:"threePools,omitempty"`
+	PinNotInDispatch     []uint64                `json:"pinNotInDispatch,omitempty"`
+	SelectionDiagnostics WebSelectionDiagnostics `json:"selectionDiagnostics,omitempty"`
 }
 
 type webPoolCandidate struct {
@@ -89,39 +91,22 @@ func (s *Service) ReconcileWebPools(ctx context.Context) (WebPoolSnapshot, error
 		})
 	}
 
-	imageEligible := func(c webPoolCandidate) bool {
-		return imagePoolEligible(c, now)
-	}
-	chatEligible := func(c webPoolCandidate) bool {
-		return c.enabled && c.active && !c.cooling && (c.fastRem > 0 || c.autoRem > 0)
-	}
-	imageIDs := selectWebPoolIDs(candidates, webImagePoolCap, imageEligible, func(a, b webPoolCandidate) bool {
-		return imagePoolLess(a, b, now)
-	})
-	chatIDs := selectWebPoolIDs(candidates, webChatPoolCap, chatEligible, func(a, b webPoolCandidate) bool {
-		if a.priority != b.priority {
-			return a.priority > b.priority
-		}
-		scoreA, scoreB := a.fastRem+a.autoRem, b.fastRem+b.autoRem
-		if scoreA != scoreB {
-			return scoreA > scoreB
-		}
-		return a.id < b.id
-	})
-
-	// 出池：已启用但 auth 失效 / 账号冷却 / 对话额度耗尽 → disable。绝不自动 enable。
-	// Imagine model block 不触发整号 disable（否则 block 到期后无法自动回池）。
+	// 出池：已启用但 auth 失效 / 账号冷却 / 图轨与对话轨均不可用 → disable。绝不自动 enable。
+	// 图轨资格与对话 fast/auto 解耦，避免 imagine 专用号被误踢。
 	toDisable := make([]uint64, 0)
 	enabledNow := make([]uint64, 0)
 	for _, candidate := range candidates {
-		keep := candidate.enabled && candidate.active && !candidate.cooling && (candidate.fastRem > 0 || candidate.autoRem > 0)
-		if candidate.enabled && !keep {
+		if !candidate.enabled {
+			continue
+		}
+		chatOK := candidate.active && !candidate.cooling && (candidate.fastRem > 0 || candidate.autoRem > 0)
+		imageOK := candidate.active && !candidate.cooling && imagePoolEligible(candidate, now)
+		keep := candidate.active && !candidate.cooling && (chatOK || imageOK)
+		if !keep {
 			toDisable = append(toDisable, candidate.id)
 			continue
 		}
-		if keep {
-			enabledNow = append(enabledNow, candidate.id)
-		}
+		enabledNow = append(enabledNow, candidate.id)
 	}
 
 	disabledFlag := false
@@ -135,18 +120,44 @@ func (s *Service) ReconcileWebPools(ctx context.Context) (WebPoolSnapshot, error
 	}
 
 	sort.Slice(enabledNow, func(i, j int) bool { return enabledNow[i] < enabledNow[j] })
-	threePools, _ := s.SummarizeWebThreePoolsForSnapshot(ctx)
-	return WebPoolSnapshot{
-		ImagePoolIDs: imageIDs, ChatPoolIDs: chatIDs, EnabledIDs: enabledNow,
-		ImagePoolSize: len(imageIDs), ChatPoolSize: len(chatIDs), EnabledCount: len(enabledNow),
-		ImagePoolCap: webImagePoolCap, ChatPoolCap: webChatPoolCap, ReconciledAt: now,
-		EnabledAdded: 0, EnabledRemoved: len(toDisable), ThreePools: threePools,
-	}, nil
+	if err := s.RebuildWebPoolIndex(ctx); err != nil {
+		return WebPoolSnapshot{}, err
+	}
+	snapshot := s.webPoolSnapshotFromIndex(ctx, now, enabledNow, len(toDisable))
+	return snapshot, nil
 }
 
-// WebPools 返回当前按额度推算的池快照（不改 enabled）。
+func (s *Service) webPoolSnapshotFromIndex(ctx context.Context, now time.Time, enabledIDs []uint64, enabledRemoved int) WebPoolSnapshot {
+	s.initWebProbe()
+	s.webProbeMu.Lock()
+	imageIDs := s.dispatchIDsLocked(WebLaneImage, webImagePoolCap)
+	chatIDs := s.dispatchIDsLocked(WebLaneChat, webChatPoolCap)
+	pinNotIn := s.pinNotInDispatchLocked()
+	diagnostics := s.webSelectionDiagnosticsLocked()
+	threePools, _ := s.SummarizeWebThreePoolsForSnapshot(ctx)
+	s.webProbeMu.Unlock()
+	return WebPoolSnapshot{
+		ImagePoolIDs: imageIDs, ChatPoolIDs: chatIDs, EnabledIDs: enabledIDs,
+		ImagePoolSize: len(imageIDs), ChatPoolSize: len(chatIDs), EnabledCount: len(enabledIDs),
+		ImagePoolCap: webImagePoolCap, ChatPoolCap: webChatPoolCap, ReconciledAt: now,
+		EnabledAdded: 0, EnabledRemoved: enabledRemoved, ThreePools: threePools,
+		PinNotInDispatch: pinNotIn, SelectionDiagnostics: diagnostics,
+	}
+}
+
+func (s *Service) dispatchIDsLocked(lane WebLane, cap int) []uint64 {
+	entries := s.laneIndexLocked(lane).dispatchIndex.Ascend(cap)
+	ids := make([]uint64, 0, len(entries))
+	for _, entry := range entries {
+		ids = append(ids, entry.ID)
+	}
+	return ids
+}
+
+// WebPools 返回当前 dispatchIndex 投影（不改 enabled）。
 func (s *Service) WebPools(ctx context.Context) (WebPoolSnapshot, error) {
 	now := time.Now().UTC()
+	s.ensureWebPoolIndexWarm(ctx)
 	accounts, _, err := s.accounts.List(ctx, repository.AccountListQuery{
 		Page:   repository.PageQuery{Offset: 0, Limit: 5000, Sort: repository.SortQuery{Field: "createdAt", Direction: repository.SortAscending}},
 		Filter: repository.AccountListFilter{Provider: string(accountdomain.ProviderWeb), Now: now},
@@ -154,64 +165,14 @@ func (s *Service) WebPools(ctx context.Context) (WebPoolSnapshot, error) {
 	if err != nil {
 		return WebPoolSnapshot{}, err
 	}
-	ids := make([]uint64, 0, len(accounts))
 	enabled := make([]uint64, 0)
 	for _, value := range accounts {
-		ids = append(ids, value.ID)
 		if value.Enabled {
 			enabled = append(enabled, value.ID)
 		}
 	}
-	windowsByAccount, err := s.accounts.GetQuotaWindows(ctx, ids)
-	if err != nil {
-		return WebPoolSnapshot{}, err
-	}
-	blocks, err := s.accounts.GetActiveModelQuotaBlocks(ctx, ids, imagineUpstream, now)
-	if err != nil {
-		return WebPoolSnapshot{}, err
-	}
-	modelStates, err := s.accounts.GetModelStates(ctx, ids)
-	if err != nil {
-		return WebPoolSnapshot{}, err
-	}
-	candidates := make([]webPoolCandidate, 0, len(accounts))
-	for _, value := range accounts {
-		fastRem, autoRem := quotaRemaining(windowsByAccount[value.ID], "fast"), quotaRemaining(windowsByAccount[value.ID], "auto")
-		accountCooling := value.CooldownUntil != nil && value.CooldownUntil.After(now)
-		candidates = append(candidates, webPoolCandidate{
-			id: value.ID, priority: value.Priority, fastRem: fastRem, autoRem: autoRem,
-			imagineWindow: findQuotaWindow(windowsByAccount[value.ID], "imagine"),
-			modelState:    findModelState(modelStates[value.ID], imagineUpstream),
-			enabled:       value.Enabled, active: value.AuthStatus == accountdomain.AuthStatusActive,
-			cooling: accountCooling, imagineBlocked: blocks[value.ID],
-		})
-	}
-	// 只读快照同样只在当前 enabled 集合内投影，避免把未进池账号显示成调度位。
-	imageIDs := selectWebPoolIDs(candidates, webImagePoolCap, func(c webPoolCandidate) bool {
-		return imagePoolEligible(c, now)
-	}, func(a, b webPoolCandidate) bool {
-		return imagePoolLess(a, b, now)
-	})
-	chatIDs := selectWebPoolIDs(candidates, webChatPoolCap, func(c webPoolCandidate) bool {
-		return c.enabled && c.active && !c.cooling && (c.fastRem > 0 || c.autoRem > 0)
-	}, func(a, b webPoolCandidate) bool {
-		if a.priority != b.priority {
-			return a.priority > b.priority
-		}
-		scoreA, scoreB := a.fastRem+a.autoRem, b.fastRem+b.autoRem
-		if scoreA != scoreB {
-			return scoreA > scoreB
-		}
-		return a.id < b.id
-	})
 	sort.Slice(enabled, func(i, j int) bool { return enabled[i] < enabled[j] })
-	threePools, _ := s.SummarizeWebThreePoolsForSnapshot(ctx)
-	return WebPoolSnapshot{
-		ImagePoolIDs: imageIDs, ChatPoolIDs: chatIDs, EnabledIDs: enabled,
-		ImagePoolSize: len(imageIDs), ChatPoolSize: len(chatIDs), EnabledCount: len(enabled),
-		ImagePoolCap: webImagePoolCap, ChatPoolCap: webChatPoolCap, ReconciledAt: now,
-		ThreePools: threePools,
-	}, nil
+	return s.webPoolSnapshotFromIndex(ctx, now, enabled, 0), nil
 }
 
 func quotaRemaining(windows []accountdomain.QuotaWindow, mode string) int {

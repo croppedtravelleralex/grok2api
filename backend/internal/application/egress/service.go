@@ -37,6 +37,7 @@ type Input struct {
 
 type Service struct {
 	repository repository.EgressRepository
+	traffic    repository.EgressTrafficRepository
 	cipher     *security.Cipher
 	mu         sync.RWMutex
 	webUA      string
@@ -45,6 +46,17 @@ type Service struct {
 
 func NewService(repository repository.EgressRepository, cipher *security.Cipher, webUA, consoleUA string) *Service {
 	return &Service{repository: repository, cipher: cipher, webUA: strings.TrimSpace(webUA), consoleUA: strings.TrimSpace(consoleUA)}
+}
+
+func (s *Service) SetTrafficRepository(traffic repository.EgressTrafficRepository) {
+	s.traffic = traffic
+}
+
+func (s *Service) ListTrafficByRequestID(ctx context.Context, requestID string) ([]domain.TrafficHop, error) {
+	if s.traffic == nil {
+		return nil, nil
+	}
+	return s.traffic.ListByRequestID(ctx, requestID)
 }
 
 func (s *Service) UpdateDefaults(webUA, consoleUA string) {

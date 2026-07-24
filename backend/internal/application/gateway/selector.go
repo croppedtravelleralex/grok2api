@@ -68,10 +68,13 @@ type SelectionUnavailableReason string
 
 const (
 	SelectionNoAccounts       SelectionUnavailableReason = "no_accounts"
+	SelectionNoDispatchIndex  SelectionUnavailableReason = "no_dispatch_index"
+	SelectionPinFiltered      SelectionUnavailableReason = "pin_filtered"
 	SelectionUnsupportedModel SelectionUnavailableReason = "unsupported_model"
 	SelectionCooling          SelectionUnavailableReason = "cooling"
 	SelectionModelCooling     SelectionUnavailableReason = "model_cooling"
 	SelectionQuotaExhausted   SelectionUnavailableReason = "quota_exhausted"
+	SelectionQuotaStale       SelectionUnavailableReason = "quota_stale"
 	SelectionSaturated        SelectionUnavailableReason = "saturated"
 )
 
@@ -79,6 +82,8 @@ const (
 type SelectionUnavailableError struct {
 	Reason     SelectionUnavailableReason
 	RetryAfter time.Duration
+	// SelectionReason 对外诊断字段，与 Reason 对齐（Admin/internal）。
+	SelectionReason string
 }
 
 func (e *SelectionUnavailableError) Error() string {
@@ -94,6 +99,8 @@ func (e *SelectionUnavailableError) Error() string {
 		return "可用上游账号的目标模型正在冷却"
 	case SelectionQuotaExhausted:
 		return "可用上游账号额度等待恢复"
+	case SelectionQuotaStale:
+		return "可用上游账号 Imagine 额度未同步或已过期"
 	case SelectionSaturated:
 		return "可用上游账号均达到并发上限"
 	default:
@@ -123,6 +130,11 @@ type webDispatchSource interface {
 	EnsureWebPoolIndexWarm(ctx context.Context)
 }
 
+// ChromeTicketSource 提供各账号可用 Chrome 票数量（选号偏好有票）。
+type ChromeTicketSource interface {
+	AvailableCounts(ctx context.Context) map[uint64]int64
+}
+
 // Selector 实现可替换的 balanced 账号选择策略。
 type Selector struct {
 	accounts       repository.AccountRepository
@@ -142,6 +154,7 @@ type Selector struct {
 	candidateLoads singleflight.Group
 	buildDispatch  buildDispatchSource
 	webDispatch    webDispatchSource
+	chromeTickets  ChromeTicketSource
 	tierOrders     interface {
 		TierOrder(account.Provider, string) []account.WebTier
 	}
@@ -157,6 +170,12 @@ func (s *Selector) SetBuildDispatchSource(source buildDispatchSource) {
 }
 
 // SetWebDispatchSource 接入 Web 双轨三池调度索引。
+func (s *Selector) SetChromeTicketSource(source ChromeTicketSource) {
+	s.mu.Lock()
+	s.chromeTickets = source
+	s.mu.Unlock()
+}
+
 func (s *Selector) SetWebDispatchSource(source webDispatchSource) {
 	s.mu.Lock()
 	s.webDispatch = source
@@ -777,15 +796,17 @@ func (s *Selector) loadCandidatesForAcquire(ctx context.Context, provider accoun
 
 func (s *Selector) loadWebCandidatesByIndex(ctx context.Context, source webDispatchSource, lane accountapp.WebLane, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {
 	batch := buildDispatchHydrateInitial
+	var sawDispatch bool
 	for {
 		dispatchIDs := source.OrderedWebDispatchIDs(lane, batch)
 		if len(dispatchIDs) == 0 {
 			source.EnsureWebPoolIndexWarm(ctx)
 			dispatchIDs = source.OrderedWebDispatchIDs(lane, batch)
 			if len(dispatchIDs) == 0 {
-				return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
+				return nil, selectionErr(SelectionNoDispatchIndex)
 			}
 		}
+		sawDispatch = true
 		values, err := s.accounts.ListRoutingCandidatesByIDs(ctx, account.ProviderWeb, upstreamModel, quotaMode, dispatchIDs)
 		if err != nil {
 			return nil, err
@@ -798,7 +819,14 @@ func (s *Selector) loadWebCandidatesByIndex(ctx context.Context, source webDispa
 		}
 		batch = min(batch*2, buildDispatchHydrateMax)
 	}
-	return nil, nil
+	if sawDispatch {
+		return nil, selectionErr(SelectionPinFiltered)
+	}
+	return nil, selectionErr(SelectionNoAccounts)
+}
+
+func selectionErr(reason SelectionUnavailableReason) *SelectionUnavailableError {
+	return &SelectionUnavailableError{Reason: reason, SelectionReason: string(reason)}
 }
 
 func (s *Selector) loadBuildCandidatesByIndex(ctx context.Context, source buildDispatchSource, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {
@@ -1051,6 +1079,15 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 	imagineRemaining := make(map[uint64]int, len(values))
 	imagineFresh := make(map[uint64]bool, len(values))
 	fresh := make(map[uint64]bool, len(values))
+	ticketCounts := make(map[uint64]int64, len(values))
+	s.mu.Lock()
+	ticketSource := s.chromeTickets
+	s.mu.Unlock()
+	if ticketSource != nil && strings.EqualFold(upstreamModel, webLiteImageUpstreamModel) {
+		if counts := ticketSource.AvailableCounts(ctx); counts != nil {
+			ticketCounts = counts
+		}
+	}
 	inFlight := make(map[uint64]int, len(values))
 	concurrencyKeys := make([]string, 0, len(values))
 	for _, candidate := range values {
@@ -1120,6 +1157,14 @@ func (s *Selector) sortCandidates(ctx context.Context, values []account.RoutingC
 			return leftRank < rightRank
 		}
 		if strings.EqualFold(upstreamModel, webLiteImageUpstreamModel) {
+			leftTickets, leftOK := ticketCounts[left.ID]
+			rightTickets, rightOK := ticketCounts[right.ID]
+			if leftOK != rightOK {
+				return leftOK
+			}
+			if leftTickets != rightTickets {
+				return leftTickets > rightTickets
+			}
 			leftFresh, rightFresh := imagineFresh[left.ID], imagineFresh[right.ID]
 			if leftFresh != rightFresh {
 				return leftFresh

@@ -37,6 +37,7 @@ var schemaModels = []any{
 	&imagePipelineTraceModel{},
 	&imagePipelineSegmentModel{},
 	&chromeTicketModel{},
+	&egressTrafficHopModel{},
 }
 
 var schemaIndexes = []string{
@@ -83,6 +84,9 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_image_pipeline_traces_started ON image_pipeline_traces(started_at DESC, id)",
 	"CREATE INDEX IF NOT EXISTS idx_image_pipeline_segments_trace ON image_pipeline_segments(trace_id, sequence ASC, id ASC)",
 	"CREATE INDEX IF NOT EXISTS idx_chrome_tickets_avail ON chrome_tickets(status, expires_at, account_id, created_at)",
+	"CREATE INDEX IF NOT EXISTS idx_egress_traffic_request ON egress_traffic_hops(request_id)",
+	"CREATE INDEX IF NOT EXISTS idx_egress_traffic_scope_created ON egress_traffic_hops(egress_scope, created_at DESC)",
+	"CREATE INDEX IF NOT EXISTS idx_egress_traffic_node_created ON egress_traffic_hops(egress_node_id, created_at DESC)",
 }
 
 // InitializeSchema 以当前持久化模型作为首版数据库结构基线。

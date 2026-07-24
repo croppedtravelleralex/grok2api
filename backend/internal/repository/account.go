@@ -69,6 +69,8 @@ type AccountRepository interface {
 	ListQuotaRecoveryWindows(ctx context.Context, limit int) ([]account.QuotaWindow, error)
 	ListStaleWebQuotaAccountIDs(ctx context.Context, before time.Time, limit int) ([]uint64, error)
 	SummarizeWebLaneQuota(ctx context.Context) (WebLaneQuotaSummary, error)
+	// ListRouteBoundAccountIDs 返回指定路由绑定的账号；restricted 为 true 表示该路由存在 pin 约束。
+	ListRouteBoundAccountIDs(ctx context.Context, provider account.Provider, upstreamModel string) (ids []uint64, restricted bool, err error)
 }
 
 type WebLaneQuotaSummary struct {

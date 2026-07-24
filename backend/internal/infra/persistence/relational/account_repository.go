@@ -153,6 +153,23 @@ func (r *AccountRepository) ListRoutingCandidatesByIDs(ctx context.Context, prov
 	return ordered, nil
 }
 
+func (r *AccountRepository) ListRouteBoundAccountIDs(ctx context.Context, provider account.Provider, upstreamModel string) ([]uint64, bool, error) {
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if upstreamModel == "" {
+		return nil, false, nil
+	}
+	var boundIDs []uint64
+	if err := r.db.db.WithContext(ctx).
+		Table("model_route_accounts AS binding").
+		Select("binding.account_id").
+		Joins("JOIN model_routes AS route ON route.id = binding.model_route_id").
+		Where("route.provider = ? AND route.upstream_model = ?", provider, upstreamModel).
+		Scan(&boundIDs).Error; err != nil {
+		return nil, false, err
+	}
+	return boundIDs, len(boundIDs) > 0, nil
+}
+
 func (r *AccountRepository) listEnabledByIDs(ctx context.Context, provider account.Provider, ids []uint64) ([]account.Credential, error) {
 	var rows []accountModel
 	err := r.db.db.WithContext(ctx).Preload("Credential").Preload("WebProfile").
