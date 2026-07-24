@@ -119,7 +119,10 @@ func (r *ChromeTicketRepository) Stats(ctx context.Context, now time.Time) (chro
 		Group("account_id").Order("count DESC").Limit(20).Scan(&accountRows).Error; err != nil {
 		return chrometicket.Stats{}, fmt.Errorf("统计 Chrome 票账号分布: %w", err)
 	}
-	stats := chrometicket.Stats{ByStatus: make(map[string]int64, len(statusRows))}
+	stats := chrometicket.Stats{
+		ByStatus:          make(map[string]int64, len(statusRows)),
+		TTLDistribution:   make(map[string]int64),
+	}
 	for _, row := range statusRows {
 		stats.ByStatus[row.Status] = row.Count
 	}
@@ -128,7 +131,68 @@ func (r *ChromeTicketRepository) Stats(ctx context.Context, now time.Time) (chro
 			AccountID: row.AccountID, Count: row.Count,
 		})
 	}
+	available, err := r.ListAvailable(ctx, now, 500)
+	if err != nil {
+		return chrometicket.Stats{}, err
+	}
+	for _, ticket := range available {
+		remaining := int64(ticket.ExpiresAt.Sub(now).Seconds())
+		if remaining < 0 {
+			remaining = 0
+		}
+		stats.AvailableTickets = append(stats.AvailableTickets, chrometicket.TicketSummary{
+			ID: ticket.ID, AccountID: ticket.AccountID, CreatedAt: ticket.CreatedAt,
+			ExpiresAt: ticket.ExpiresAt, TTLRemainingSeconds: remaining, SignSource: ticket.SignSource,
+		})
+		bucket := ttlBucket(remaining)
+		stats.TTLDistribution[bucket]++
+		if stats.EarliestExpiresAt == nil || ticket.ExpiresAt.Before(*stats.EarliestExpiresAt) {
+			expiresAt := ticket.ExpiresAt
+			stats.EarliestExpiresAt = &expiresAt
+		}
+	}
+	if stats.EarliestExpiresAt != nil {
+		stats.EarliestExpiresInSec = int64(stats.EarliestExpiresAt.Sub(now).Seconds())
+		if stats.EarliestExpiresInSec < 0 {
+			stats.EarliestExpiresInSec = 0
+		}
+	}
 	return stats, nil
+}
+
+func (r *ChromeTicketRepository) ListAvailable(ctx context.Context, now time.Time, limit int) ([]chrometicket.Ticket, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	now = now.UTC()
+	var models []chromeTicketModel
+	if err := r.db.db.WithContext(ctx).
+		Where("status = ? AND expires_at >= ?", chrometicket.StatusAvailable, now).
+		Order("expires_at ASC, created_at ASC").
+		Limit(limit).
+		Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("列出可用 Chrome 票: %w", err)
+	}
+	out := make([]chrometicket.Ticket, 0, len(models))
+	for _, model := range models {
+		out = append(out, toChromeTicketDomain(model))
+	}
+	return out, nil
+}
+
+func ttlBucket(remainingSeconds int64) string {
+	switch {
+	case remainingSeconds < 3600:
+		return "<1h"
+	case remainingSeconds < 3*3600:
+		return "1-3h"
+	case remainingSeconds < 6*3600:
+		return "3-6h"
+	case remainingSeconds < 12*3600:
+		return "6-12h"
+	default:
+		return ">12h"
+	}
 }
 
 func sweepExpiredTickets(tx *gorm.DB, now time.Time) error {

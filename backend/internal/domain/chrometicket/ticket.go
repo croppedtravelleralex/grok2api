@@ -34,11 +34,25 @@ type PushInput struct {
 
 // Stats 汇总票池状态。
 type Stats struct {
-	ByStatus           map[string]int64
-	AvailableByAccount []AccountCount
+	ByStatus            map[string]int64
+	AvailableByAccount  []AccountCount
+	AvailableTickets    []TicketSummary
+	TTLDistribution     map[string]int64
+	EarliestExpiresAt   *time.Time
+	EarliestExpiresInSec int64
 }
 
 type AccountCount struct {
 	AccountID uint64
 	Count     int64
+}
+
+// TicketSummary 是管理端展示的可用票摘要（不含 meta 正文）。
+type TicketSummary struct {
+	ID                  string
+	AccountID           uint64
+	CreatedAt           time.Time
+	ExpiresAt           time.Time
+	TTLRemainingSeconds int64
+	SignSource          string
 }

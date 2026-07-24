@@ -62,6 +62,9 @@ func TestHandlerPushStatsSweep(t *testing.T) {
 	if stats.Code != http.StatusOK || !strings.Contains(stats.Body.String(), `"available"`) {
 		t.Fatalf("stats status=%d body=%s", stats.Code, stats.Body.String())
 	}
+	if !strings.Contains(stats.Body.String(), `"ttlDistribution"`) {
+		t.Fatalf("expected ttlDistribution in stats body=%s", stats.Body.String())
+	}
 
 	invalid := httptest.NewRecorder()
 	router.ServeHTTP(invalid, httptest.NewRequest(http.MethodPost, "/api/admin/v1/chrome-tickets", strings.NewReader(`{"account_id":0}`)))

@@ -14,7 +14,9 @@ if str(TOOLS) not in sys.path:
 
 from chrome_ticket_experiment_lib import (
     DEFAULT_SSO,
+    effective_mint_target,
     log_event,
+    mint_headroom,
     pool_available,
     pool_stats,
     run_minter,
@@ -47,16 +49,24 @@ def main() -> int:
         try:
             target = resolve_target()
             stats = pool_stats()
-            log_event("daemon_tick", stats=stats.get("ByStatus"), target=target)
+            log_event("daemon_tick", stats=stats.get("ByStatus") or stats.get("byStatus"), target=target)
             for aid in ids:
+                headroom = mint_headroom(aid, target)
                 avail = pool_available(aid)
-                if avail < target:
-                    log_event("daemon_mint", account_id=aid, available=avail, target=target)
-                    ok = run_minter([aid], args.sso_file, timeout=args.mint_timeout)
-                    if not ok:
-                        log_event("daemon_mint_failed", account_id=aid)
-                else:
-                    log_event("daemon_ok", account_id=aid, available=avail)
+                cap = effective_mint_target(aid, target)
+                if headroom <= 0:
+                    log_event(
+                        "daemon_ok" if avail >= cap else "daemon_skip",
+                        account_id=aid,
+                        available=avail,
+                        target=cap,
+                        reason="quota_or_depth",
+                    )
+                    continue
+                log_event("daemon_mint", account_id=aid, available=avail, target=cap, headroom=headroom)
+                ok = run_minter([aid], args.sso_file, timeout=args.mint_timeout)
+                if not ok:
+                    log_event("daemon_mint_failed", account_id=aid)
         except Exception as exc:
             log_event("daemon_error", error=str(exc)[:300])
         if args.once:

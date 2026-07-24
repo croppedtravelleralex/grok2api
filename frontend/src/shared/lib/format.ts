@@ -33,6 +33,19 @@ export function formatDuration(milliseconds: number): string {
   return `${(milliseconds / 1000).toFixed(milliseconds < 10000 ? 2 : 1)} s`;
 }
 
+export function formatDurationSeconds(totalSeconds: number, locale: string): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  if (seconds < 60) return `${seconds}s`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  if (hours > 0) {
+    return `${hours}${locale.startsWith("zh") ? "小时" : "h"} ${minutes}${locale.startsWith("zh") ? "分" : "m"}`;
+  }
+  if (rest > 0) return `${minutes}${locale.startsWith("zh") ? "分" : "m"} ${rest}${locale.startsWith("zh") ? "秒" : "s"}`;
+  return `${minutes}${locale.startsWith("zh") ? "分" : "m"}`;
+}
+
 export function toDateTimeLocal(value: string | null | undefined): string {
   if (!value) {
     return "";

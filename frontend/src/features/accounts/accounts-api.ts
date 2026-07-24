@@ -502,9 +502,22 @@ export type ChromeTicketAccountCountDTO = {
   count: number;
 };
 
+export type ChromeTicketSummaryDTO = {
+  id: string;
+  accountId: string;
+  createdAt: string;
+  expiresAt: string;
+  ttlRemainingSeconds: number;
+  signSource?: string;
+};
+
 export type ChromeTicketStatsDTO = {
   byStatus: Record<string, number>;
   availableByAccount: ChromeTicketAccountCountDTO[];
+  availableTickets: ChromeTicketSummaryDTO[];
+  ttlDistribution: Record<string, number>;
+  earliestExpiresAt?: string;
+  earliestExpiresInSec?: number;
 };
 
 function readStatusMap(value: unknown): Record<string, number> {
@@ -528,12 +541,39 @@ function readAccountCounts(value: unknown): ChromeTicketAccountCountDTO[] {
   });
 }
 
+function readTicketSummaries(value: unknown): ChromeTicketSummaryDTO[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const row = item as Record<string, unknown>;
+    const id = row.id ?? row.ID;
+    const accountId = row.accountId ?? row.AccountID ?? row.account_id;
+    const createdAt = row.createdAt ?? row.CreatedAt;
+    const expiresAt = row.expiresAt ?? row.ExpiresAt;
+    const ttl = row.ttlRemainingSeconds ?? row.TTLRemainingSeconds;
+    if (typeof id !== "string" || (typeof accountId !== "string" && typeof accountId !== "number")) return [];
+    if (typeof createdAt !== "string" || typeof expiresAt !== "string" || typeof ttl !== "number") return [];
+    return [{
+      id,
+      accountId: String(accountId),
+      createdAt,
+      expiresAt,
+      ttlRemainingSeconds: ttl,
+      signSource: typeof row.signSource === "string" ? row.signSource : typeof row.SignSource === "string" ? row.SignSource : undefined,
+    }];
+  });
+}
+
 function decodeChromeTicketStats(value: unknown): ChromeTicketStatsDTO {
   if (!value || typeof value !== "object") throw new Error("chrome ticket stats");
   const raw = value as Record<string, unknown>;
   return {
     byStatus: readStatusMap(raw.byStatus ?? raw.ByStatus),
     availableByAccount: readAccountCounts(raw.availableByAccount ?? raw.AvailableByAccount),
+    availableTickets: readTicketSummaries(raw.availableTickets ?? raw.AvailableTickets),
+    ttlDistribution: readStatusMap(raw.ttlDistribution ?? raw.TTLDistribution),
+    earliestExpiresAt: typeof raw.earliestExpiresAt === "string" ? raw.earliestExpiresAt : typeof raw.EarliestExpiresAt === "string" ? raw.EarliestExpiresAt : undefined,
+    earliestExpiresInSec: typeof raw.earliestExpiresInSec === "number" ? raw.earliestExpiresInSec : typeof raw.EarliestExpiresInSec === "number" ? raw.EarliestExpiresInSec : undefined,
   };
 }
 

@@ -76,7 +76,27 @@ func (h *Handler) stats(c *gin.Context) {
 		response.Error(c, http.StatusInternalServerError, "chromeTicketStatsFailed", "读取票池统计失败")
 		return
 	}
-	response.Success(c, http.StatusOK, stats)
+	tickets := make([]gin.H, 0, len(stats.AvailableTickets))
+	for _, ticket := range stats.AvailableTickets {
+		tickets = append(tickets, gin.H{
+			"id": ticket.ID, "accountId": ticket.AccountID, "account_id": ticket.AccountID,
+			"createdAt": ticket.CreatedAt, "expiresAt": ticket.ExpiresAt,
+			"ttlRemainingSeconds": ticket.TTLRemainingSeconds, "signSource": ticket.SignSource,
+		})
+	}
+	byAccount := make([]gin.H, 0, len(stats.AvailableByAccount))
+	for _, row := range stats.AvailableByAccount {
+		byAccount = append(byAccount, gin.H{"accountId": row.AccountID, "account_id": row.AccountID, "count": row.Count})
+	}
+	payload := gin.H{
+		"byStatus": stats.ByStatus, "availableByAccount": byAccount,
+		"availableTickets": tickets, "ttlDistribution": stats.TTLDistribution,
+		"earliestExpiresInSec": stats.EarliestExpiresInSec,
+	}
+	if stats.EarliestExpiresAt != nil {
+		payload["earliestExpiresAt"] = stats.EarliestExpiresAt
+	}
+	response.Success(c, http.StatusOK, payload)
 }
 
 func (h *Handler) sweep(c *gin.Context) {

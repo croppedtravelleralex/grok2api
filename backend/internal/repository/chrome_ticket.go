@@ -13,4 +13,5 @@ type ChromeTicketRepository interface {
 	PopForAccount(ctx context.Context, accountID uint64) (chrometicket.Ticket, error)
 	SweepExpired(ctx context.Context, now time.Time) (int64, error)
 	Stats(ctx context.Context, now time.Time) (chrometicket.Stats, error)
+	ListAvailable(ctx context.Context, now time.Time, limit int) ([]chrometicket.Ticket, error)
 }
