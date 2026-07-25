@@ -76,6 +76,7 @@ const (
 	SelectionQuotaExhausted   SelectionUnavailableReason = "quota_exhausted"
 	SelectionQuotaStale       SelectionUnavailableReason = "quota_stale"
 	SelectionSaturated        SelectionUnavailableReason = "saturated"
+	SelectionNoChromeTickets  SelectionUnavailableReason = "no_chrome_tickets"
 )
 
 // SelectionUnavailableError 保留选号失败的真实原因，避免所有情况都退化成模糊的 503。
@@ -103,6 +104,8 @@ func (e *SelectionUnavailableError) Error() string {
 		return "可用上游账号 Imagine 额度未同步或已过期"
 	case SelectionSaturated:
 		return "可用上游账号均达到并发上限"
+	case SelectionNoChromeTickets:
+		return "Chrome 票池暂无可用票据"
 	default:
 		return "没有可用上游账号"
 	}
@@ -289,6 +292,13 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 		}
 		normalCandidates = append(normalCandidates, candidate)
 	}
+	if requiresChromeTicketAdmission(upstreamModel) {
+		var ticketErr error
+		normalCandidates, ticketErr = s.filterChromeTicketCandidates(ctx, normalCandidates)
+		if ticketErr != nil {
+			return nil, ticketErr
+		}
+	}
 	if len(normalCandidates) == 0 && len(probeCandidates) == 0 {
 		reason := SelectionNoAccounts
 		switch {
@@ -300,6 +310,8 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 			reason = SelectionCooling
 		case quotaCandidates > 0:
 			reason = SelectionQuotaExhausted
+		case requiresChromeTicketAdmission(upstreamModel) && s.chromeTicketsEnforced():
+			reason = SelectionNoChromeTickets
 		}
 		return nil, &SelectionUnavailableError{Reason: reason, RetryAfter: retryDelay(now, earliestRetry)}
 	}
@@ -799,6 +811,9 @@ func (s *Selector) loadWebCandidatesByIndex(ctx context.Context, source webDispa
 	var sawDispatch bool
 	for {
 		dispatchIDs := source.OrderedWebDispatchIDs(lane, batch)
+		if strings.EqualFold(upstreamModel, webLiteImageUpstreamModel) {
+			dispatchIDs = mergeDispatchIDs(s.ticketHolderIDs(ctx), dispatchIDs)
+		}
 		if len(dispatchIDs) == 0 {
 			source.EnsureWebPoolIndexWarm(ctx)
 			dispatchIDs = source.OrderedWebDispatchIDs(lane, batch)
@@ -1266,6 +1281,89 @@ func requiresImagineQuotaAdmission(upstreamModel, quotaMode string) bool {
 		return true
 	}
 	return strings.TrimSpace(quotaMode) == "imagine"
+}
+
+func requiresChromeTicketAdmission(upstreamModel string) bool {
+	return strings.EqualFold(strings.TrimSpace(upstreamModel), webLiteImageUpstreamModel)
+}
+
+func (s *Selector) chromeTicketsEnforced() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.chromeTickets != nil
+}
+
+func (s *Selector) ticketHolderIDs(ctx context.Context) []uint64 {
+	s.mu.Lock()
+	ticketSource := s.chromeTickets
+	s.mu.Unlock()
+	if ticketSource == nil {
+		return nil
+	}
+	counts := ticketSource.AvailableCounts(ctx)
+	if len(counts) == 0 {
+		return nil
+	}
+	ids := make([]uint64, 0, len(counts))
+	for id, count := range counts {
+		if count > 0 {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+func (s *Selector) filterChromeTicketCandidates(ctx context.Context, candidates []account.RoutingCandidate) ([]account.RoutingCandidate, error) {
+	s.mu.Lock()
+	ticketSource := s.chromeTickets
+	s.mu.Unlock()
+	if ticketSource == nil {
+		return candidates, nil
+	}
+	counts := ticketSource.AvailableCounts(ctx)
+	if len(counts) == 0 {
+		return nil, selectionErr(SelectionNoChromeTickets)
+	}
+	filtered := make([]account.RoutingCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if counts[candidate.Credential.ID] > 0 {
+			filtered = append(filtered, candidate)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil, selectionErr(SelectionNoChromeTickets)
+	}
+	return filtered, nil
+}
+
+func mergeDispatchIDs(preferred, current []uint64) []uint64 {
+	if len(preferred) == 0 {
+		return current
+	}
+	seen := make(map[uint64]struct{}, len(preferred)+len(current))
+	merged := make([]uint64, 0, len(preferred)+len(current))
+	for _, id := range preferred {
+		if id == 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		merged = append(merged, id)
+	}
+	for _, id := range current {
+		if id == 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		merged = append(merged, id)
+	}
+	return merged
 }
 
 func candidateImagineQuotaAdmissible(candidate account.RoutingCandidate, now time.Time) bool {

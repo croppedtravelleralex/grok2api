@@ -256,12 +256,22 @@ type Service struct {
 	webChatLane           webLaneIndex
 	webRoutePins          webRoutePinSets
 	webProbeLaneCursor    int
+	chromeTicketCounts    ChromeTicketCountsSource
 	logger                *slog.Logger
 	now                   func() time.Time
 }
 
 func (s *Service) SetQuotaRecoveryQueue(queue repository.QuotaRecoveryQueue) {
 	s.quotaQueue = queue
+}
+
+// ChromeTicketCountsSource 提供各账号可用 Chrome 票数量（图轨 pin 对齐与调度诊断）。
+type ChromeTicketCountsSource interface {
+	AvailableCounts(ctx context.Context) map[uint64]int64
+}
+
+func (s *Service) SetChromeTicketCountsSource(source ChromeTicketCountsSource) {
+	s.chromeTicketCounts = source
 }
 
 func NewService(accounts repository.AccountRepository, audits repository.AuditRepository, deviceSessions repository.DeviceSessionRepository, sticky repository.StickySessionRepository, providers *provider.Registry, cipher *security.Cipher, refreshLock repository.DistributedLock) *Service {

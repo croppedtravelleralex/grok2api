@@ -751,10 +751,22 @@ def jit_mint_one(account_id: int, *, timeout: int = 120, ttl_hours: float = 12.0
     sso_token: str | None = None
     try:
         sso_token = fetch_sso_ephemeral(aid)
-        before_avail = pool_available(aid)
+        before_avail: int | None = None
+        after_avail: int | None = None
+        try:
+            before_avail = pool_available(aid)
+        except Exception as stats_exc:
+            log_event("jit_mint_stats_warn", account_id=aid, stage="before", error=str(stats_exc)[:200])
         row = mint_ticket_row_from_sso(aid, sso_token, timeout=timeout)
         pushed = push_ticket(row, ttl_hours=ttl_hours)
-        after_avail = pool_available(aid)
+        try:
+            after_avail = pool_available(aid)
+        except Exception as stats_exc:
+            log_event("jit_mint_stats_warn", account_id=aid, stage="after", error=str(stats_exc)[:200])
+        if before_avail is not None and after_avail is not None:
+            pool_delta = after_avail - before_avail
+        else:
+            pool_delta = 1
         receipt = {
             "ok": True,
             "account_id": aid,
@@ -762,10 +774,10 @@ def jit_mint_one(account_id: int, *, timeout: int = 120, ttl_hours: float = 12.0
             "expires_at": pushed.get("expires_at"),
             "pool_before": before_avail,
             "pool_after": after_avail,
-            "pool_delta": after_avail - before_avail,
+            "pool_delta": pool_delta,
             "meta_len": len(row.get("statsig_meta") or ""),
         }
-        if receipt["pool_delta"] < 1:
+        if pool_delta < 1:
             receipt["warn"] = "pool_not_increased"
         log_event("jit_mint_ok", **{k: v for k, v in receipt.items() if k != "ok"})
         return receipt

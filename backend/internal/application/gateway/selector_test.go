@@ -984,3 +984,61 @@ func seedImagineQuota(t *testing.T, accounts *relational.AccountRepository, ctx 
 		t.Fatal(err)
 	}
 }
+
+type staticChromeTicketSource map[uint64]int64
+
+func (s staticChromeTicketSource) AvailableCounts(context.Context) map[uint64]int64 {
+	return map[uint64]int64(s)
+}
+
+func TestSelectorRejectsLiteImageWithoutChromeTickets(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "chrome-ticket-filter.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	withTicket, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierBasic,
+		Name: "ticketed", SourceKey: "ticketed", EncryptedAccessToken: "encrypted", Enabled: true,
+		AuthStatus: account.AuthStatusActive, Priority: 10, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutTicket, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierBasic,
+		Name: "bare", SourceKey: "bare", EncryptedAccessToken: "encrypted", Enabled: true,
+		AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedImagineQuota(t, accounts, ctx, withTicket.ID, 8, 10)
+	seedImagineQuota(t, accounts, ctx, withoutTicket.ID, 8, 10)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector.SetChromeTicketSource(staticChromeTicketSource{})
+
+	_, err = selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false)
+	if err == nil {
+		t.Fatal("expected no chrome tickets error when pool empty")
+	}
+	var unavailable *SelectionUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionNoChromeTickets {
+		t.Fatalf("error = %v", err)
+	}
+
+	selector.SetChromeTicketSource(staticChromeTicketSource{withTicket.ID: 1})
+	lease, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.Credential.ID != withTicket.ID {
+		t.Fatalf("selected account = %d, want ticketed %d", lease.Credential.ID, withTicket.ID)
+	}
+}

@@ -1243,6 +1243,8 @@ func selectionErrorResponse(c *gin.Context, failure *gateway.SelectionUnavailabl
 		code, message = "upstream_saturated", "上游账号当前均达到并发上限"
 	case gateway.SelectionUnsupportedModel:
 		code, message = "upstream_model_unavailable", "当前账号池不支持该模型"
+	case gateway.SelectionNoChromeTickets:
+		status, code, message = http.StatusServiceUnavailable, "chrome_ticket_unavailable", "Chrome 票池暂无可用票据"
 	}
 	if failure.RetryAfter > 0 {
 		seconds := max(int64(1), int64((failure.RetryAfter+time.Second-1)/time.Second))

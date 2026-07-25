@@ -145,8 +145,44 @@ func (a *Adapter) prepareChromeTicketDownloadCookie(ctx context.Context, credent
 	a.log().Info("web_lite_asset_cf_warm", "account_id", credential.ID, "cf_set", strings.Contains(strings.ToLower(warmed), "cf_clearance="))
 }
 
+func (a *Adapter) rewarmAssetDownloadCookie(ctx context.Context, credential account.Credential, attempt int) chromeDownloadState {
+	deviceCookie := chromeTicketCookieFromContext(ctx)
+	if deviceCookie == "" || credential.ID == 0 {
+		return chromeDownloadStateFromContext(ctx)
+	}
+	run := imagepipelineapp.RunFromContext(ctx)
+	ticket, ok := chrometicketdomain.LeaseFromContext(ctx)
+	userAgent := ""
+	if ok {
+		userAgent = strings.TrimSpace(ticket.UserAgent)
+	}
+	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
+	if err != nil {
+		a.log().Warn("web_lite_asset_cf_rewarm_failed", "account_id", credential.ID, "attempt", attempt, "error", err)
+		return chromeDownloadStateFromContext(ctx)
+	}
+	affinity := fmt.Sprintf("%d:asset-warm:%d", credential.ID, attempt)
+	warmed, usedUA, warmErr := a.warmChromeTicketSessionWithAffinity(ctx, credential, token, deviceCookie, userAgent, affinity)
+	if warmErr != nil {
+		a.log().Warn("web_lite_asset_cf_rewarm_failed", "account_id", credential.ID, "attempt", attempt, "error", warmErr)
+		return chromeDownloadStateFromContext(ctx)
+	}
+	if run != nil {
+		run.SetChromeDownloadCookie(warmed)
+		if usedUA != "" {
+			run.SetChromeUserAgent(usedUA)
+		}
+	}
+	a.log().Info("web_lite_asset_cf_rewarm", "account_id", credential.ID, "attempt", attempt, "cf_set", strings.Contains(strings.ToLower(warmed), "cf_clearance="))
+	return chromeDownloadState{Cookie: warmed, UserAgent: usedUA}
+}
+
 func (a *Adapter) warmChromeTicketSession(ctx context.Context, credential account.Credential, token, deviceCookie, preferredUA string) (string, string, error) {
-	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWeb, fmt.Sprintf("%d", credential.ID))
+	return a.warmChromeTicketSessionWithAffinity(ctx, credential, token, deviceCookie, preferredUA, fmt.Sprintf("%d", credential.ID))
+}
+
+func (a *Adapter) warmChromeTicketSessionWithAffinity(ctx context.Context, credential account.Credential, token, deviceCookie, preferredUA, affinity string) (string, string, error) {
+	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWeb, affinity)
 	if err != nil {
 		return "", "", err
 	}

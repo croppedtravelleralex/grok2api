@@ -253,6 +253,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	selector.SetBuildDispatchSource(accountService)
 	selector.SetWebDispatchSource(accountService)
 	selector.SetChromeTicketSource(chromeTicketSelectorSource{pool: chromeTicketPool})
+	accountService.SetChromeTicketCountsSource(chromeTicketSelectorSource{pool: chromeTicketPool})
 	gatewayService := gateway.NewService(modelService, auditService, accountService, clientKeyService, providers, selector, responseRepo, cfg.Routing.MaxAttempts)
 	gatewayService.SetLogger(logger)
 	gatewayService.ConfigureMedia(mediaJobRepo, cfg.Provider.Web.MediaConcurrency)

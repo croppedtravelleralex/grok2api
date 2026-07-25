@@ -108,6 +108,7 @@ func (s *Service) SyncImageDispatchPins(ctx context.Context) (WebDispatchPinSync
 	if err != nil {
 		return WebDispatchPinSyncResult{}, err
 	}
+	targetIDs = s.imageDispatchPinTargetIDs(ctx, targetIDs)
 	previousIDs, _, err := s.accounts.ListRouteBoundAccountIDs(ctx, accountdomain.ProviderWeb, imagineUpstream)
 	if err != nil {
 		return WebDispatchPinSyncResult{}, err
@@ -173,4 +174,33 @@ func diffUint64Slices(from, subtract []uint64) []uint64 {
 		}
 	}
 	return out
+}
+
+func (s *Service) imageDispatchPinTargetIDs(ctx context.Context, dispatchIDs []uint64) []uint64 {
+	if s.chromeTicketCounts == nil || len(dispatchIDs) == 0 {
+		return dispatchIDs
+	}
+	counts := s.chromeTicketCounts.AvailableCounts(ctx)
+	if len(counts) == 0 {
+		return dispatchIDs
+	}
+	dispatchSet := make(map[uint64]struct{}, len(dispatchIDs))
+	for _, id := range dispatchIDs {
+		dispatchSet[id] = struct{}{}
+	}
+	ticketIDs := make([]uint64, 0, len(counts))
+	for id, count := range counts {
+		if count <= 0 {
+			continue
+		}
+		if _, ok := dispatchSet[id]; !ok {
+			continue
+		}
+		ticketIDs = append(ticketIDs, id)
+	}
+	if len(ticketIDs) == 0 {
+		return dispatchIDs
+	}
+	sort.Slice(ticketIDs, func(i, j int) bool { return ticketIDs[i] < ticketIDs[j] })
+	return ticketIDs
 }

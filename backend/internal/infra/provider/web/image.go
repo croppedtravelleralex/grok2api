@@ -1585,7 +1585,7 @@ func (a *Adapter) downloadImage(ctx context.Context, credential account.Credenti
 	scopes := []domainegress.Scope{domainegress.ScopeWebAsset, domainegress.ScopeWeb}
 	var lastErr error
 	for index, scope := range scopes {
-		raw, status, downloadErr := a.downloadImageWithScope(ctx, credential, parsed, token, scope, deviceCookie, downloadState)
+		raw, status, downloadErr := a.downloadImageScopeWithRetries(ctx, credential, parsed, token, scope, deviceCookie, downloadState)
 		if downloadErr == nil {
 			return raw, nil
 		}
@@ -1599,9 +1599,39 @@ func (a *Adapter) downloadImage(ctx context.Context, credential account.Credenti
 	return nil, lastErr
 }
 
-func (a *Adapter) downloadImageWithScope(ctx context.Context, credential account.Credential, parsed *url.URL, token string, scope domainegress.Scope, deviceCookie string, downloadState chromeDownloadState) ([]byte, int, error) {
+const maxAssetDownloadEgressAttempts = 6
+
+func assetDownloadAffinity(accountID uint64, attempt int) string {
+	if attempt <= 0 {
+		return fmt.Sprintf("%d", accountID)
+	}
+	return fmt.Sprintf("%d:asset:%d", accountID, attempt)
+}
+
+func (a *Adapter) downloadImageScopeWithRetries(ctx context.Context, credential account.Credential, parsed *url.URL, token string, scope domainegress.Scope, deviceCookie string, downloadState chromeDownloadState) ([]byte, int, error) {
+	var lastStatus int
+	var lastErr error
+	state := downloadState
+	for attempt := 0; attempt < maxAssetDownloadEgressAttempts; attempt++ {
+		if attempt > 0 {
+			state = a.rewarmAssetDownloadCookie(ctx, credential, attempt)
+		}
+		raw, status, downloadErr := a.downloadImageWithScope(ctx, credential, parsed, token, scope, deviceCookie, state, assetDownloadAffinity(credential.ID, attempt))
+		if downloadErr == nil {
+			return raw, status, nil
+		}
+		lastStatus = status
+		lastErr = downloadErr
+		if status != http.StatusForbidden {
+			break
+		}
+	}
+	return nil, lastStatus, lastErr
+}
+
+func (a *Adapter) downloadImageWithScope(ctx context.Context, credential account.Credential, parsed *url.URL, token string, scope domainegress.Scope, deviceCookie string, downloadState chromeDownloadState, affinity string) ([]byte, int, error) {
 	ctx = withEgressTrafficMeta(ctx, "image", "download", credential.ID)
-	lease, err := a.egress.Acquire(ctx, scope, fmt.Sprintf("%d", credential.ID))
+	lease, err := a.egress.Acquire(ctx, scope, affinity)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1636,6 +1666,9 @@ func (a *Adapter) downloadImageWithScope(ctx context.Context, credential account
 			"status_code", response.StatusCode,
 			"asset_url_tail", assetURLTailForLog(parsed.String()),
 		)
+		if response.StatusCode == http.StatusForbidden && lease.NodeID > 0 {
+			a.egress.FeedbackForScope(ctx, scope, lease.NodeID, response.StatusCode, nil)
+		}
 		return nil, response.StatusCode, fmt.Errorf("下载图片返回 %d", response.StatusCode)
 	}
 	contentType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
