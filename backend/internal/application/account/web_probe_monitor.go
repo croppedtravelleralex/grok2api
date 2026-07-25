@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -159,17 +160,17 @@ func (s *Service) WebProbeStatus(ctx context.Context) (WebProbeStatus, error) {
 }
 
 func (s *Service) summarizeWebThreePools(ctx context.Context) (WebThreePoolSummary, error) {
-	summary, _, err := s.summarizeWebPools(ctx)
+	summary, _, _, _, err := s.summarizeWebPools(ctx)
 	return summary, err
 }
 
-func (s *Service) summarizeWebPools(ctx context.Context) (WebThreePoolSummary, WebFourPoolsPublic, error) {
+func (s *Service) summarizeWebPools(ctx context.Context) (WebThreePoolSummary, WebFourPoolsPublic, []uint64, []uint64, error) {
 	values, _, err := s.accounts.List(ctx, repository.AccountListQuery{
 		Page:   repository.PageQuery{Limit: maxCredentialExportAccounts},
 		Filter: repository.AccountListFilter{Provider: string(accountdomain.ProviderWeb), Now: s.now()},
 	})
 	if err != nil {
-		return WebThreePoolSummary{}, WebFourPoolsPublic{}, mapRepositoryError(err)
+		return WebThreePoolSummary{}, WebFourPoolsPublic{}, nil, nil, mapRepositoryError(err)
 	}
 	ids := make([]uint64, 0, len(values))
 	for _, value := range values {
@@ -177,25 +178,28 @@ func (s *Service) summarizeWebPools(ctx context.Context) (WebThreePoolSummary, W
 	}
 	windowsByAccount, err := s.accounts.GetQuotaWindows(ctx, ids)
 	if err != nil {
-		return WebThreePoolSummary{}, WebFourPoolsPublic{}, mapRepositoryError(err)
+		return WebThreePoolSummary{}, WebFourPoolsPublic{}, nil, nil, mapRepositoryError(err)
 	}
 	blocks, err := s.accounts.GetActiveModelQuotaBlocks(ctx, ids, imagineUpstream, s.now())
 	if err != nil {
-		return WebThreePoolSummary{}, WebFourPoolsPublic{}, mapRepositoryError(err)
+		return WebThreePoolSummary{}, WebFourPoolsPublic{}, nil, nil, mapRepositoryError(err)
 	}
 	modelStates, err := s.accounts.GetModelStates(ctx, ids)
 	if err != nil {
-		return WebThreePoolSummary{}, WebFourPoolsPublic{}, mapRepositoryError(err)
+		return WebThreePoolSummary{}, WebFourPoolsPublic{}, nil, nil, mapRepositoryError(err)
 	}
 	now := s.now()
 	result := WebThreePoolSummary{}
 	four := WebFourPoolsPublic{}
+	imageDispatchIDs := make([]uint64, 0)
+	imageSchedulableIDs := make([]uint64, 0)
 	for _, value := range values {
 		ctxInput := buildWebPoolContext(value, windowsByAccount[value.ID], modelStates[value.ID], blocks[value.ID], now)
 		switch WebPoolAt(WebLaneImage, ctxInput, now) {
 		case WebPoolDispatch:
 			result.Image.Dispatch++
 			four.Image.Dispatch++
+			imageDispatchIDs = append(imageDispatchIDs, value.ID)
 		case WebPoolNormal:
 			result.Image.Recovery++
 			four.Image.Normal++
@@ -205,6 +209,9 @@ func (s *Service) summarizeWebPools(ctx context.Context) (WebThreePoolSummary, W
 		case WebPoolDelete:
 			result.Image.Dead++
 			four.Image.Delete++
+		}
+		if imagineQuotaFresh(ctxInput.ImagineWindow, now) {
+			imageSchedulableIDs = append(imageSchedulableIDs, value.ID)
 		}
 		switch WebPoolAt(WebLaneChat, ctxInput, now) {
 		case WebPoolDispatch:
@@ -218,7 +225,9 @@ func (s *Service) summarizeWebPools(ctx context.Context) (WebThreePoolSummary, W
 			four.Chat.Dead++
 		}
 	}
-	return result, four, nil
+	sort.Slice(imageDispatchIDs, func(i, j int) bool { return imageDispatchIDs[i] < imageDispatchIDs[j] })
+	sort.Slice(imageSchedulableIDs, func(i, j int) bool { return imageSchedulableIDs[i] < imageSchedulableIDs[j] })
+	return result, four, imageDispatchIDs, imageSchedulableIDs, nil
 }
 
 func (s *Service) observeWebProbe(ctx context.Context, candidate accountdomain.Credential, lane WebLane, mode WebProbeMode, run func() (uint64, bool, error)) (uint64, bool, error) {

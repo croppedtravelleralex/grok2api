@@ -71,6 +71,8 @@ type AccountRepository interface {
 	SummarizeWebLaneQuota(ctx context.Context) (WebLaneQuotaSummary, error)
 	// ListRouteBoundAccountIDs 返回指定路由绑定的账号；restricted 为 true 表示该路由存在 pin 约束。
 	ListRouteBoundAccountIDs(ctx context.Context, provider account.Provider, upstreamModel string) (ids []uint64, restricted bool, err error)
+	// ReplaceRouteBoundAccountIDs 将指定路由的 pin 绑定替换为给定账号列表（空列表表示解除全部 pin）。
+	ReplaceRouteBoundAccountIDs(ctx context.Context, provider account.Provider, upstreamModel string, accountIDs []uint64) error
 }
 
 type WebLaneQuotaSummary struct {

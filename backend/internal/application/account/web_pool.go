@@ -19,6 +19,9 @@ const (
 // WebPoolSnapshot 描述图池 / 对话池当前调度位。
 type WebPoolSnapshot struct {
 	ImagePoolIDs         []uint64                `json:"imagePoolIds"`
+	ImageDispatchPoolIDs []uint64                `json:"imageDispatchPoolIds"`
+	ImageSchedulableIDs  []uint64                `json:"imageSchedulableIds"`
+	ImagePinIDs          []uint64                `json:"imagePinIds,omitempty"`
 	ChatPoolIDs          []uint64                `json:"chatPoolIds"`
 	EnabledIDs           []uint64                `json:"enabledIds"`
 	ImagePoolSize        int                     `json:"imagePoolSize"`
@@ -133,11 +136,15 @@ func (s *Service) webPoolSnapshotFromIndex(ctx context.Context, now time.Time, e
 	chatIDs := s.dispatchIDsLocked(WebLaneChat, webChatPoolCap)
 	pinNotIn := s.pinNotInDispatchLocked()
 	diagnostics := s.webSelectionDiagnosticsLocked()
+	pinIDs := s.imagePinIDsLocked()
 	threePools, _ := s.SummarizeWebThreePoolsForSnapshot(ctx)
 	fourPools, _ := s.SummarizeWebFourPoolsForSnapshot(ctx)
 	s.webProbeMu.Unlock()
+	imageDispatchPoolIDs, imageSchedulableIDs, _ := s.webImagePoolAccountIDs(ctx, now)
 	return WebPoolSnapshot{
-		ImagePoolIDs: imageIDs, ChatPoolIDs: chatIDs, EnabledIDs: enabledIDs,
+		ImagePoolIDs: imageIDs, ImageDispatchPoolIDs: imageDispatchPoolIDs, ImageSchedulableIDs: imageSchedulableIDs,
+		ImagePinIDs: pinIDs,
+		ChatPoolIDs: chatIDs, EnabledIDs: enabledIDs,
 		ImagePoolSize: len(imageIDs), ChatPoolSize: len(chatIDs), EnabledCount: len(enabledIDs),
 		ImagePoolCap: webImagePoolCap, ChatPoolCap: webChatPoolCap, ReconciledAt: now,
 		EnabledAdded: 0, EnabledRemoved: enabledRemoved, ThreePools: threePools, FourPools: fourPools,

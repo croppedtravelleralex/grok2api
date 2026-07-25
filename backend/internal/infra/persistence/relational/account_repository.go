@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -168,6 +169,27 @@ func (r *AccountRepository) ListRouteBoundAccountIDs(ctx context.Context, provid
 		return nil, false, err
 	}
 	return boundIDs, len(boundIDs) > 0, nil
+}
+
+func (r *AccountRepository) ReplaceRouteBoundAccountIDs(ctx context.Context, provider account.Provider, upstreamModel string, accountIDs []uint64) error {
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if upstreamModel == "" {
+		return fmt.Errorf("upstream model required")
+	}
+	var routeID uint64
+	if err := r.db.db.WithContext(ctx).
+		Table("model_routes").
+		Select("id").
+		Where("provider = ? AND upstream_model = ?", provider, upstreamModel).
+		Scan(&routeID).Error; err != nil {
+		return err
+	}
+	if routeID == 0 {
+		return repository.ErrNotFound
+	}
+	return r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return replaceModelRouteAccounts(tx, routeID, accountIDs)
+	})
 }
 
 func (r *AccountRepository) listEnabledByIDs(ctx context.Context, provider account.Provider, ids []uint64) ([]account.Credential, error) {

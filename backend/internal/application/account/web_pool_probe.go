@@ -653,7 +653,7 @@ func (s *Service) markWebDead(ctx context.Context, id uint64, reason string) err
 
 // SummarizeWebThreePoolsForSnapshot 为 WebPools API 填充池计数（image 含四池明细）。
 func (s *Service) SummarizeWebThreePoolsForSnapshot(ctx context.Context) (WebThreePoolsPublic, error) {
-	_, four, err := s.summarizeWebPools(ctx)
+	_, four, _, _, err := s.summarizeWebPools(ctx)
 	if err != nil {
 		return WebThreePoolsPublic{}, err
 	}
@@ -669,8 +669,13 @@ func (s *Service) SummarizeWebThreePoolsForSnapshot(ctx context.Context) (WebThr
 
 // SummarizeWebFourPoolsForSnapshot 返回 Image 四池 + Chat 三池明细。
 func (s *Service) SummarizeWebFourPoolsForSnapshot(ctx context.Context) (WebFourPoolsPublic, error) {
-	_, four, err := s.summarizeWebPools(ctx)
+	_, four, _, _, err := s.summarizeWebPools(ctx)
 	return four, err
+}
+
+func (s *Service) webImagePoolAccountIDs(ctx context.Context, now time.Time) ([]uint64, []uint64, error) {
+	_, _, dispatchIDs, schedulableIDs, err := s.summarizeWebPools(ctx)
+	return dispatchIDs, schedulableIDs, err
 }
 
 func (s *Service) webPoolIndexStats() string {

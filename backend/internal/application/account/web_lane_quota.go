@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -25,7 +26,52 @@ func (s *Service) WebLaneQuotaSummary(ctx context.Context) (WebLaneQuotaSummary,
 	if err != nil {
 		return WebLaneQuotaSummary{}, mapRepositoryError(err)
 	}
-	return webLaneQuotaFromRepository(value), nil
+	out := webLaneQuotaFromRepository(value)
+	dispatchSchedulable, err := s.summarizeImageDispatchSchedulableQuota(ctx)
+	if err != nil {
+		return WebLaneQuotaSummary{}, mapRepositoryError(err)
+	}
+	out.ImageSchedulableRemaining = dispatchSchedulable.remaining
+	out.ImageSchedulableTotal = dispatchSchedulable.total
+	out.ImageSchedulableAccounts = dispatchSchedulable.accounts
+	return out, nil
+}
+
+type imageDispatchSchedulableQuota struct {
+	remaining int
+	total     int
+	accounts  int
+}
+
+// summarizeImageDispatchSchedulableQuota 仅汇总图轨四池 dispatch 账号的新鲜 Imagine 可生图次数。
+func (s *Service) summarizeImageDispatchSchedulableQuota(ctx context.Context) (imageDispatchSchedulableQuota, error) {
+	_, _, dispatchIDs, _, err := s.summarizeWebPools(ctx)
+	if err != nil {
+		return imageDispatchSchedulableQuota{}, err
+	}
+	if len(dispatchIDs) == 0 {
+		return imageDispatchSchedulableQuota{}, nil
+	}
+	windowsByAccount, err := s.accounts.GetQuotaWindows(ctx, dispatchIDs)
+	if err != nil {
+		return imageDispatchSchedulableQuota{}, err
+	}
+	now := s.now()
+	var out imageDispatchSchedulableQuota
+	for _, id := range dispatchIDs {
+		imagine := findQuotaWindow(windowsByAccount[id], "imagine")
+		if !imagineQuotaFresh(imagine, now) {
+			continue
+		}
+		if remaining, ok := accountdomain.ImagineGenerations(imagine.Remaining, imagine.Total); ok {
+			out.remaining += remaining
+		}
+		if total, ok := accountdomain.ImagineGenerationsTotal(imagine.Total); ok {
+			out.total += total
+		}
+		out.accounts++
+	}
+	return out, nil
 }
 
 func webLaneQuotaFromRepository(value repository.WebLaneQuotaSummary) WebLaneQuotaSummary {

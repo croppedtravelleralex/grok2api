@@ -148,6 +148,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/accounts/web/refresh-quotas", h.refreshAllWebQuotas)
 	router.GET("/accounts/web-pools", h.webPools)
 	router.POST("/accounts/web-pools/reconcile", h.reconcileWebPools)
+	router.POST("/accounts/web-pools/sync-dispatch-pins", h.syncImageDispatchPins)
 	router.POST("/accounts/console/refresh-quotas", h.refreshAllConsoleQuotas)
 	router.POST("/accounts/refresh-billing", h.refreshAllBilling)
 	router.POST("/accounts/refresh-tokens", h.refreshAllTokens)
@@ -1260,6 +1261,15 @@ func (h *Handler) reconcileWebPools(c *gin.Context) {
 		return
 	}
 	response.Success(c, http.StatusOK, pool)
+}
+
+func (h *Handler) syncImageDispatchPins(c *gin.Context) {
+	result, err := h.service.SyncImageDispatchPins(c.Request.Context())
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "webDispatchPinSyncFailed", "同步图轨 dispatch pin 失败")
+		return
+	}
+	response.Success(c, http.StatusOK, result)
 }
 
 func (h *Handler) refreshAllConsoleQuotas(c *gin.Context) {
