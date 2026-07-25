@@ -225,6 +225,9 @@ func (s *Service) summarizeWebPools(ctx context.Context) (WebThreePoolSummary, W
 			four.Chat.Dead++
 		}
 	}
+	imageDispatchIDs = filterImageDispatchIDsWithGenerations(imageDispatchIDs, windowsByAccount, now)
+	result.Image.Dispatch = int64(len(imageDispatchIDs))
+	four.Image.Dispatch = len(imageDispatchIDs)
 	sort.Slice(imageDispatchIDs, func(i, j int) bool { return imageDispatchIDs[i] < imageDispatchIDs[j] })
 	sort.Slice(imageSchedulableIDs, func(i, j int) bool { return imageSchedulableIDs[i] < imageSchedulableIDs[j] })
 	return result, four, imageDispatchIDs, imageSchedulableIDs, nil

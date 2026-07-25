@@ -275,6 +275,24 @@ func imageAccountRetained(input WebPoolContext, now time.Time) bool {
 	return pool != "" && pool != WebPoolDelete
 }
 
+func filterImageDispatchIDsWithGenerations(ids []uint64, windowsByAccount map[uint64][]accountdomain.QuotaWindow, now time.Time) []uint64 {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]uint64, 0, len(ids))
+	for _, id := range ids {
+		imagine := findQuotaWindow(windowsByAccount[id], "imagine")
+		if !imagineQuotaFresh(imagine, now) {
+			continue
+		}
+		if gens, ok := accountdomain.ImagineGenerations(imagine.Remaining, imagine.Total); !ok || gens <= 0 {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
 func imagePoolEligible(candidate webPoolCandidate, now time.Time) bool {
 	if !candidate.enabled || !candidate.active || candidate.cooling {
 		return false

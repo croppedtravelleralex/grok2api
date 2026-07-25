@@ -99,13 +99,12 @@ func (s *Service) imagePinIDsLocked() []uint64 {
 	return out
 }
 
-// SyncImageDispatchPins 将 grok-imagine-image 路由 pin 与四池 dispatch（imageDispatchAdmissible）对齐：
-// 有额度且准入 → 自动上 pin/runtime；额度耗尽或不再准入 → 自动下 pin。
+// SyncImageDispatchPins 将 grok-imagine-image pin 与「四池 dispatch ∩ 有 Imagine 生图次数」对齐。
 func (s *Service) SyncImageDispatchPins(ctx context.Context) (WebDispatchPinSyncResult, error) {
 	if s.accounts == nil {
 		return WebDispatchPinSyncResult{}, ErrUnsupported
 	}
-	_, _, targetIDs, _, err := s.summarizeWebPools(ctx)
+	targetIDs, err := s.imageDispatchIDsWithGenerations(ctx)
 	if err != nil {
 		return WebDispatchPinSyncResult{}, err
 	}

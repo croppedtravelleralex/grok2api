@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"sort"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -37,6 +38,35 @@ func (s *Service) WebLaneQuotaSummary(ctx context.Context) (WebLaneQuotaSummary,
 	return out, nil
 }
 
+// imageDispatchIDsWithGenerations 返回四池 dispatch 中、新鲜上游额度且生图次数 > 0 的账号。
+func (s *Service) imageDispatchIDsWithGenerations(ctx context.Context) ([]uint64, error) {
+	_, _, dispatchIDs, _, err := s.summarizeWebPools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(dispatchIDs) == 0 {
+		return nil, nil
+	}
+	windowsByAccount, err := s.accounts.GetQuotaWindows(ctx, dispatchIDs)
+	if err != nil {
+		return nil, err
+	}
+	now := s.now()
+	out := make([]uint64, 0, len(dispatchIDs))
+	for _, id := range dispatchIDs {
+		imagine := findQuotaWindow(windowsByAccount[id], "imagine")
+		if !imagineQuotaFresh(imagine, now) {
+			continue
+		}
+		if gens, ok := accountdomain.ImagineGenerations(imagine.Remaining, imagine.Total); !ok || gens <= 0 {
+			continue
+		}
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out, nil
+}
+
 type imageDispatchSchedulableQuota struct {
 	remaining int
 	total     int
@@ -45,7 +75,7 @@ type imageDispatchSchedulableQuota struct {
 
 // summarizeImageDispatchSchedulableQuota 仅汇总图轨四池 dispatch 账号的新鲜 Imagine 可生图次数。
 func (s *Service) summarizeImageDispatchSchedulableQuota(ctx context.Context) (imageDispatchSchedulableQuota, error) {
-	_, _, dispatchIDs, _, err := s.summarizeWebPools(ctx)
+	dispatchIDs, err := s.imageDispatchIDsWithGenerations(ctx)
 	if err != nil {
 		return imageDispatchSchedulableQuota{}, err
 	}
