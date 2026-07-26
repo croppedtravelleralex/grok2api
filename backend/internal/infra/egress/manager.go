@@ -97,6 +97,38 @@ func (l *Lease) DoIsolated(request *http.Request) (*http.Response, error) {
 	return response, err
 }
 
+// DoPlain 用标准库客户端经同一出口发请求，不做浏览器 TLS 伪装。
+// assets.grok.com 是 CDN，不像 grok.com 那样需要伪装；当伪装客户端被判 403 时
+// 用它兜底，同时也用于区分「是否伪装层本身导致拒绝」。
+func (l *Lease) DoPlain(request *http.Request) (*http.Response, error) {
+	if l == nil {
+		return nil, errors.New("出口客户端未初始化")
+	}
+	transport := &http.Transport{ForceAttemptHTTP2: true}
+	if strings.TrimSpace(l.ProxyURL) != "" {
+		proxyURL, err := url.Parse(l.ProxyURL)
+		if err != nil {
+			return nil, err
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+	client := &http.Client{
+		Transport:     transport,
+		Timeout:       90 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	defer transport.CloseIdleConnections()
+	ctx := context.Background()
+	if request != nil && request.Context() != nil {
+		ctx = request.Context()
+	}
+	response, err := client.Do(request)
+	if l.recorder != nil {
+		l.recordTraffic(ctx, l.recorder, request, response)
+	}
+	return response, err
+}
+
 func (l *Lease) JarCloudflareCookies(target *url.URL) string {
 	if l == nil || l.browser == nil || target == nil {
 		return ""

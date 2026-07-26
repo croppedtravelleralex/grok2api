@@ -1601,6 +1601,29 @@ func (a *Adapter) downloadImage(ctx context.Context, credential account.Credenti
 
 const maxAssetDownloadEgressAttempts = 6
 
+// downloadAssetPlain 用标准库客户端经同一出口重取图片。assets.grok.com 是 CDN，
+// 不需要 grok.com 那套浏览器 TLS 伪装；伪装客户端被判 403 时用它兜底。
+func (a *Adapter) downloadAssetPlain(ctx context.Context, lease *egress.Lease, parsed *url.URL, userAgent, cookie string) ([]byte, int, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	applyAssetDownloadHeaders(request.Header, a.config(), userAgent, cookie)
+	response, err := lease.DoPlain(request)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, response.StatusCode, fmt.Errorf("下载图片返回 %d", response.StatusCode)
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, (32<<20)+1))
+	if err != nil || len(raw) > 32<<20 {
+		return nil, response.StatusCode, fmt.Errorf("图片下载失败或超过 32 MiB")
+	}
+	return raw, response.StatusCode, nil
+}
+
 func assetDownloadAffinity(accountID uint64, attempt int) string {
 	if attempt <= 0 {
 		return fmt.Sprintf("%d", accountID)
@@ -1672,8 +1695,20 @@ func (a *Adapter) downloadImageWithScope(ctx context.Context, credential account
 		fields = append(fields, assetRejectionDiagnostics(request, response)...)
 		fields = append(fields, "jar_cookie_names", strings.Join(lease.JarCookieNames(parsed), ","))
 		a.log().Warn("web_lite_asset_download_failed", fields...)
-		if response.StatusCode == http.StatusForbidden && lease.NodeID > 0 {
-			a.egress.FeedbackForScope(ctx, scope, lease.NodeID, response.StatusCode, nil)
+		if response.StatusCode == http.StatusForbidden {
+			if raw, plainStatus, plainErr := a.downloadAssetPlain(ctx, lease, parsed, userAgent, cookie); plainErr == nil {
+				a.log().Info("web_lite_asset_download_plain_ok",
+					"account_id", credential.ID, "scope", scope, "bytes", len(raw),
+					"impersonated_status", response.StatusCode)
+				return raw, plainStatus, nil
+			} else {
+				a.log().Warn("web_lite_asset_download_plain_failed",
+					"account_id", credential.ID, "scope", scope,
+					"status_code", plainStatus, "error", plainErr)
+			}
+			if lease.NodeID > 0 {
+				a.egress.FeedbackForScope(ctx, scope, lease.NodeID, response.StatusCode, nil)
+			}
 		}
 		return nil, response.StatusCode, fmt.Errorf("下载图片返回 %d", response.StatusCode)
 	}
