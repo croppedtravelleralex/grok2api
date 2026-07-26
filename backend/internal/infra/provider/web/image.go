@@ -1660,12 +1660,15 @@ func (a *Adapter) downloadImageWithScope(ctx context.Context, credential account
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		a.log().Warn("web_lite_asset_download_failed",
+		fields := []any{
 			"account_id", credential.ID,
 			"scope", scope,
+			"egress_node_id", lease.NodeID,
 			"status_code", response.StatusCode,
 			"asset_url_tail", assetURLTailForLog(parsed.String()),
-		)
+		}
+		fields = append(fields, assetRejectionDiagnostics(request, response)...)
+		a.log().Warn("web_lite_asset_download_failed", fields...)
 		if response.StatusCode == http.StatusForbidden && lease.NodeID > 0 {
 			a.egress.FeedbackForScope(ctx, scope, lease.NodeID, response.StatusCode, nil)
 		}

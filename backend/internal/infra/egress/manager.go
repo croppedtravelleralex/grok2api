@@ -76,17 +76,30 @@ func (l *Lease) Release() {
 }
 
 type Manager struct {
-	repository repository.EgressRepository
-	cipher     *security.Cipher
-	recorder   TrafficRecorder
-	mu         sync.Mutex
-	clients    map[uint64]cachedClient
-	inflight   map[uint64]int
-	nodes      map[domain.Scope]cachedNodeSnapshot
-	nodeLoads  singleflight.Group
-	webGate    chan struct{}
-	assetGate  chan struct{}
-	expandGate chan struct{}
+	repository      repository.EgressRepository
+	cipher          *security.Cipher
+	recorder        TrafficRecorder
+	mu              sync.Mutex
+	clients         map[uint64]cachedClient
+	inflight        map[uint64]int
+	nodes           map[domain.Scope]cachedNodeSnapshot
+	nodeLoads       singleflight.Group
+	webGate         chan struct{}
+	assetGate       chan struct{}
+	expandGate      chan struct{}
+	disableCooldown bool
+}
+
+func (m *Manager) SetDisableCooldown(v bool) {
+	m.mu.Lock()
+	m.disableCooldown = v
+	m.mu.Unlock()
+}
+
+func (m *Manager) cooldownDisabled() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.disableCooldown
 }
 
 type cachedClient struct {
@@ -163,9 +176,13 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 		configured = configured || len(nodes) > 0
 		candidateAvailable := make([]domain.Node, 0, len(nodes))
 		for _, node := range nodes {
-			if node.Enabled && (node.CooldownUntil == nil || !now.Before(*node.CooldownUntil)) {
-				candidateAvailable = append(candidateAvailable, node)
+			if !node.Enabled {
+				continue
 			}
+			if !m.cooldownDisabled() && node.CooldownUntil != nil && now.Before(*node.CooldownUntil) {
+				continue
+			}
+			candidateAvailable = append(candidateAvailable, node)
 		}
 		if len(candidateAvailable) > 0 {
 			available = candidateAvailable
@@ -395,9 +412,13 @@ func (m *Manager) FeedbackForScope(ctx context.Context, scope domain.Scope, node
 	default:
 		value.FailureCount++
 		value.Health = max(0.05, value.Health*0.7)
-		cooldown := min(10*time.Minute, 30*time.Second*time.Duration(1<<min(value.FailureCount-1, 4)))
-		until := now.Add(cooldown)
-		value.CooldownUntil = &until
+		if !m.cooldownDisabled() {
+			cooldown := min(10*time.Minute, 30*time.Second*time.Duration(1<<min(value.FailureCount-1, 4)))
+			until := now.Add(cooldown)
+			value.CooldownUntil = &until
+		} else {
+			value.CooldownUntil = nil
+		}
 		if transportErr != nil {
 			value.LastError = "transport error"
 		} else {

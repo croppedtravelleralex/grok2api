@@ -143,10 +143,11 @@ type Selector struct {
 	accounts       repository.AccountRepository
 	concurrency    repository.ConcurrencyLimiter
 	sticky         repository.StickySessionRepository
-	stickyTTL      time.Duration
-	cooldownBase   time.Duration
-	cooldownMax    time.Duration
-	capacityWait   time.Duration
+	stickyTTL         time.Duration
+	cooldownBase      time.Duration
+	cooldownMax       time.Duration
+	capacityWait      time.Duration
+	disableCooldown   bool
 	mu             sync.Mutex
 	leaseWakeMu    sync.Mutex
 	leaseWake      chan struct{}
@@ -201,6 +202,18 @@ func NewSelector(accounts repository.AccountRepository, concurrency repository.C
 	}
 }
 
+func (s *Selector) SetDisableCooldown(v bool) {
+	s.mu.Lock()
+	s.disableCooldown = v
+	s.mu.Unlock()
+}
+
+func (s *Selector) cooldownDisabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.disableCooldown
+}
+
 func (s *Selector) UpdateConfig(stickyTTL, cooldownBase, cooldownMax time.Duration, capacityWait ...time.Duration) {
 	s.mu.Lock()
 	s.stickyTTL = stickyTTL
@@ -252,7 +265,7 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 			earliestRetry = earlierFuture(earliestRetry, candidate.ModelQuotaBlock.CooldownUntil, now)
 			continue
 		}
-		if value.CooldownUntil != nil && now.Before(*value.CooldownUntil) {
+		if !s.cooldownDisabled() && value.CooldownUntil != nil && now.Before(*value.CooldownUntil) {
 			coolingCandidates++
 			earliestRetry = earlierFuture(earliestRetry, *value.CooldownUntil, now)
 			continue
@@ -293,11 +306,7 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 		normalCandidates = append(normalCandidates, candidate)
 	}
 	if requiresChromeTicketAdmission(upstreamModel) {
-		var ticketErr error
-		normalCandidates, ticketErr = s.filterChromeTicketCandidates(ctx, normalCandidates)
-		if ticketErr != nil {
-			return nil, ticketErr
-		}
+		normalCandidates = s.filterChromeTicketCandidates(ctx, normalCandidates)
 	}
 	if len(normalCandidates) == 0 && len(probeCandidates) == 0 {
 		reason := SelectionNoAccounts
@@ -310,8 +319,6 @@ func (s *Selector) Acquire(ctx context.Context, provider account.Provider, upstr
 			reason = SelectionCooling
 		case quotaCandidates > 0:
 			reason = SelectionQuotaExhausted
-		case requiresChromeTicketAdmission(upstreamModel) && s.chromeTicketsEnforced():
-			reason = SelectionNoChromeTickets
 		}
 		return nil, &SelectionUnavailableError{Reason: reason, RetryAfter: retryDelay(now, earliestRetry)}
 	}
@@ -507,7 +514,7 @@ func (s *Selector) AcquirePinned(ctx context.Context, provider account.Provider,
 			if candidateModelQuotaBlocked(candidate, now) {
 				return nil, &SelectionUnavailableError{Reason: SelectionModelCooling, RetryAfter: retryDelay(now, candidate.ModelQuotaBlock.CooldownUntil)}
 			}
-			if value.CooldownUntil != nil && now.Before(*value.CooldownUntil) {
+			if !s.cooldownDisabled() && value.CooldownUntil != nil && now.Before(*value.CooldownUntil) {
 				return nil, &SelectionUnavailableError{Reason: SelectionCooling, RetryAfter: retryDelay(now, *value.CooldownUntil)}
 			}
 			if recovery := candidate.QuotaRecovery; recovery != nil && recovery.Status != account.QuotaRecoveryStatusActive {
@@ -658,6 +665,9 @@ func (s *Selector) MarkQuotaStateChanged(provider account.Provider) { s.invalida
 
 // MarkModelSoftStop 记录模型级退避，不修改账号全局健康或其他模型的调度资格。
 func (s *Selector) MarkModelSoftStop(ctx context.Context, accountID uint64, upstreamModel string) error {
+	if s.cooldownDisabled() {
+		return nil
+	}
 	upstreamModel = strings.TrimSpace(upstreamModel)
 	if accountID == 0 || upstreamModel == "" {
 		return nil
@@ -763,6 +773,9 @@ func (s *Selector) ConsumeQuota(provider account.Provider, accountID uint64, mod
 }
 
 func (s *Selector) MarkFailure(ctx context.Context, credential account.Credential, status int, retryAfter time.Duration) {
+	if s.cooldownDisabled() {
+		return
+	}
 	failureCount := credential.FailureCount + 1
 	_, cooldownBase, cooldownMax, _ := s.routingConfig()
 	cooldown := cooldownBase
@@ -1287,12 +1300,6 @@ func requiresChromeTicketAdmission(upstreamModel string) bool {
 	return strings.EqualFold(strings.TrimSpace(upstreamModel), webLiteImageUpstreamModel)
 }
 
-func (s *Selector) chromeTicketsEnforced() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.chromeTickets != nil
-}
-
 func (s *Selector) ticketHolderIDs(ctx context.Context) []uint64 {
 	s.mu.Lock()
 	ticketSource := s.chromeTickets
@@ -1314,16 +1321,18 @@ func (s *Selector) ticketHolderIDs(ctx context.Context) []uint64 {
 	return ids
 }
 
-func (s *Selector) filterChromeTicketCandidates(ctx context.Context, candidates []account.RoutingCandidate) ([]account.RoutingCandidate, error) {
+// filterChromeTicketCandidates 优先返回持票账号；票池为空或无候选持票时回退到原候选集，
+// 让请求走无票路径而不是直接失败。上游对无票请求仍可能返回 403，由 image 重试兜底。
+func (s *Selector) filterChromeTicketCandidates(ctx context.Context, candidates []account.RoutingCandidate) []account.RoutingCandidate {
 	s.mu.Lock()
 	ticketSource := s.chromeTickets
 	s.mu.Unlock()
 	if ticketSource == nil {
-		return candidates, nil
+		return candidates
 	}
 	counts := ticketSource.AvailableCounts(ctx)
 	if len(counts) == 0 {
-		return nil, selectionErr(SelectionNoChromeTickets)
+		return candidates
 	}
 	filtered := make([]account.RoutingCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -1332,9 +1341,9 @@ func (s *Selector) filterChromeTicketCandidates(ctx context.Context, candidates 
 		}
 	}
 	if len(filtered) == 0 {
-		return nil, selectionErr(SelectionNoChromeTickets)
+		return candidates
 	}
-	return filtered, nil
+	return filtered
 }
 
 func mergeDispatchIDs(preferred, current []uint64) []uint64 {

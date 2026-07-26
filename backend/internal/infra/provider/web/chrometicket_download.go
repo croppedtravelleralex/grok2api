@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
@@ -264,6 +265,55 @@ func resolveAssetDownloadCookie(token, leaseCF, deviceCookie string, downloadSta
 		return mergeChromeTicketDownloadCookie(token, deviceCookie, leaseCF)
 	}
 	return infraegress.BuildSSOCookie(token, leaseCF)
+}
+
+// assetRejectionDiagnostics 收集上游拒绝 asset 下载时的判因线索。Cloudflare 在响应头里
+// 说明拦截原因（cf-mitigated / cf-ray / server），请求侧记录实际发出的头名与 cookie 组成。
+// 只记录名称、长度和响应片段，不记录任何凭据值。
+func assetRejectionDiagnostics(request *http.Request, response *http.Response) []any {
+	fields := []any{
+		"resp_server", response.Header.Get("Server"),
+		"resp_cf_ray", response.Header.Get("Cf-Ray"),
+		"resp_cf_mitigated", response.Header.Get("Cf-Mitigated"),
+		"resp_content_type", response.Header.Get("Content-Type"),
+		"resp_body_snippet", assetRejectionBodySnippet(response),
+	}
+	if request == nil {
+		return fields
+	}
+	names := make([]string, 0, len(request.Header))
+	for name := range request.Header {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return append(fields,
+		"req_header_names", strings.Join(names, ","),
+		"req_cookie_names", strings.Join(cookieNames(request.Header.Get("Cookie")), ","),
+		"req_ua_len", len(request.Header.Get("User-Agent")),
+	)
+}
+
+func assetRejectionBodySnippet(response *http.Response) string {
+	if response.Body == nil {
+		return ""
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 400))
+	if err != nil {
+		return ""
+	}
+	return strings.Join(strings.Fields(string(raw)), " ")
+}
+
+func cookieNames(cookie string) []string {
+	parts := strings.Split(cookie, ";")
+	names := make([]string, 0, len(parts))
+	for _, part := range parts {
+		name, _, _ := strings.Cut(strings.TrimSpace(part), "=")
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 func applyAssetDownloadHeaders(headers http.Header, cfg Config, userAgent, cookie string) {

@@ -991,7 +991,7 @@ func (s staticChromeTicketSource) AvailableCounts(context.Context) map[uint64]in
 	return map[uint64]int64(s)
 }
 
-func TestSelectorRejectsLiteImageWithoutChromeTickets(t *testing.T) {
+func TestSelectorPrefersChromeTicketHoldersAndFallsBackWhenPoolEmpty(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "chrome-ticket-filter.db"))
 	if err != nil {
@@ -1023,16 +1023,19 @@ func TestSelectorRejectsLiteImageWithoutChromeTickets(t *testing.T) {
 	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	selector.SetChromeTicketSource(staticChromeTicketSource{})
 
-	_, err = selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false)
-	if err == nil {
-		t.Fatal("expected no chrome tickets error when pool empty")
+	// 票池为空时不再硬失败，回退到无票路径。
+	emptyPoolLease, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false)
+	if err != nil {
+		t.Fatalf("expected fallback to ticketless path when pool empty, got %v", err)
 	}
-	var unavailable *SelectionUnavailableError
-	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionNoChromeTickets {
-		t.Fatalf("error = %v", err)
-	}
+	fallbackID := emptyPoolLease.Credential.ID
+	emptyPoolLease.Release()
 
+	// 有票时票偏好生效：选中持票账号，而不是回退时的那个。
 	selector.SetChromeTicketSource(staticChromeTicketSource{withTicket.ID: 1})
+	if fallbackID == withTicket.ID {
+		t.Fatalf("fallback already picked the ticket holder %d, preference is untestable", withTicket.ID)
+	}
 	lease, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false)
 	if err != nil {
 		t.Fatal(err)

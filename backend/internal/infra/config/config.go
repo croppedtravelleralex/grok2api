@@ -165,11 +165,12 @@ type LocalMediaConfig struct {
 }
 
 type RoutingConfig struct {
-	StickyTTL    Duration `yaml:"stickyTTL"`
-	CooldownBase Duration `yaml:"cooldownBase"`
-	CooldownMax  Duration `yaml:"cooldownMax"`
-	CapacityWait Duration `yaml:"capacityWait"`
-	MaxAttempts  int      `yaml:"maxAttempts"`
+	StickyTTL       Duration `yaml:"stickyTTL"`
+	CooldownBase    Duration `yaml:"cooldownBase"`
+	CooldownMax     Duration `yaml:"cooldownMax"`
+	CapacityWait    Duration `yaml:"capacityWait"`
+	MaxAttempts     int      `yaml:"maxAttempts"`
+	DisableCooldown bool     `yaml:"disableCooldown"`
 }
 
 type AuditConfig struct {
@@ -452,7 +453,10 @@ func (c Config) Validate() error {
 	if c.Provider.Web.RecoveryBackoffBase.Value() < 5*time.Second || c.Provider.Web.RecoveryBackoffMax.Value() < c.Provider.Web.RecoveryBackoffBase.Value() || c.Provider.Web.RecoveryBackoffMax.Value() > 6*time.Hour {
 		return errors.New("provider.web 恢复退避配置无效")
 	}
-	if c.Routing.StickyTTL.Value() <= 0 || c.Routing.StickyTTL.Value() > maxRoutingTTL || c.Routing.CooldownBase.Value() <= 0 || c.Routing.CooldownMax.Value() < c.Routing.CooldownBase.Value() || c.Routing.CooldownMax.Value() > maxRoutingCooldown || c.Routing.CapacityWait.Value() <= 0 || c.Routing.CapacityWait.Value() > 5*time.Second || c.Routing.MaxAttempts < 1 || c.Routing.MaxAttempts > 10 {
+	if c.Routing.StickyTTL.Value() <= 0 || c.Routing.StickyTTL.Value() > maxRoutingTTL || c.Routing.CapacityWait.Value() <= 0 || c.Routing.CapacityWait.Value() > 5*time.Second || c.Routing.MaxAttempts < 1 || c.Routing.MaxAttempts > 10 {
+		return errors.New("routing 配置无效")
+	}
+	if !c.Routing.DisableCooldown && (c.Routing.CooldownBase.Value() <= 0 || c.Routing.CooldownMax.Value() < c.Routing.CooldownBase.Value() || c.Routing.CooldownMax.Value() > maxRoutingCooldown) {
 		return errors.New("routing 配置无效")
 	}
 	if c.Audit.BufferSize < 1 || c.Audit.BufferSize > maxAuditBufferSize || c.Audit.BatchSize < 1 || c.Audit.BatchSize > maxAuditBatchSize || c.Audit.BatchSize > c.Audit.BufferSize || c.Audit.FlushInterval.Value() < minAuditFlushInterval || c.Audit.FlushInterval.Value() > maxAuditFlushInterval {
@@ -547,11 +551,12 @@ func defaultConfig() Config {
 			Local: LocalMediaConfig{Path: "./data/media"},
 		},
 		Routing: RoutingConfig{
-			StickyTTL:    Duration(time.Hour),
-			CooldownBase: Duration(30 * time.Second),
-			CooldownMax:  Duration(30 * time.Minute),
-			CapacityWait: Duration(500 * time.Millisecond),
-			MaxAttempts:  3,
+			StickyTTL:       Duration(time.Hour),
+			CooldownBase:    Duration(30 * time.Second),
+			CooldownMax:     Duration(30 * time.Minute),
+			CapacityWait:    Duration(500 * time.Millisecond),
+			MaxAttempts:     3,
+			DisableCooldown: true,
 		},
 		Audit:             AuditConfig{BufferSize: 16384, BatchSize: 256, FlushInterval: Duration(250 * time.Millisecond)},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},
