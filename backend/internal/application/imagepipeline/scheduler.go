@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	domain "github.com/chenyme/grok2api/backend/internal/domain/imagepipeline"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -117,6 +118,9 @@ type RunArtifacts struct {
 	UploadAccountID        *uint64
 	PSAccountID            *uint64
 	SSAccountID            *uint64
+	// SSCredential 保存出图阶段实际使用的完整凭据。下载图片必须用同一账号的访问
+	// 令牌；只带 ID 的空壳凭据会让请求以未认证身份发出，被资产源站直接 403。
+	SSCredential accountdomain.Credential
 }
 
 type Run struct {
@@ -364,6 +368,15 @@ func (r *Run) SetPSAccount(id uint64) {
 func (r *Run) SetSSAccount(id uint64) {
 	r.mu.Lock()
 	r.artifacts.SSAccountID = &id
+	r.mu.Unlock()
+}
+
+// SetSSCredential 记录出图阶段的完整凭据，供后续下载图片复用同一账号的令牌。
+func (r *Run) SetSSCredential(credential accountdomain.Credential) {
+	r.mu.Lock()
+	id := credential.ID
+	r.artifacts.SSAccountID = &id
+	r.artifacts.SSCredential = credential
 	r.mu.Unlock()
 }
 

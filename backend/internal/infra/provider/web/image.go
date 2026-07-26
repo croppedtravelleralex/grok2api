@@ -350,14 +350,25 @@ func (e *liteUpstreamError) Response() *provider.Response {
 	return &provider.Response{StatusCode: e.StatusCode, Status: e.Status, Header: jsonHeaders(), Body: io.NopCloser(bytes.NewReader(e.Body))}
 }
 
+// downloadCredential 返回下载图片应使用的凭据。图片必须用出图阶段那个账号的访问
+// 令牌去取，因此这里要带上完整凭据——只回填 ID 会让下载以未认证身份发出，被资产
+// 源站直接 403（表现为 cf-mitigated 为空、响应体为空的裸 403）。
 func downloadCredential(fallback account.Credential, run *imagepipelineapp.Run, provider imagepipelineapp.AccountProvider) account.Credential {
 	if run == nil || provider == nil {
 		return fallback
 	}
-	if id := run.Artifacts().SSAccountID; id != nil && *id > 0 {
-		return account.Credential{ID: *id}
+	artifacts := run.Artifacts()
+	id := artifacts.SSAccountID
+	if id == nil || *id == 0 {
+		return fallback
 	}
-	return fallback
+	if artifacts.SSCredential.ID == *id && strings.TrimSpace(artifacts.SSCredential.EncryptedAccessToken) != "" {
+		return artifacts.SSCredential
+	}
+	if fallback.ID == *id {
+		return fallback
+	}
+	return account.Credential{ID: *id}
 }
 
 func (a *Adapter) maybeExpandPromptStaged(ctx context.Context, provider imagepipelineapp.AccountProvider, run *imagepipelineapp.Run, prompt string) (string, error) {

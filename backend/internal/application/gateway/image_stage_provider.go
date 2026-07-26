@@ -77,13 +77,13 @@ func (p *stageAccountProvider) AcquireForSS(ctx context.Context, run *imagepipel
 	if len(exclude) < stageAccountPoolFallbackThreshold {
 		lease, err := p.acquire(ctx, run, exclude)
 		if err == nil && run != nil {
-			run.SetSSAccount(lease.Credential().ID)
+			run.SetSSCredential(lease.Credential())
 		}
 		return lease, err
 	}
 	lease, err := p.acquire(ctx, run, p.excluded)
 	if err == nil && run != nil {
-		run.SetSSAccount(lease.Credential().ID)
+		run.SetSSCredential(lease.Credential())
 	}
 	return lease, err
 }
