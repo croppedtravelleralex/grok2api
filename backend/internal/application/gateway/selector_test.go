@@ -591,6 +591,57 @@ func TestSelectorModelOutcomeDoesNotAffectOtherModels(t *testing.T) {
 	}
 }
 
+// assertPersistedModelOutcome 校验排序所依赖的持久化前置条件。
+//
+// 重启后的排序完全由 sortCandidates 的 modelRanks 决定：soft-stop 账号要拿到
+// rank 2，必须同时满足 Status=soft_stop、CooldownUntil 非空、且仍在未来；
+// 成功账号要拿到 rank 0，必须 Status=available 且 LastSuccessAt 在
+// modelOutcomeSuccessTTL 内。任一条件不成立，两个账号就会同为默认 rank 1，
+// 排序退化到最末的 ID 升序 tie-break，表现为难以解读的顺序错乱
+// （CI 上曾报 "acquire 1 account = 1, want 2"）。
+//
+// 在这里显式断言，可让前置条件失效时直接指出是哪个字段的问题。
+func assertPersistedModelOutcome(t *testing.T, accounts repository.AccountRepository, ctx context.Context, softStoppedID, succeededID uint64) {
+	t.Helper()
+	states, err := accounts.GetModelStates(ctx, []uint64{softStoppedID, succeededID})
+	if err != nil {
+		t.Fatalf("读取持久化模型状态: %v", err)
+	}
+	pick := func(id uint64) *account.ModelState {
+		for _, state := range states[id] {
+			if state.UpstreamModel == "grok-imagine-image" {
+				return &state
+			}
+		}
+		return nil
+	}
+	now := time.Now().UTC()
+	soft := pick(softStoppedID)
+	switch {
+	case soft == nil:
+		t.Fatalf("账号 %d 未持久化 grok-imagine-image 模型状态", softStoppedID)
+	case soft.Status != account.ModelStatusSoftStop:
+		t.Fatalf("账号 %d 状态 = %q，want soft_stop", softStoppedID, soft.Status)
+	case soft.CooldownUntil == nil:
+		t.Fatalf("账号 %d 的 CooldownUntil 为空，soft-stop 降权会丢失", softStoppedID)
+	case !now.Before(*soft.CooldownUntil):
+		t.Fatalf("账号 %d 的 CooldownUntil=%s 已过期（now=%s），soft-stop 降权会丢失",
+			softStoppedID, soft.CooldownUntil.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	}
+	ok := pick(succeededID)
+	switch {
+	case ok == nil:
+		t.Fatalf("账号 %d 未持久化 grok-imagine-image 模型状态", succeededID)
+	case ok.Status != account.ModelStatusAvailable:
+		t.Fatalf("账号 %d 状态 = %q，want available", succeededID, ok.Status)
+	case ok.LastSuccessAt == nil:
+		t.Fatalf("账号 %d 的 LastSuccessAt 为空，成功加权会丢失", succeededID)
+	case now.Sub(*ok.LastSuccessAt) > modelOutcomeSuccessTTL:
+		t.Fatalf("账号 %d 的 LastSuccessAt=%s 已超出 TTL %s，成功加权会丢失",
+			succeededID, ok.LastSuccessAt.Format(time.RFC3339Nano), modelOutcomeSuccessTTL)
+	}
+}
+
 func TestSelectorPersistsModelOutcomeRankingAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "persisted-model-outcome.db"))
@@ -617,8 +668,6 @@ func TestSelectorPersistsModelOutcomeRankingAcrossRestart(t *testing.T) {
 	softStopped := create("soft-stopped")
 	unknown := create("unknown")
 	succeeded := create("succeeded")
-	// cooldownBase 需明显大于持久化时间戳的截断误差：soft-stop 的降权依赖
-	// now.Before(CooldownUntil)，用 1 秒会因亚秒截断而随机丢失降权（CI 上偶发失败）。
 	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Minute, time.Hour)
 	if err := selector.MarkModelSoftStop(ctx, softStopped.ID, "grok-imagine-image"); err != nil {
 		t.Fatal(err)
@@ -626,8 +675,13 @@ func TestSelectorPersistsModelOutcomeRankingAcrossRestart(t *testing.T) {
 	if err := selector.MarkModelSuccess(ctx, succeeded.ID, "grok-imagine-image"); err != nil {
 		t.Fatal(err)
 	}
+	assertPersistedModelOutcome(t, accounts, ctx, softStopped.ID, succeeded.ID)
 
 	selector = NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Minute, time.Hour)
+	// 本用例断言的是排序本身，必须关掉 epsilon-greedy 探索。生产默认
+	// defaultExplorationEpsilon=0.05，每次选号有 5% 概率随机打乱候选顺序，
+	// 3 次 acquire 下约 14% 会命中，是此前 CI 偶发失败的原因。
+	selector.explorationEpsilon = 0
 	excluded := map[uint64]bool{}
 	want := []uint64{succeeded.ID, unknown.ID, softStopped.ID}
 	for index, wantID := range want {
