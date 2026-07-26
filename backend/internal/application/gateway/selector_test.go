@@ -617,7 +617,9 @@ func TestSelectorPersistsModelOutcomeRankingAcrossRestart(t *testing.T) {
 	softStopped := create("soft-stopped")
 	unknown := create("unknown")
 	succeeded := create("succeeded")
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	// cooldownBase 需明显大于持久化时间戳的截断误差：soft-stop 的降权依赖
+	// now.Before(CooldownUntil)，用 1 秒会因亚秒截断而随机丢失降权（CI 上偶发失败）。
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Minute, time.Hour)
 	if err := selector.MarkModelSoftStop(ctx, softStopped.ID, "grok-imagine-image"); err != nil {
 		t.Fatal(err)
 	}
@@ -625,7 +627,7 @@ func TestSelectorPersistsModelOutcomeRankingAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	selector = NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector = NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Minute, time.Hour)
 	excluded := map[uint64]bool{}
 	want := []uint64{succeeded.ID, unknown.ID, softStopped.ID}
 	for index, wantID := range want {
