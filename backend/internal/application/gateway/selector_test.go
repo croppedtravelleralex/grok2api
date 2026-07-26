@@ -51,7 +51,7 @@ func TestSelectorPrioritizesDueQuotaProbeOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	lease, err := selector.Acquire(ctx, account.ProviderBuild, "grok-test", "", "", map[uint64]bool{}, true)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestSelectorSkipsQuotaProbeBeforeDue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	if _, err := selector.Acquire(ctx, account.ProviderBuild, "grok-test", "", "", map[uint64]bool{}, true); err == nil {
 		t.Fatal("expected no account before next probe time")
 	}
@@ -137,7 +137,7 @@ func TestSelectorUsesPaidWeeklyPoolAsWebQuotaGate(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	if _, err := selector.Acquire(ctx, account.ProviderWeb, "", "fast", "", nil, false); err == nil {
 		t.Fatal("exhausted weekly pool must take precedence over a stale fast quota window")
 	}
@@ -178,7 +178,7 @@ func TestSelectorClaimsPaidBillingProbeAfterPeriodEnd(t *testing.T) {
 	if err := accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{AccountID: value.ID, Kind: account.QuotaRecoveryKindPaid, Status: account.QuotaRecoveryStatusExhausted, NextProbeAt: &due, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	lease, err := selector.Acquire(ctx, account.ProviderBuild, "", "", "", map[uint64]bool{}, true)
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +226,7 @@ func TestSelectorOnlyUsesAccountsSupportingRequestedModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	lease, err := selector.Acquire(ctx, account.ProviderBuild, "grok-premium", "", "", map[uint64]bool{}, true)
 	if err != nil {
 		t.Fatal(err)
@@ -268,7 +268,7 @@ func TestSelectorUsesOnlyVerifiedBuildAccountsWhenAvailable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	lease, err := selector.Acquire(ctx, account.ProviderBuild, "grok-4.5", "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
@@ -305,7 +305,7 @@ func TestSelectorKeepsWebQuotaModesIsolated(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	if _, err := selector.Acquire(ctx, account.ProviderWeb, "grok-chat", "fast", "", nil, false); err == nil {
 		t.Fatal("exhausted fast mode should not be selected")
 	}
@@ -339,7 +339,7 @@ func TestSelectorHonorsWebTierPoolOrderBeforeAccountPriority(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), staticTierOrder{order: []account.WebTier{account.WebTierHeavy, account.WebTierSuper, account.WebTierBasic}}, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), staticTierOrder{order: []account.WebTier{account.WebTierHeavy, account.WebTierSuper, account.WebTierBasic}}, time.Hour, time.Second, time.Minute)
 	lease, err := selector.Acquire(ctx, account.ProviderWeb, "fast-prefer-best", "fast", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
@@ -380,7 +380,7 @@ func TestSelectorBuildAcquireAvoidsFullTableList(t *testing.T) {
 
 	counter := &countingAccountRepo{AccountRepository: accounts}
 	dispatch := &stubBuildDispatchSource{dispatchIDs: []uint64{active.ID}}
-	selector := NewSelector(counter, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(counter, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	selector.SetBuildDispatchSource(dispatch)
 
 	lease, err := selector.Acquire(ctx, account.ProviderBuild, "grok-test", "", "", nil, false)
@@ -430,7 +430,7 @@ func TestSelectorBuildAcquireMergesDueNormalProbeIDs(t *testing.T) {
 
 	counter := &countingAccountRepo{AccountRepository: accounts}
 	dispatch := &stubBuildDispatchSource{normalProbeIDs: []uint64{probe.ID}}
-	selector := NewSelector(counter, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(counter, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	selector.SetBuildDispatchSource(dispatch)
 
 	lease, err := selector.Acquire(ctx, account.ProviderBuild, "grok-test", "", "", nil, true)
@@ -511,7 +511,7 @@ func TestSelectorPropagatesConcurrencyStoreFailure(t *testing.T) {
 	}
 
 	runtimeErr := errors.New("runtime store unavailable")
-	selector := NewSelector(accounts, failingConcurrencyLimiter{err: runtimeErr}, memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accounts, failingConcurrencyLimiter{err: runtimeErr}, memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	if _, err := selector.Acquire(ctx, account.ProviderBuild, "", "", "", map[uint64]bool{}, true); !errors.Is(err, runtimeErr) {
 		t.Fatalf("Acquire error = %v, want wrapped runtime error", err)
 	}
@@ -668,7 +668,7 @@ func TestSelectorPersistsModelOutcomeRankingAcrossRestart(t *testing.T) {
 	softStopped := create("soft-stopped")
 	unknown := create("unknown")
 	succeeded := create("succeeded")
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Minute, time.Hour)
+	selector := newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Minute, time.Hour)
 	if err := selector.MarkModelSoftStop(ctx, softStopped.ID, "grok-imagine-image"); err != nil {
 		t.Fatal(err)
 	}
@@ -677,11 +677,7 @@ func TestSelectorPersistsModelOutcomeRankingAcrossRestart(t *testing.T) {
 	}
 	assertPersistedModelOutcome(t, accounts, ctx, softStopped.ID, succeeded.ID)
 
-	selector = NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Minute, time.Hour)
-	// 本用例断言的是排序本身，必须关掉 epsilon-greedy 探索。生产默认
-	// defaultExplorationEpsilon=0.05，每次选号有 5% 概率随机打乱候选顺序，
-	// 3 次 acquire 下约 14% 会命中，是此前 CI 偶发失败的原因。
-	selector.explorationEpsilon = 0
+	selector = newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Minute, time.Hour)
 	excluded := map[uint64]bool{}
 	want := []uint64{succeeded.ID, unknown.ID, softStopped.ID}
 	for index, wantID := range want {
@@ -737,7 +733,7 @@ func TestSelectorTreatsZeroTotalModelQuotaAsUnknown(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	if _, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false); err == nil {
 		t.Fatal("0/0 imagine quota should be blocked until positive upstream evidence exists")
 	} else {
@@ -752,7 +748,7 @@ func TestSelectorTreatsZeroTotalModelQuotaAsUnknown(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	selector = NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector = newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	if _, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false); err == nil {
 		t.Fatal("0/10 model quota should be blocked as exhausted")
 	} else {
@@ -773,7 +769,7 @@ func TestSelectorTreatsZeroTotalModelQuotaAsUnknown(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	selector = NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector = newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	lease, err := selector.Acquire(ctx, account.ProviderWeb, "grok-imagine-image", "imagine", "", nil, false)
 	if err != nil {
 		t.Fatalf("explicit Imagine quota should take precedence over weekly: %v", err)
@@ -799,7 +795,7 @@ func TestSelectorWaitsBrieflyForAccountCapacity(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 300*time.Millisecond)
+	selector := newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 300*time.Millisecond)
 	first, err := selector.Acquire(ctx, account.ProviderBuild, "model", "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
@@ -859,7 +855,7 @@ func TestSelectorSerializesWebLiteImagePerAccount(t *testing.T) {
 	}
 	seedImagineQuota(t, accounts, ctx, preferred.ID, 8, 10)
 	seedImagineQuota(t, accounts, ctx, alternate.ID, 6, 10)
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	if err := selector.MarkModelSuccess(ctx, preferred.ID, "grok-imagine-image"); err != nil {
 		t.Fatal(err)
 	}
@@ -922,7 +918,7 @@ func TestSelectorAppliesPersistedCooldownOnlyToMatchingModel(t *testing.T) {
 	if err := accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{AccountID: credential.ID, UpstreamModel: "limited-model", Reason: "shorter", CooldownUntil: time.Now().UTC().Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	if _, err := selector.Acquire(ctx, account.ProviderBuild, "limited-model", "", "", nil, false); err == nil {
 		t.Fatal("matching model cooldown was ignored")
 	} else {
@@ -1041,6 +1037,22 @@ func seedImagineQuota(t *testing.T, accounts *relational.AccountRepository, ctx 
 	}
 }
 
+// newTestSelector 构造关闭 epsilon-greedy 探索的 Selector。
+//
+// 生产默认 defaultExplorationEpsilon=0.05：每次选号有 5% 概率调用
+// maybeExploreShuffle 随机打乱候选顺序，用于避免长期饿死低排名账号。任何断言
+// 「选中哪个账号」或「候选顺序」的用例都必须关掉它，否则会偶发失败 —— 整包
+// -count=40 压测曾同时暴露 4 个用例受此影响。
+//
+// 需要验证探索行为本身的用例请直接构造 &Selector{explorationEpsilon: ...}。
+func newTestSelector(accounts repository.AccountRepository, concurrency repository.ConcurrencyLimiter, sticky repository.StickySessionRepository, tierOrders interface {
+	TierOrder(account.Provider, string) []account.WebTier
+}, stickyTTL, cooldownBase, cooldownMax time.Duration, capacityWait ...time.Duration) *Selector {
+	selector := NewSelector(accounts, concurrency, sticky, tierOrders, stickyTTL, cooldownBase, cooldownMax, capacityWait...)
+	selector.explorationEpsilon = 0
+	return selector
+}
+
 type staticChromeTicketSource map[uint64]int64
 
 func (s staticChromeTicketSource) AvailableCounts(context.Context) map[uint64]int64 {
@@ -1076,7 +1088,7 @@ func TestSelectorPrefersChromeTicketHoldersAndFallsBackWhenPoolEmpty(t *testing.
 	}
 	seedImagineQuota(t, accounts, ctx, withTicket.ID, 8, 10)
 	seedImagineQuota(t, accounts, ctx, withoutTicket.ID, 8, 10)
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 	selector.SetChromeTicketSource(staticChromeTicketSource{})
 
 	// 票池为空时不再硬失败，回退到无票路径。

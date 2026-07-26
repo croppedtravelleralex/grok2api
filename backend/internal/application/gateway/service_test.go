@@ -73,7 +73,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	concurrency := memory.NewConcurrencyLimiter()
 	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, cipher, nil)
 	clientService := clientkeyapp.NewService(nil, nil, nil, 60, 4, nil)
-	selector := NewSelector(accountRepo, concurrency, sticky, registry, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accountRepo, concurrency, sticky, registry, time.Hour, time.Second, time.Minute)
 	selector.explorationEpsilon = 0
 	service := NewService(modelRepo, auditRepo, accountService, clientService, registry, selector, responseRepo, 3)
 	result, err := service.CreateResponse(ctx, Input{RequestID: "req-1", ClientKey: clientKey, PublicModel: "grok-test", Body: []byte(`{"model":"grok-test"}`)})
@@ -284,7 +284,7 @@ func TestGatewayDoesNotPersistStatelessConsoleResponses(t *testing.T) {
 	registry := provider.NewRegistry(adapter)
 	sticky := memory.NewStickyStore()
 	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
-	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
 	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 1)
 
 	result, err := service.CreateResponse(ctx, Input{RequestID: "req-console", ClientKey: key, PublicModel: model, Body: []byte(`{"model":"grok-console-stateless","input":"hello"}`)})
@@ -378,7 +378,7 @@ func TestGatewayPreservesRepeatedSystemicForbiddenWithoutCoolingAccounts(t *test
 	registry := provider.NewRegistry(adapter)
 	sticky := memory.NewStickyStore()
 	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
-	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
 	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
 
 	_, err = service.CreateResponse(ctx, Input{
@@ -452,7 +452,7 @@ func TestGatewayQuarantinesBuildPermissionDenialWithoutRefreshing(t *testing.T) 
 	registry := provider.NewRegistry(adapter)
 	sticky := memory.NewStickyStore()
 	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
-	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
 	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 2)
 
 	_, err = service.CreateResponse(ctx, Input{
@@ -520,7 +520,7 @@ func TestWebRateLimitExhaustsOnlyRequestedQuotaMode(t *testing.T) {
 	sticky := memory.NewStickyStore()
 	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
 	accountService.SetQuotaRecoveryQueue(memory.NewQuotaRecoveryQueue())
-	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
 	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 1)
 	if _, err := service.CreateResponse(ctx, Input{RequestID: "req-web-429", ClientKey: key, PublicModel: "grok-web-test", Body: []byte(`{"model":"grok-web-test"}`)}); err == nil {
 		t.Fatal("expected rate-limited request to fail")
@@ -593,7 +593,7 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	sticky := memory.NewStickyStore()
 	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
 	runQuotaRefreshWorkers(t, accountService)
-	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
 	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, responseRepo, 1)
 
 	result, err := service.GenerateImage(ctx, ImageGenerationInput{
@@ -780,7 +780,7 @@ func TestSuccessfulWebChatRefreshesCurrentModeQuota(t *testing.T) {
 	sticky := memory.NewStickyStore()
 	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
 	runQuotaRefreshWorkers(t, accountService)
-	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	selector := newTestSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
 	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, responseRepo, 1)
 
 	result, err := service.CreateChatCompletion(ctx, Input{
