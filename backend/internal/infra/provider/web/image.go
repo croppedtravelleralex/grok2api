@@ -1647,7 +1647,9 @@ func (a *Adapter) downloadImageWithScope(ctx context.Context, credential account
 	}
 	cookie := resolveAssetDownloadCookie(token, lease.CFCookies, deviceCookie, downloadState)
 	applyAssetDownloadHeaders(request.Header, cfg, userAgent, cookie)
-	response, err := lease.Do(request)
+	// 走一次性客户端：复用连接的共享客户端会被 assets.grok.com 判为源站级 403，
+	// 同一时刻同一出口的新建客户端可正常取图。
+	response, err := lease.DoIsolated(request)
 	if err != nil {
 		a.log().Warn("web_lite_asset_download_failed",
 			"account_id", credential.ID,

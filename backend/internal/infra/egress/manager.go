@@ -70,6 +70,33 @@ func (l *Lease) Do(request *http.Request) (*http.Response, error) {
 	return response, err
 }
 
+// DoIsolated 用一次性客户端发请求，不复用节点上那个长生命周期实例的连接与会话状态。
+// assets.grok.com 对复用连接发来的下载请求会返回源站级 403（cf-mitigated 为空、
+// 响应体为空），而同一时刻、同一出口、同一 cookie 的新建客户端可正常取回图片。
+// 仅用于 asset 下载这类低频请求；常规请求仍走 Do 以复用连接。
+func (l *Lease) DoIsolated(request *http.Request) (*http.Response, error) {
+	if l == nil {
+		return nil, errors.New("出口客户端未初始化")
+	}
+	if l.browser == nil {
+		return l.Do(request)
+	}
+	client, err := newBrowserClient(l.ProxyURL)
+	if err != nil {
+		return nil, err
+	}
+	defer client.CloseIdleConnections()
+	ctx := context.Background()
+	if request != nil && request.Context() != nil {
+		ctx = request.Context()
+	}
+	response, err := client.Do(request)
+	if l.recorder != nil {
+		l.recordTraffic(ctx, l.recorder, request, response)
+	}
+	return response, err
+}
+
 func (l *Lease) JarCloudflareCookies(target *url.URL) string {
 	if l == nil || l.browser == nil || target == nil {
 		return ""
