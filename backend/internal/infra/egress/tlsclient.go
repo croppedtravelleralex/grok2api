@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -78,6 +79,21 @@ func (c *browserClient) CloseIdleConnections() {
 	if c != nil && c.inner != nil {
 		c.inner.CloseIdleConnections()
 	}
+}
+
+// jarCookieNames 返回客户端 cookie jar 会为该 URL 自动附加的 cookie 名。
+// 这些 cookie 不出现在调用方设置的 Cookie 头里，排障时看不到，需要单独取。
+func (c *browserClient) jarCookieNames(target *url.URL) []string {
+	if c == nil || c.inner == nil || target == nil {
+		return nil
+	}
+	cookies := c.inner.GetCookies(target)
+	names := make([]string, 0, len(cookies))
+	for _, cookie := range cookies {
+		names = append(names, cookie.Name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (c *browserClient) cloudflareCookiesForURL(target *url.URL) string {

@@ -46,6 +46,15 @@ func (m *Manager) SetTrafficRecorder(recorder TrafficRecorder) {
 	m.mu.Unlock()
 }
 
+// JarCookieNames 返回出口客户端 cookie jar 会为该 URL 自动附加的 cookie 名。
+// 调用方设置的 Cookie 头之外还会被追加这些，排障时需要单独取。
+func (l *Lease) JarCookieNames(target *url.URL) []string {
+	if l == nil || l.browser == nil {
+		return nil
+	}
+	return l.browser.jarCookieNames(target)
+}
+
 func (l *Lease) Do(request *http.Request) (*http.Response, error) {
 	if l == nil || l.client == nil {
 		return nil, errors.New("出口客户端未初始化")

@@ -1668,6 +1668,7 @@ func (a *Adapter) downloadImageWithScope(ctx context.Context, credential account
 			"asset_url_tail", assetURLTailForLog(parsed.String()),
 		}
 		fields = append(fields, assetRejectionDiagnostics(request, response)...)
+		fields = append(fields, "jar_cookie_names", strings.Join(lease.JarCookieNames(parsed), ","))
 		a.log().Warn("web_lite_asset_download_failed", fields...)
 		if response.StatusCode == http.StatusForbidden && lease.NodeID > 0 {
 			a.egress.FeedbackForScope(ctx, scope, lease.NodeID, response.StatusCode, nil)

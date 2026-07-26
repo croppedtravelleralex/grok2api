@@ -11,9 +11,11 @@
   1. 开票**不需要**本机 Chrome —— 一次带 SSO 的首页 GET 即可拿到 `grok_device_id` + `x-userid`（`tools/http_mint_probe.py`，全链路生产 API 200）。
   2. 票里的 `statsig_meta` 是**死数据** —— signer 只用启动锁定的 pair，忽略传入 metaContent。
   3. `grok-imagine-image` **不再必须有票** —— 无票裸跑上游 3/3 出图；硬门禁已改软（票池空不再 503）。
-  4. asset 403 **与票无关** —— 同一 URL Go 侧 403、curl_cffi 同代理同 cookie 200，根因是 `bogdanfinn/tls-client` 指纹。这是当前生图**唯一**阻塞。
-- **当前生图状态（2026-07-26）**：请求可进上游、图能生成，卡在 asset 下载 403 → 对外 502。修 asset 客户端指纹即可恢复。
-- **生产二进制**：仍靠 `docker cp`（非 GHCR），替换前原件存档于 `/opt/grok2api/binary-archive/grok2api-prod-20260726-preSoftGate`。本轮同时回流了一处**只存在于生产二进制**的修复：`settings/service.go` 整体替换 `base.Routing` 时会把 `DisableCooldown` 静默重置为 false。
+  4. asset 403 **与票无关**，且**不是 Cloudflare 反爬** —— 生产埋点显示 `cf-mitigated` 为空、响应体为空，属**源站级 403**。这是当前生图**唯一**阻塞。
+- **asset 403 排查状态**：已排除 11 项（票、CF cookie、过期 CF cookie、出口 IP、TLS profile、header 顺序/集合、URL 新鲜度、账号与资产所有者错配、jar 内混入他账号 x-userid 等）。**唯一未排除项**：生产 tls-client 是进程级长生命周期实例，其 cookie jar 追加内容与连接复用状态在日志中不可见。下一步在 `egress/tlsclient.go` 的 `Do()` 打出 `GetCookies(target)` 与连接复用。详见 [21](./21-ticket-obsolescence-and-asset403-tls-2026-07-26.md) §5。
+- **当前生图状态（2026-07-26）**：请求可进上游、**图能正常生成**，卡在 asset 下载 403 → 对外 502。
+- **生产二进制已可溯源（2026-07-26）**：走完整 git 链路发布，`.env` 固定 `sha256:ae5df834…` ← commit `cdba9a1`，`docker cp` 孤儿二进制已被取代。同批回流了一处**此前只存在于生产二进制**的修复：`settings/service.go` 整体替换 `base.Routing` 时会把 `DisableCooldown` 静默重置为 false。
+- **部署铁律（强制）**：禁止在 Panda 编译任何项目；部署只走 `git push → Actions → GHCR → compose pull && up`；禁止 `scp` / `docker cp` 部署。Panda 上**无源码 git 仓库**。规则见 `~/.claude/rules/common/panda-deploy.md`。
 
 - 后端为 Go 网关，前端为 React/Vite 管理端，支持 Grok Build、Web、Console 三个账号池。
 - Panda 为低资源生产机：**禁止在其上编译/构建**；标准链为本地改测 → GitHub 上传（Actions/GHCR）→ Panda 仅 `pull` 运行。**禁止**用 tar/scp 传大包到 Panda 再 `go build`。

@@ -86,7 +86,30 @@
 
 ---
 
-## 5. asset 403 定位：Go tls-client 指纹
+## 5. asset 403：性质已定（源站级），根因未定
+
+> **本节结论经过两次推翻。** 先后误判为「Go tls-client 指纹」和「出口 IP 信誉」，
+> 均被后续实测否定。教训见 §5.5。当前只有**性质**是确定的。
+
+### 5.0 确定的事实：不是 Cloudflare 反爬
+
+2026-07-26 埋点上生产（commit `cdba9a1` / 镜像 `sha256:ae5df834…`）后抓到的真实响应：
+
+```
+resp_server        cloudflare
+resp_cf_ray        a212884e7ed0e8ef-LAX
+resp_cf_mitigated  (空)
+resp_content_type  (空)
+resp_body_snippet  (空)
+req_cookie_names   sso,sso-rw
+egress_node_id     110
+```
+
+`cf-mitigated` 为空、响应体为空、无 content-type —— **这是源站级 403**。
+Cloudflare 真正拦截时会带 `cf-mitigated: challenge` 和整页 HTML。
+
+**推论**：此前所有围绕 TLS 指纹 / header 顺序 / profile 版本 / IP 信誉的排查，
+都在 Cloudflare 那一层做文章，而拦截根本不在那一层。
 
 ### 5.1 现象
 
@@ -110,19 +133,39 @@ image_upstream_failed  "下载图片返回 403"  → 502
 | Cookie 格式不同 | `BuildSSOCookie` 与 harness `merge_cookie` 都产出 `sso=X; sso-rw=X` |
 | 账号或额度 | 换账号复现 |
 
-### 5.3 决定性证据
+| 下载账号与资产所有者错配 | asset URL 路径含 owner user id；实测 250→`964f1ad2`、263→`caa5f655`、342→`7186f408` **全部匹配** |
+| cookie jar 混入他账号 x-userid | 故意注入错误 `x-userid` + 伪造 `grok_device_id` | 仍 200 |
+| CF cookie 缺失（用**从未成功下载过**的 URL 复测） | 仅 `sso` 与 `sso+CF warm` 都 200 |
+| asset URL 新鲜度 / CDN 未传播 | 刚生成的 URL 立即下载 200（347KB） |
+| **Go tls-client 指纹** | SSH 隧道让本地 Go 经 udeal 出口打同一 URL：**baseline 200** |
+| TLS profile 版本 | Chrome_120/124/131/133/146 全 200 |
+| header 顺序 / 伪头顺序 / 补全 Chrome 头 / 去 Origin | 9 个变体组合全 200 |
+| 出口 IP 信誉 | 启用 4 个 webshare asset 节点跑生产：**仍 403**（同 IP 用 curl_cffi 是 200） |
 
-取 Go 刚 403 六次的**同一 URL**，用 curl_cffi 走**同一代理、同一 cookie、同一 UA、同一请求头**：
+累计 11 项，全部否定。
 
-```
-curl_cffi 下载 Go 刚 403 的同一 URL: http=200 bytes=205256 jpeg=True
-```
+### 5.3 当前唯一未排除项
 
-两侧都声称 Chrome 146：Go 用 `bogdanfinn/tls-client` `profiles.Chrome_146`（`egress/tlsclient.go:35`），Python 用 curl_cffi `impersonate="chrome146"`。**实现不同，`assets.grok.com` 的反爬只放行后者。**
+**生产 tls-client 是进程级长生命周期实例**（连续跑探针/对话/下载 24h+），
+而所有探针都是每次新建客户端。差异只可能在：
+
+1. 连接复用状态（HTTP/2 长连接）
+2. 客户端内部 cookie jar 在显式 `Cookie` 头**之外追加**的内容
+
+注意埋点里的 `req_cookie_names` 是**我们设置的头**，jar 追加发生在客户端内部、
+日志看不到。定位方法：在 `egress/tlsclient.go` 的 `Do()` 里打出
+`inner.GetCookies(target)` 与连接是否复用。
 
 ### 5.4 附带缺陷
 
-`rewarmAssetDownloadCookie`（`chrometicket_download.go:148-152`）在 `deviceCookie == ""` 时直接返回，**无票路径完全跳过 CF 重warm**，6 次重试用同一 cookie。虽非本次 403 根因，但让重试失去意义。
+`rewarmAssetDownloadCookie`（`chrometicket_download.go:148-152`）在 `deviceCookie == ""`
+时直接返回，**无票路径完全跳过 CF 重warm**，6 次重试用同一 cookie。非根因，但让重试失去意义。
+
+### 5.5 教训
+
+三次误判（指纹 / IP / CF cookie）有同一个模式：**拿隔离探针的结果外推到生产**，
+而探针恰好绕开了真正的变量。正确顺序应是**先拿上游拒绝的原始响应**（§5.0 那份埋点），
+确定拒绝发生在哪一层，再针对该层提假设。这份埋点本该是第一步。
 
 ---
 
@@ -130,16 +173,32 @@ curl_cffi 下载 Go 刚 403 的同一 URL: http=200 bytes=205256 jpeg=True
 
 | 项 | 说明 |
 |----|------|
-| asset 下载换客户端 | 让 Go 侧 asset 下载走 curl_cffi 指纹（sidecar 或换库），是当前生图唯一阻塞 |
+| **打出 tls-client jar cookie 与连接复用** | §5.3 唯一盲区，是当前生图唯一阻塞的定位手段 |
 | `rewarmAssetDownloadCookie` 去掉 deviceCookie 前置 | 无票路径也应能重warm |
 | `statsig_meta` 短路分支 | 有票时不应跳过真实 meta 刷新 |
-| 票机制定位重估 | 上游已不要求票；保留与否取决于 asset 客户端修复后的对照数据 |
-| 二进制回归 GHCR | 生产长期靠 `docker cp`，无法溯源 |
+| 票机制定位重估 | 上游已不要求票；保留与否取决于 asset 修好后的对照数据 |
+| ~~二进制回归 GHCR~~ | **Done**：2026-07-26 走完整 git 链路发布，`.env` 固定 `sha256:ae5df834…` ← `cdba9a1` |
 
 ---
 
-## 7. 本轮生产变更
+## 7. 部署链路（已按铁律执行一次完整闭环）
 
-新增 `tools/http_mint_probe.py`；二进制存档 `/opt/grok2api/binary-archive/grok2api-prod-20260726-preSoftGate`（替换前原件，可回滚）；推入并消费 1 张自铸票；账号 250 消耗约 5 次 imagine 额度。
+```
+本地改测 → git commit → git push → Actions(Verify 全绿) → GHCR 双架构 + manifest merge
+        → panda .env 固定 digest → docker compose pull && up → healthy
+```
 
-**事故**：`scp` 传二进制丢失可执行位，`docker cp` 后容器进入重启循环，停机约 66 秒（08:48:06Z→08:49:12Z）。后续 `docker cp` 前须 `chmod 755`。
+**Panda 上没有源码 git 仓库**，`/opt/grok2api/` 只有 `docker-compose.yml` + `config.yaml` + `data/`；
+compose 用 `GROK2API_IMAGE` 按 digest 固定镜像，"部署"= 更新该 digest 后 pull && up。
+镜像标签为分支名 `codex-panda-safe-completion`。`.env` 改动前备份 `.env.bak.20260726-softgate`。
+
+规则见 `~/.claude/rules/common/panda-deploy.md`、`AutoRegister/AGENTS.md`、
+`grokImage/.cursor/rules/panda-deploy.mdc`。
+
+## 8. 本轮生产变更
+
+新增 `tools/http_mint_probe.py`；推入并消费 1 张自铸票；账号 250/263/342 共消耗约 12 次
+imagine 额度；二进制存档 `/opt/grok2api/binary-archive/grok2api-prod-20260726-preSoftGate`。
+
+**事故（部署铁律建立前）**：`scp` 传二进制丢失可执行位，`docker cp` 后容器进入重启循环，
+停机约 66 秒（08:48:06Z→08:49:12Z）。此类操作现已被铁律禁止。
