@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -104,7 +105,12 @@ func (l *Lease) DoPlain(request *http.Request) (*http.Response, error) {
 	if l == nil {
 		return nil, errors.New("出口客户端未初始化")
 	}
-	transport := &http.Transport{ForceAttemptHTTP2: true}
+	// 强制 HTTP/1.1：容器内实测 wget(h1) 取图 200，而 h2 客户端（tls-client 与
+	// 标准库）同 URL、同 cookie、同请求头、同出口均被判 403。
+	transport := &http.Transport{
+		ForceAttemptHTTP2: false,
+		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
+	}
 	if strings.TrimSpace(l.ProxyURL) != "" {
 		proxyURL, err := url.Parse(l.ProxyURL)
 		if err != nil {
