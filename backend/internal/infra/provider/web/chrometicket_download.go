@@ -278,18 +278,25 @@ func assetRejectionDiagnostics(request *http.Request, response *http.Response) [
 		"resp_content_type", response.Header.Get("Content-Type"),
 		"resp_body_snippet", assetRejectionBodySnippet(response),
 	}
+	fields = append(fields, "resp_proto", response.Proto)
 	if request == nil {
 		return fields
 	}
-	names := make([]string, 0, len(request.Header))
-	for name := range request.Header {
-		names = append(names, name)
+	// 逐字转储实际发出的头（Cookie 只留名与长度），用于与已知可成功的请求逐字节比对。
+	dumped := make([]string, 0, len(request.Header))
+	for name, values := range request.Header {
+		if strings.EqualFold(name, "Cookie") {
+			continue
+		}
+		dumped = append(dumped, name+"="+strings.Join(values, "|"))
 	}
-	sort.Strings(names)
+	sort.Strings(dumped)
 	return append(fields,
-		"req_header_names", strings.Join(names, ","),
+		"req_headers", strings.Join(dumped, " ⏎ "),
 		"req_cookie_names", strings.Join(cookieNames(request.Header.Get("Cookie")), ","),
-		"req_ua_len", len(request.Header.Get("User-Agent")),
+		"req_cookie_len", len(request.Header.Get("Cookie")),
+		"req_host", request.Host,
+		"req_url", request.URL.String(),
 	)
 }
 
