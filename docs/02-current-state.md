@@ -2,10 +2,18 @@
 
 ## 最后更新时间
 
-- 日期：2026-07-24（晚间）
-- 维护目的：**暂停生图压测**；BE-019/018/020/021 已落地；下一步 **Web 四池准入**（BE-023）。见 [plan.md](./plan.md)、[17](./17-web-four-pool-and-imaging-success-rates-2026-07-24.md)。
+- 日期：2026-07-26
+- 维护目的：**票机制失效性验证 + asset403 定位到 Go TLS 指纹**，硬门禁已改软并上生产。见 [21](./21-ticket-obsolescence-and-asset403-tls-2026-07-26.md)。前一轮：票池与 dispatch 合并架构共识见 [20](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md)。
 
 ## 整体状态摘要
+
+- **（2026-07-26 推翻的四条旧认知）**见 [21](./21-ticket-obsolescence-and-asset403-tls-2026-07-26.md)：
+  1. 开票**不需要**本机 Chrome —— 一次带 SSO 的首页 GET 即可拿到 `grok_device_id` + `x-userid`（`tools/http_mint_probe.py`，全链路生产 API 200）。
+  2. 票里的 `statsig_meta` 是**死数据** —— signer 只用启动锁定的 pair，忽略传入 metaContent。
+  3. `grok-imagine-image` **不再必须有票** —— 无票裸跑上游 3/3 出图；硬门禁已改软（票池空不再 503）。
+  4. asset 403 **与票无关** —— 同一 URL Go 侧 403、curl_cffi 同代理同 cookie 200，根因是 `bogdanfinn/tls-client` 指纹。这是当前生图**唯一**阻塞。
+- **当前生图状态（2026-07-26）**：请求可进上游、图能生成，卡在 asset 下载 403 → 对外 502。修 asset 客户端指纹即可恢复。
+- **生产二进制**：仍靠 `docker cp`（非 GHCR），替换前原件存档于 `/opt/grok2api/binary-archive/grok2api-prod-20260726-preSoftGate`。本轮同时回流了一处**只存在于生产二进制**的修复：`settings/service.go` 整体替换 `base.Routing` 时会把 `DisableCooldown` 静默重置为 false。
 
 - 后端为 Go 网关，前端为 React/Vite 管理端，支持 Grok Build、Web、Console 三个账号池。
 - Panda 为低资源生产机：**禁止在其上编译/构建**；标准链为本地改测 → GitHub 上传（Actions/GHCR）→ Panda 仅 `pull` 运行。**禁止**用 tar/scp 传大包到 Panda 再 `go build`。
@@ -13,7 +21,10 @@
 - **Web（2026-07-23）**：Chrome 票池 + asset 下载修复已上生产。镜像 `sha256:49f23f31…7a841`（`c07cc2e`）；1467 `pool_hit` 后生图 **200**。持续灌票与生命周期实验见 [14](./14-chrome-ticket-lifecycle-experiments-2026-07-23.md)。
 - **票池实现**：**Go**（`chrometicket` + `chrome_tickets` 表）。本机灌池/实验脚本为 **Python PoC** → 验收后 **Rust** 工具链（见 [plan.md](./plan.md) 语言分层）。
 - **实现纪律**：**Python 只设计原型**；跑通后 **Rust** 实现本机/运维 CLI；**Go** 负责 Panda 服务端（调度/票池存储/egress）。
-- **后续主线（2026-07-24）**：**BE-019/018/020/021 已提交**（`96b664d`）；Phase B smoke：**503=0** 但 **生图 0/10**（429/soft_stop）。下一步 **Web 四池**（仅真实额度+真实可用进调度）。计划见 [plan.md](./plan.md)；成功率对照见 [17](./17-web-four-pool-and-imaging-success-rates-2026-07-24.md)。
+- **后续主线（2026-07-26）**：**BE-024 TicketReady 销票槽位**（票池逻辑并入号池调度视图）。架构 [20](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md)；计划 [plan.md](./plan.md)。BE-019/018/020/021/023 已落地；plan §4 **生图 ok≥1** 仍未过。
+- **票池 × dispatch 漂移（2026-07-25）**：available ~19 票，runtime/pin 可缩至 1～3；四套集合无单一真相 — [20](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md)。
+- **routing.disableCooldown（2026-07-25）**：默认 `true`；Panda 曾 `disable-cooldown-v9` 二进制；**须 GHCR 正式化**。
+- **探针工具（部分未 commit）**：`chrome_ticket_pool_probe.py --remediate`、`chrome_ticket_probe_rs/`、`panda_unified_pool_snapshot.py` — [20](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md) §2.2。
 - **票实验门禁**：R-delay/S 部分完成；**V-conc / mint_fast / S-3h 验收冻结**，直至 plan §4 门禁通过。
 - **票实验（2026-07-23）**：S0 / D-1m/3m/5m 跨网延迟消费均 **200+pool_hit**；CF403/IP 认知重排见 [15](./15-chrome-ticket-cf403-ip-reframe-2026-07-23.md)。
 - **Admin 认证（2026-07-23 23:22）**：Panda 曾出现 secrets / DB / import `.tmp` **三套密码源不同步** → 实验脚本 401、import 仍 200；已重置并三源同步，login 200。工具：`_panda_reset_admin_password.py`、`_panda_admin_token.py`。
@@ -70,7 +81,8 @@
 
 ## 进行中事项
 
-- **P0（新）**：**BE-023** Web Image 四池（对齐 Build；dispatch 门槛 = `candidateImagineQuotaAdmissible`）。见 [17](./17-web-four-pool-and-imaging-success-rates-2026-07-24.md)。
+- **P0（新）**：**BE-024** TicketReady 销票槽位 + 双池调度语义合并。见 [20](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md)。
+- **P0**：**BE-023** Web Image 四池 — **Done**（`web_pool_probe.go`）；与 BE-024 衔接：dispatch 准入仍须与票槽对齐。
 - **Done（2026-07-24）**：`BE-018` egress 流量、`BE-019` pin∩dispatch、`BE-020` selection_reason、`BE-021` 选号偏好有票。
 - **冻结**：Chrome 票压测（S-3h/V-conc/mint_fast）至门禁 **生图 ok≥1** + 四池落地。
 - **P0（2026-07-21）**：Build 四池双探针观察。
@@ -78,7 +90,8 @@
 
 ## 已知阻塞与风险
 
-- **调度池准入过宽（P0）**：`soft_stop`/`quota_exhausted` 号仍可进 dispatch（尤其 pin 脚本洗 `available`）；生图 429/502 非 503。→ **BE-023 四池**。
+- **调度池与票池脱钩（P0）**：票按号存储，dispatch 出入不看票 → 孤儿票与 runtime 压扁。→ **BE-024**。见 [20](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md)。
+- **调度池准入过宽（P1，四池后缓解）**：`soft_stop`/`quota_exhausted` 号进 dispatch 问题已由 BE-023 收窄；仍须与 TicketReady 对齐。
 - **号池索引（BE-019 已修）**：pin∩dispatch 已对齐；Phase B 验证 `pinNotInDispatch=[]`。展示池与 dispatch 仍须四池后统一投影。
 - **生图 E2E 低**：当前瓶颈是 **账号额度/soft_stop**，不是票失效；开票解决 asset 403，不解决 429。见 [17](./17-web-four-pool-and-imaging-success-rates-2026-07-24.md)。
 - **egress 流量**：BE-018 已插桩；smoke 脚本审计 API 路径待修。
@@ -93,10 +106,10 @@
 
 ## 下一步 3-5 项
 
-1. 实施 **BE-023**：Web Image 四池 + `WebPoolAt` 重写；pin 脚本禁止洗状态。
-2. 修 `panda_gate_smoke_phase_b.py`：`gate_passed` 要求 `ok≥1`；egress 审计路径对齐 Admin API。
-3. 重跑 Phase B smoke，确认 dispatch 仅含真实可用号。
-4. 通过 plan §4 全部门禁后，恢复 S-3h / V-conc / mint_fast。
+1. 拍板 **BE-024**：SlotRegistry 大小 N、出池时清票 vs 阻塞出池。
+2. 实施 P0：TicketReady 探针指标 + JIT 只灌槽位 + 孤儿清扫 + pin sync 改 SlotRegistry 驱动。
+3. `disableCooldown` 与探针工具 **commit + GHCR**（禁止长期依赖 Panda 二进制替换）。
+4. 通过 plan §4 门禁后恢复 S-3h / V-conc / mint_fast。
 5. **BE-022** Rust 工具链（pool-ops / minter / experiment）PoC 契约冻结后推进。
 
 ## 与 README 或旧文档的不一致处
