@@ -86,10 +86,13 @@
 
 ---
 
-## 5. asset 403：性质已定（源站级），根因未定
+## 5. asset 403：已定位并修复 ✅
 
-> **本节结论经过两次推翻。** 先后误判为「Go tls-client 指纹」和「出口 IP 信誉」，
-> 均被后续实测否定。教训见 §5.5。当前只有**性质**是确定的。
+> **根因**：分阶段生图路径下，下载图片用的凭据**只有账号 ID、没有访问令牌**，
+> 请求以未认证身份发出，被资产源站直接 403。修复见 §5.6。
+>
+> 本节结论曾两次被推翻（误判为「Go tls-client 指纹」「出口 IP 信誉」），
+> 方法论教训见 §5.5。
 
 ### 5.0 确定的事实：不是 Cloudflare 反爬
 
@@ -163,9 +166,44 @@ image_upstream_failed  "下载图片返回 403"  → 502
 
 ### 5.5 教训
 
-三次误判（指纹 / IP / CF cookie）有同一个模式：**拿隔离探针的结果外推到生产**，
-而探针恰好绕开了真正的变量。正确顺序应是**先拿上游拒绝的原始响应**（§5.0 那份埋点），
-确定拒绝发生在哪一层，再针对该层提假设。这份埋点本该是第一步。
+多次误判（指纹 / IP / CF cookie / 连接复用 / HTTP 版本）有同一个模式：
+**拿隔离探针的结果外推到生产**，而探针天然带着**正确的令牌**，恰好掩盖了
+唯一的真实差异。
+
+正确顺序是**先转储我方实际发出的请求字节**，再看对方为何拒绝。
+只看响应（§5.0）仍不够——那只能判断「拒绝发生在哪一层」，判断不了
+「我方发错了什么」。请求转储一上线就一击命中。
+
+### 5.6 根因与修复
+
+**证据**（生产埋点，commit `67bf4d7` 上线后）：
+
+```
+req_cookie_names   sso,sso-rw
+req_cookie_len     13          ← 正常应约 320 字节（两个 152 字符 JWT）
+```
+
+13 字节正好是 `sso=; sso-rw=` —— **令牌为空**。
+
+**根因**：`image.go` `downloadCredential` 在分阶段（staged）路径下返回
+`account.Credential{ID: *id}`，只回填 ID，`EncryptedAccessToken` 是零值。
+`downloadImage` 里 `Decrypt("")` 得空串，`BuildSSOCookie("")` 产出空 cookie，
+请求以未认证身份发往 `assets.grok.com`。
+
+这也解释了最关键的误导：日志里 `account_id` 是**对的**（ID 确实回填了），
+所以「账号与资产所有者匹配」的核查通过，却仍 403；而外部任何客户端
+（curl_cffi / wget / Go 探针）都能 200，因为它们带的是真令牌。
+
+**修复**（commit `71148e7`）：
+
+| 位置 | 改动 |
+|------|------|
+| `imagepipeline/scheduler.go` | `RunArtifacts` 增加 `SSCredential`；新增 `SetSSCredential` |
+| `gateway/image_stage_provider.go` | 两处 `SetSSAccount(lease.Credential().ID)` → `SetSSCredential(lease.Credential())` |
+| `web/image.go` | `downloadCredential` 优先返回 `SSCredential`，其次 ID 相同时回退 fallback |
+
+**验收**：镜像 `sha256:78a6120d…`，连续生图 **3/3 → 200**（16/17/18s），
+返回真实图片 URL；`web_lite_asset_download_failed` 归零。
 
 ---
 
