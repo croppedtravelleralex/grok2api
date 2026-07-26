@@ -231,14 +231,13 @@ def main() -> int:
     parser.add_argument("--proxy-url", default=os.environ.get("GROK_HTTP_PROXY", PROXY))
     parser.add_argument("--impersonate", default=IMPERSONATE)
     args = parser.parse_args()
-    global PROXY, IMPERSONATE
-    PROXY = args.proxy_url
-    IMPERSONATE = args.impersonate
+    proxy_url = args.proxy_url
+    impersonate = args.impersonate
 
     runs = []
     for i in range(args.repeat):
         log("run_start", index=i + 1, total=args.repeat)
-        runs.append(run_poc(args.sso_file, args.account_id, lite=args.lite, proxy_url=PROXY, impersonate=IMPERSONATE))
+        runs.append(run_poc(args.sso_file, args.account_id, lite=args.lite, proxy_url=proxy_url, impersonate=impersonate))
         if i + 1 < args.repeat:
             time.sleep(3)
 

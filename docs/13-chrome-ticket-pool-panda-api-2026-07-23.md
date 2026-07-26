@@ -4,13 +4,20 @@
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| 本机 Chrome 开票（Python 原型） | ✅ E2E 已验收 | `tools/chrome_ticket_pool_minter.py` |
+| 本机 Chrome 开票（Python 原型） | ✅ E2E 已验收 | `tools/chrome_ticket_pool_minter.py`；**持续灌池**见 [14](./14-chrome-ticket-lifecycle-experiments-2026-07-23.md) §1 |
 | Go 票池（`chrome_tickets` 表） | ✅ 已并入 grok2api | `backend/internal/application/chrometicket` |
 | Admin API 入池/统计/清扫 | ✅ | `POST/GET /api/admin/v1/chrome-tickets*` |
 | 生图链路取票 | ✅ | `image.go` → `attachChromeTicket` → `statsig` meta 覆盖 |
+| Lite asset 下载 | ✅ | `c07cc2e`：SSE 前 CF warm + Python 风格下载头 |
 | 实验 `panda_ticket_image_api.py` | ⚠️ 可废弃 | 统一走 grok2api `/v1/images/generations` |
 
-**部署门禁（2026-07-23）**：`go build ./...` + `go test ./...` 全绿；schema 自动迁移 `chrome_tickets`；Panda 部署后需跑「灌池 → stats → 生图」三步验收。
+**生产镜像（2026-07-23 20:23 CST）**：`ghcr.io/croppedtravelleralex/grok2api@sha256:49f23f31d2804913c42c4049dabb21ac93d43e7f4214e99a7f8479e552d7a841`（revision `c07cc2e`）。
+
+**部署门禁**：`go build` + CI `go test` 全绿 → GHCR → Panda `pull/up` → **S0 验收**（灌 1 票 + 单次 200）→ 开启本机持续 minter。
+
+**生命周期实验**（延迟用票 / 复用 / 换 IP / 存活 / 并发）：[14-chrome-ticket-lifecycle-experiments](./14-chrome-ticket-lifecycle-experiments-2026-07-23.md) — **分批短跑，每批 ≤10min**。
+
+**调度与票池合并（2026-07-26）**：[20-ticket-ready-slot-dispatch-merge](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md) — TicketReady 定义、销票槽位、探针命令、孤儿票与 dispatch 30min 新鲜度。
 
 ---
 
@@ -30,8 +37,8 @@
 注意：
 
 - **账号绑定**：票按 `account_id` 入池/出池，须与 grok2api 路由到的 SSO 账号一致。
-- **设备指纹**：票携带的 `grok_device_id` 来自本机 Chrome；与 Panda 出口 IP 组合是否触发风控，需线上观察。已验收路径（1467）在本机 IP 开票 + Panda udeal 生图成功。
-- **asset 下载**：走独立 `ScopeAsset` 出口，与开票 IP 无关；若 asset 403，见 [12-web-lite-two-stage-failure-asset-403](./12-web-lite-two-stage-failure-asset-403-2026-07-23.md)。
+- **设备指纹**：票携带的 `grok_device_id` 来自本机 Chrome；与 Panda 出口 IP 组合是否触发风控，见 [14](./14-chrome-ticket-lifecycle-experiments-2026-07-23.md) Batch C/I。
+- **asset 下载**：`c07cc2e` 已对齐 Python 路径（SSE 前 warm、完整 warmed cookie、无 Sec-Fetch 下载头）。无票时仍可能 403，见 [12](./12-web-lite-two-stage-failure-asset-403-2026-07-23.md)。
 
 ### 2. 一张票能反复用吗？
 
@@ -53,7 +60,7 @@
 
 ### 3. 10 并发要不要 10 个 Chrome？
 
-**不需要。** 见下文「并发模型」。
+**生图请求时不需要；灌池时 1 个浏览器顺序开票即可**（池深提前灌够）。多账号高并发实验见 [14](./14-chrome-ticket-lifecycle-experiments-2026-07-23.md) Batch M。
 
 ---
 
@@ -124,6 +131,8 @@ API N 并发（请求时 0 个 Chrome）
 | 工具 | 作用 |
 |------|------|
 | `tools/chrome_ticket_pool_minter.py` | **本机 Chrome 批量开票** → Go Admin API（首选）或 SSH 回退 |
+| `tools/chrome_ticket_mint_daemon.py` | **持续灌池**（池深低于 target 时补票） |
+| `tools/chrome_ticket_batch_run.py` | 生命周期实验分批入口（见 [14](./14-chrome-ticket-lifecycle-experiments-2026-07-23.md)） |
 | `tools/local_chrome_panda_lite.py` | 单次 E2E 调试（票即用） |
 | `tools/panda_ticket_pool.py` | ⚠️ 旧版独立 SQLite；已被 grok2api 主库取代 |
 | `tools/panda_lite_with_ticket.py` | 独立 worker 调试 |
@@ -174,7 +183,8 @@ curl -s -X POST "$BASE/api/admin/v1/chrome-tickets/sweep" -H "Authorization: Bea
 ### 票池维护
 
 - 后台任务：每 15 分钟自动 `sweep`（`application.go`）
-- 池深告警：建议 `available` 按账号 < N 时告警（待接监控）
+- **持续灌池**：本机 minter 守护，目标 `available ≥ 3`（见 [14](./14-chrome-ticket-lifecycle-experiments-2026-07-23.md) §1.3）
+- 池深告警：`available` 按账号 < 2 持续 10min 应触发补票
 
 ### 生图（走 grok2api 主网关）
 
@@ -240,22 +250,24 @@ go test ./... -count=1
 
 ## 验收记录
 
-### Go 票池 Panda 部署（2026-07-23 18:30 CST）
+### Go 票池 + asset 下载（2026-07-23 20:28 CST）— **当前生产基线**
 
 | 项 | 结果 | 数据 |
 |----|------|------|
-| 二进制热更新 | ✅ | `/tmp/grok2api-chrometicket-pool-v2` → `docker cp` → `healthy` |
-| DB 迁移 `chrome_tickets` | ✅ | 表 + 索引已创建 |
-| Admin `POST /chrome-tickets` | ✅ | 票 `b4a7fca1…`，account **1467**，TTL 12h |
-| Admin `GET /chrome-tickets/stats` | ✅ | `available: 1`（1467） |
-| 本机 minter → Go API | ✅ | `pool_push_grok2api` 72s，`meta_len=64` |
-| `/v1/images/generations`（公共 Key） | ❌ | 8 次均 **502**；日志 **asset 403**（539/559/289…），未路由到 1467 |
-| Go `chrome_ticket_pool_hit` | ⏳ | 票未消费（公共 Key 未命中 1467） |
-| Python E2E 1467（对照） | ✅ | Lite **200**，JPEG **130123B**，`asset_egress` 下载成功 |
+| GHCR CI | ✅ | Run `30006276793` |
+| Panda digest | ✅ | `sha256:49f23f31…7a841` / `c07cc2e` |
+| 本机 minter → SSH 入池 | ✅ | 票 `57b1fc44…`，~120s |
+| `pool_hit` + 生图 | ✅ | **HTTP 200**，8.4s，`img_xG7qivj6…` |
+| asset 下载 | ✅ | 有 `pool_hit` 时无 403 |
+| 池空时 | ⚠️ | 回退首页 meta，仍可能 403/502 |
 
-**部署结论**：票池基础设施 **可上线**；主网关公共 Key 生图仍受 **账号路由 + asset 403** 影响，与票池无关。下一步：为测试 Key 绑定 1467，或修 udeal asset 出口后再验 `pool_hit`。
+### Go 票池 Panda 部署（2026-07-23 18:30 CST）— 历史
 
-**运维备注**：首次 `docker cp` 误用了损坏二进制（SIGSEGV），已回滚；正确构建需 `-v /tmp:/out` 挂载宿主机输出。
+| 项 | 结果 | 数据 |
+|----|------|------|
+| 二进制热更新 | ⚠️ 已废弃 | 后续仅 GHCR pull |
+| Admin `POST /chrome-tickets` | ✅ | 票 `b4a7fca1…`，account **1467** |
+| 公共 Key 无票路径 | ❌ | asset 403 → **已由 c07cc2e 修复（有票路径）** |
 
 ### Python 原型 E2E（2026-07-23）
 
@@ -268,12 +280,13 @@ go test ./... -count=1
 - `go test ./internal/transport/http/chrometicket/...` — Admin handler
 - `go test ./...` — 全量后端测试通过
 
-**Panda 联调**：待本次二进制部署后执行上表步骤 2～4。
+**Panda 联调**：S0 已通过（`pool_hit` + 200）。后续按 [14](./14-chrome-ticket-lifecycle-experiments-2026-07-23.md) 分批做生命周期实验。
 
 ---
 
 ## 相关文档
 
+- [14-chrome-ticket-lifecycle-experiments-2026-07-23.md](./14-chrome-ticket-lifecycle-experiments-2026-07-23.md) — **分批短跑实验**（存活/延迟/复用/换 IP/并发）
 - [http-reverse-lite-chain.md](./http-reverse-lite-chain.md) — Chrome 短签冻结链
 - [12-web-lite-two-stage-failure-asset-403-2026-07-23.md](./12-web-lite-two-stage-failure-asset-403-2026-07-23.md) — 生产两阶段失败
 - [signer-sidecar.md](./signer-sidecar.md) — grok-signer 部署

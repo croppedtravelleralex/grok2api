@@ -1,16 +1,29 @@
-# 票池失效性验证 + asset403 定位到 Go TLS 指纹（2026-07-26）
+# 票池失效性验证 + 图轨恢复出图（2026-07-26）
 
-> **状态**：生产实测结论档。三个长期假设被推翻。
+> **状态**：生产实测结论档，**图轨已恢复**。四个长期假设被推翻，两个真实缺陷被修复。
 > **关联**：[20-ticket-ready-slot-dispatch-merge](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md)、[17-web-four-pool](./17-web-four-pool-and-imaging-success-rates-2026-07-24.md)、[18-pure-http-statsig-meta-poc](./18-pure-http-statsig-meta-poc.md)、[plan.md](./plan.md)
 
 ## 结论摘要
+
+### 被推翻的旧认知
 
 | 项 | 旧认知 | 实测结论 |
 |----|--------|----------|
 | 开票必须用本机 Chrome | 是 | **否**。一次带 SSO 的首页 GET（curl_cffi）即可拿到全部票材料 |
 | 票里的 `statsig_meta` 参与签名 | 是 | **否**。signer 忽略该字段，是死数据 |
 | `grok-imagine-image` 必须有票 | 是 | **否**。无票裸跑上游 3/3 出图成功 |
-| 票解决 asset 403 | 是 | **否**。asset 403 是 Go 客户端 TLS 指纹问题 |
+| 票解决 asset 403 | 是 | **否**。asset 403 与票无关，根因是下载凭据缺令牌（§5.6） |
+
+### 修复的真实缺陷
+
+| 缺陷 | 表现 | 修复 |
+|------|------|------|
+| 下载凭据只有账号 ID、没有访问令牌 | asset 403 → 对外 502 | `RunArtifacts.SSCredential`（`71148e7`）见 §5.6 |
+| pin 无定时器、长期冻结在 3 个号 | 「当前没有可用的上游账号」503 | `image_dispatch_pin_sync` 定时器（`cc95b65`）见 §9 |
+| 票池为空时 selector 硬失败 | 上游可出图却自我阻断 503 | 门禁改软（`fc3b390`）见 §4 |
+
+**验收**：镜像 `sha256:dcb40f12…`，连续 8 次生图 **200=8 / 503=0 / 502=0**，
+`dispatchImageLen` 3 → 45。
 
 ---
 
@@ -127,37 +140,37 @@ image_upstream_failed  "下载图片返回 403"  → 502
 
 ### 5.2 逐项排除
 
+这些**全部不是根因**，但排除过程本身有参考价值 —— 它们覆盖了排查这类
+「外部能通、生产不通」问题时最容易先想到的方向。
+
 | 假设 | 排除依据 |
 |------|----------|
 | 出口节点不同 IP | node 110 与 111 **同一 IP** `70.39.164.200:30000` |
-| 缺 CF cookie | A/B 实测：仅 `sso` 与 `sso+CF warm` **都是 200** |
+| 缺 CF cookie | A/B 实测：仅 `sso` 与 `sso+CF warm` 都是 200 |
 | 缺 device cookie（无票） | 无票 curl_cffi 下载同样 200 |
-| 请求头缺失 | `applyAssetDownloadHeaders` 已设 Accept/UA/Origin/Referer/Cookie，与 harness 一致 |
+| 请求头缺失 | `applyAssetDownloadHeaders` 已设 Accept/UA/Origin/Referer/Cookie |
 | Cookie 格式不同 | `BuildSSOCookie` 与 harness `merge_cookie` 都产出 `sso=X; sso-rw=X` |
 | 账号或额度 | 换账号复现 |
-
-| 下载账号与资产所有者错配 | asset URL 路径含 owner user id；实测 250→`964f1ad2`、263→`caa5f655`、342→`7186f408` **全部匹配** |
-| cookie jar 混入他账号 x-userid | 故意注入错误 `x-userid` + 伪造 `grok_device_id` | 仍 200 |
-| CF cookie 缺失（用**从未成功下载过**的 URL 复测） | 仅 `sso` 与 `sso+CF warm` 都 200 |
+| 下载账号与资产所有者错配 | asset URL 含 owner user id；250→`964f1ad2`、263→`caa5f655`、342→`7186f408` 全部匹配 |
+| cookie jar 混入他账号 x-userid | 故意注入错误 `x-userid` + 伪造 `grok_device_id`，仍 200 |
+| CF cookie 缺失（改用**从未成功下载过**的 URL 复测） | 仅 `sso` 与 `sso+CF warm` 都 200 |
 | asset URL 新鲜度 / CDN 未传播 | 刚生成的 URL 立即下载 200（347KB） |
-| **Go tls-client 指纹** | SSH 隧道让本地 Go 经 udeal 出口打同一 URL：**baseline 200** |
+| Go tls-client 指纹 | SSH 隧道让本地 Go 经 udeal 出口打同一 URL：baseline 200 |
 | TLS profile 版本 | Chrome_120/124/131/133/146 全 200 |
 | header 顺序 / 伪头顺序 / 补全 Chrome 头 / 去 Origin | 9 个变体组合全 200 |
-| 出口 IP 信誉 | 启用 4 个 webshare asset 节点跑生产：**仍 403**（同 IP 用 curl_cffi 是 200） |
+| 出口 IP 信誉 | 启用 4 个 webshare asset 节点跑生产：仍 403（同 IP 用 curl_cffi 是 200） |
+| 连接复用 / 共享客户端状态 | 新增 `Lease.DoIsolated` 用一次性客户端：仍 403 |
+| TLS 伪装层本身 | 新增 `Lease.DoPlain` 用标准库客户端：仍 403 |
+| HTTP 协议版本 | 强制 HTTP/1.1：仍 403；容器内 wget(h1) 同条件却 200 |
+| `Accept-Encoding` | 容器内 wget 带 gzip / identity / 不带，全 200 |
 
-累计 11 项，全部否定。
+累计 **17 项**，全部否定。
 
-### 5.3 当前唯一未排除项
+### 5.3 收敛路径
 
-**生产 tls-client 是进程级长生命周期实例**（连续跑探针/对话/下载 24h+），
-而所有探针都是每次新建客户端。差异只可能在：
-
-1. 连接复用状态（HTTP/2 长连接）
-2. 客户端内部 cookie jar 在显式 `Cookie` 头**之外追加**的内容
-
-注意埋点里的 `req_cookie_names` 是**我们设置的头**，jar 追加发生在客户端内部、
-日志看不到。定位方法：在 `egress/tlsclient.go` 的 `Do()` 里打出
-`inner.GetCookies(target)` 与连接是否复用。
+关键的收敛发生在「容器内 wget 用与应用逐条相同的 URL、cookie、请求头、代理
+取图返回 200，而 Go 应用 403」这一步 —— 它把范围从「网络/出口/协议」压缩到
+「应用实际发出的字节」。随后的请求转储一次命中（§5.6）。
 
 ### 5.4 附带缺陷
 
@@ -209,13 +222,16 @@ req_cookie_len     13          ← 正常应约 320 字节（两个 152 字符 J
 
 ## 6. 待办
 
-| 项 | 说明 |
+| 项 | 状态 |
 |----|------|
-| **打出 tls-client jar cookie 与连接复用** | §5.3 唯一盲区，是当前生图唯一阻塞的定位手段 |
-| `rewarmAssetDownloadCookie` 去掉 deviceCookie 前置 | 无票路径也应能重warm |
-| `statsig_meta` 短路分支 | 有票时不应跳过真实 meta 刷新 |
-| 票机制定位重估 | 上游已不要求票；保留与否取决于 asset 修好后的对照数据 |
-| ~~二进制回归 GHCR~~ | **Done**：2026-07-26 走完整 git 链路发布，`.env` 固定 `sha256:ae5df834…` ← `cdba9a1` |
+| ~~asset 403 定位与修复~~ | **Done** `71148e7`，见 §5.6 |
+| ~~pin 自愈~~ | **Done** `cc95b65`，见 §9 |
+| ~~二进制回归 GHCR~~ | **Done**：走完整 git 链路发布，`.env` 按 digest 固定 |
+| `rewarmAssetDownloadCookie` 去掉 deviceCookie 前置 | 待办。无票路径完全跳过 CF 重warm，6 次重试用同一 cookie，重试形同虚设 |
+| `statsig_meta` 短路分支 | 待办。有票时 `Sign()` 走 metaOverride 短路，跳过首页 meta 抓取，真实 meta 缓存在有票期间不刷新 |
+| 票机制去留 | 待评估。上游已不要求票，选号层保留有票优先；是否继续维护票池取决于后续对照数据 |
+| `TestSelectorPersistsModelOutcomeRankingAcrossRestart` 偶发 | 既有 flake。驱动是包常量 `modelSoftStopBaseCooldown` 与持久化时间戳截断的交互，非本轮引入 |
+| `image_pipeline_traces` 断写 | 自 2026-07-22 停止写入，历史 80 条全部卡在 `running`，分段耗时可观测性失效 |
 
 ---
 
@@ -240,3 +256,51 @@ imagine 额度；二进制存档 `/opt/grok2api/binary-archive/grok2api-prod-202
 
 **事故（部署铁律建立前）**：`scp` 传二进制丢失可执行位，`docker cp` 后容器进入重启循环，
 停机约 66 秒（08:48:06Z→08:49:12Z）。此类操作现已被铁律禁止。
+
+---
+
+## 9. pin 自愈：可选账号 3 → 45
+
+### 9.1 问题
+
+`SyncImageDispatchPins` 只有一个手工 HTTP 入口（`handler.go`），**没有任何定时器**。
+pin 因而长期冻结在某次同步时的集合 `{250, 263, 342}` 上。
+
+`indexWebAccountLocked` 在 dispatch 分支开头就卡 pin 白名单
+（`web_pool_probe.go:336-338`），而选号热路径读的正是这个内存索引。结果：
+
+```
+imageDispatchPoolIds  17~46   ← 四池合格
+dispatchImageLen       3      ← selector 实际能抽到的
+```
+
+压测必现 `当前没有可用的上游账号` 503（修复前 5 次压测 3 成 2 败）。
+
+### 9.2 修复（commit `cc95b65`）
+
+| 位置 | 改动 |
+|------|------|
+| `app/application.go` | 新增后台任务 `image_dispatch_pin_sync` |
+| `app/startup.go` | `runImageDispatchPinSync`：启动 45s 首跑，此后每 5min |
+| `account/web_pool_pins.go` | `imageDispatchPinTargetIDs` 不再按票收窄，直接返回全部 dispatch |
+| `account/web_pool_pins_test.go` | 断言改为「有票时仍保持完整 dispatch」 |
+
+`SyncImageDispatchPins` 本身幂等：先比对目标集合，仅在变化时写库并重建索引，
+空转开销可忽略，因此 5 分钟周期是安全的。
+
+**为什么一并去掉按票收窄**：早期实现把 pin 缩成「持票账号」，会让可选账号被票的
+分布绑架（[20](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md) 记为「runtime 被票分布绑架」）。
+票已非生图必要条件，且选号层本身对持票账号加权 —— **票应只影响「优先选谁」，
+不该决定「能选谁」**。不去掉的话，下次一旦有人灌票，pin 会立刻缩回去、问题复发。
+
+### 9.3 验收
+
+```
+image_dispatch_pin_synced  pinned=33  added=30  removed=0
+imagePinIds / imagePoolIds / dispatchImageLen  3 → 33 → 45（随 dispatch 持续跟进）
+连续 8 次生图  200=8  503=0  502=0
+近 20min  web_lite_asset_download_failed=0  「没有可用上游账号」=0
+```
+
+请求分散到 263 / 369 / 438 等多个账号，其中 369、438 均不在原 3 号 pin 内，
+证明选号确实铺开。

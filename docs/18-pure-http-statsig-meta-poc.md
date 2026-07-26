@@ -43,11 +43,18 @@ python tools/pure_http_statsig_meta_poc.py \
 | Lite E2E（含下载） | ≥ 80%（需 Panda udeal + 票池或设备 cookie） |
 | 无 Chrome 内存 | Panda 零 browser-bridge |
 
-当前结论（待跑 PoC 更新）：
+当前结论（2026-07-24 Panda udeal LA `70.39.164.200:30000`）：
 
-- **P0–P1** 本机 curl_cffi 历史上可过（见 `pure_http_zero_browser_bootstrap.py`）
-- **P2–P3** 仍依赖设备 cookie / 票池；纯 HTML meta ** alone 不足以稳定生产**
-- 若 PoC 稳定 P0+P1，可进 Phase-2：meta 入池替代 Chrome minter（仍要本机或 signer 对齐 fp）
+| 路径 | meta48 | chat | Lite | 说明 |
+|------|--------|------|------|------|
+| `pure_http_statsig_meta_poc`（HTML 现抓） | **3/3** | **0/3** anti-bot 403 | **0/3** 403 | 仅有 meta，无匹配 fp/signer |
+| `panda_zero_browser_http --mode page` | ✅ 48B | — | ❌ no_svg | 页面无 SVG 指纹 |
+| `panda_zero_browser_http --mode anon` | — | — | — | 缺 `coincurve` 依赖 |
+| `panda_zero_browser_http --mode reuse`（`/tmp/session_keys.json`） | ✅ | 200 | **200 image_ok ~1.0s** | **需历史 Chrome 捕获的 meta+fp 对** |
+
+**结论**：udeal 出口上 **纯 curl_cffi 可过 CF 并抽 meta**，但 **不能**像 gptimage 那样「只 TLS 伪装 + Turnstile」即用；Grok 还需 **meta48 + fingerprint 配对**（来自 SPA/Chrome 捕获）。`reuse` 模式证明配对正确时 **零浏览器 Lite 200**；这与生产 **开票池**（预存 meta+device cookie）方向一致，但 HTML 单抓 meta 不足以替代 Chrome 开票。
+
+Panda 日志：`/tmp/poc-a.log`、`/tmp/poc-reuse.json`
 
 ## 相关
 

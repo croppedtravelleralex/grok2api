@@ -104,7 +104,71 @@
 | 去掉本机 Chrome 灌票 | 需 PoC：curl_cffi 稳定 meta+fp（见 doc 18）— **未就绪** |
 | 提高整体成功率 | **四池调度 + 额度**，不是多灌票 |
 
-## 7. 相关文档
+## 7. 灌票策略（2026-07-24 定稿）
+
+**决策：继续走开票生图（路径 B）。**
+
+### 灌票范围 = 仅图轨调度池（四池 dispatch）
+
+Chrome 票在 `PopForAccount(account_id)` 时绑定账号消费，**只有图轨 Selector 从 dispatch 调度池选中的号才会用到票**。
+
+| 池 | 灌票？ | 原因 |
+|----|--------|------|
+| **dispatch（调度池）** | ✅ **只灌这个** | 图轨 Acquire 唯一入口 |
+| normal（普通池） | ❌ | 软停/额度待恢复，不接调度流量 |
+| verification（验证池） | ❌ | 未过 Lite 探针，不进调度 |
+| delete（删除池） | ❌ | 凭证失效/退役 |
+
+**给另外三池灌票零价值**：票进了池也永远不会被 Pop，纯浪费本机 Chrome 开票时间。
+
+### 不要和这些 UI 数字混用
+
+| 指标 | 是什么 | 灌票用吗 |
+|------|--------|----------|
+| 聊轨可调度 **678** | `fourPools.chat.dispatch` | ❌ 聊轨，与图轨开票无关 |
+| 图轨 **742 次**可调度 | `imageSchedulableRemaining`（新鲜额度**次数**合计） | ❌ 统计口径，含非 dispatch 号 |
+| **fourPools.image.dispatch ≈50** | 图轨调度池账号数 | ✅ **灌票范围** |
+| `imagePoolIds` 仅 2 个 | pin 后运行时索引切片 | 诊断用，不是调度池定义 |
+
+### 规则
+
+1. **账号范围**：`imageDispatchPoolIds`（= `WebPoolDispatch` 全量列表）。
+2. **额度硬顶**：每账号 `available_tickets ≤ imagine_generations_remaining`。
+3. **池深**：`mint_headroom = min(target, quota_cap) - pool_available`；超额停灌。
+4. **审计**：`python tools/chrome_ticket_pool_audit.py`
+
+### 没额度不进调度 / runtime
+
+- `image_dispatch_account_ids()` 会剔除 **Imagine 剩余=0** 的号（`dispatch_ids_dropped_no_quota` 日志）
+- `jit_mint_one` 在 `quota_check` 阶段拒绝无额度开票
+- **runtime pin** 若仍指向无额度号（如 1467/1574 cap=0），需 `pin_imagine_accounts` 切到有额度的调度池号；`chrome_ticket_jit_e2e_once.py` 会自动 retarget
+
+```bash
+# 调度池取号 → 开票 → 生图（一键）
+python tools/chrome_ticket_jit_e2e_once.py
+```
+
+调度池实时变化，避免提前批量导出 SSO。每张开票是一条可核对回执：
+
+```
+实时 imageDispatchPoolIds → 算 headroom → Panda 解密单号 SSO（内存）
+    → 本机 Chrome 开票 → POST 票池 → 丢弃 SSO
+```
+
+回执字段：`account_id`、`ticket_id`、`pool_before`、`pool_after`、`pool_delta`（应为 +1）。
+
+```bash
+# 只看当前调度池待灌工作项
+python tools/chrome_ticket_jit_mint_daemon.py --dry-run --once
+
+# 持续 JIT 灌票（默认每 tick 最多 3 张）
+python tools/chrome_ticket_jit_mint_daemon.py
+
+# 旧路径：本地 SSO 批量文件（仍可用，易过期）
+python tools/chrome_ticket_mint_daemon.py --account-ids dispatch --sso-file .tmp/web-sso.json
+```
+
+## 8. 相关文档
 
 - [12-web-lite-two-stage-failure-asset-403](./12-web-lite-two-stage-failure-asset-403-2026-07-23.md)
 - [13-chrome-ticket-pool-panda-api](./13-chrome-ticket-pool-panda-api-2026-07-23.md)

@@ -43,6 +43,7 @@
 | BE-020 | Selector 诊断与指标 | 503 难区分 saturated vs 真空池 | `selection_reason` + dispatch/pin/stale 指标 | P1 | Done | `X-Grok-Selection-Reason` |
 | BE-021 | 票池与选号联动 | 选号不查票 → 无票回退 | Acquire 偏好有票；daemon 池深跟 SSESlots | P1 | Done | selector 有票优先；mint daemon 联动 |
 | BE-023 | Web Image 四池 | 软停/耗尽号进 dispatch；pin 洗状态 | 对齐 Build 四池；dispatch=`imageDispatchAdmissible` | P0 | Done | `web_pool_probe.go`；pin 脚本仅绑 route |
+| BE-024 | TicketReady 销票槽位 | 票池与 dispatch/pin/runtime 四套集合漂移；孤儿票 | 固定 SlotRegistry；`TicketReady` 单一调度视图；JIT 只灌槽位 | P0 | Planned | [20](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md) |
 | BE-022 | 运维/实验工具 Rust 化 | Python 脚本当生产依赖 | PoC 冻结 JSON 契约后：`grok-pool-ops-rs`、`grok-ticket-minter-rs`、`grok-experiment-rs` | P1 | Planned | [plan.md](./plan.md) 语言分层；参考 `web_http_chat_image_canary_rs` |
 
 ## 稳定性与可维护性

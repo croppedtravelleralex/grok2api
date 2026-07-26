@@ -168,13 +168,15 @@ model_route_accounts         = 实验/运维「硬约束」；必须 ⊆ dispatc
 - 票池 **不选号**；仅在 `generateLiteImageURL` 对 **已选 account_id** `PopForAccount`
 - 无票 → 静默回退无票路径（可能 403）；**生产应消灭无票回退**
 
-### 3.2 与号池联动（新增）
+### 3.2 与号池联动
 
-| 策略 | 说明 |
-|------|------|
-| **A. 选号偏好有票**（推荐 P1） | `AcquireForSS` 排序加权：`available_tickets[account_id] > 0` 优先 |
-| **B. 硬过滤**（实验用） | route pin 且 `available=0` 的号不进 dispatch 索引 |
-| **C. 池深目标** | `target_per_account = ceil(SSESlots / dispatch_image_count)`，daemon 自动维持 |
+> **2026-07-26 更新**：BE-021（选号偏好有票）已落地；下一阶段 **BE-024** 将票池 **逻辑并入** 号池调度视图（TicketReady / SlotRegistry），见 [20-ticket-ready-slot-dispatch-merge-2026-07-25.md](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md)。
+
+| 策略 | 说明 | 状态 |
+|------|------|------|
+| **A. 选号偏好有票** | `Acquire` 排序加权有票账号 | ✅ BE-021 |
+| **B. TicketReady 硬视图** | 调度只认 `dispatch ∩ pin ∩ 有票`；固定 SlotRegistry | 📋 BE-024 |
+| **C. 池深目标** | `target_per_account` + JIT daemon | 部分（`jit_mint_concurrent` PoC） |
 
 ### 3.3 运维单一化
 

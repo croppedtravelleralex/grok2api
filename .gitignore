@@ -54,3 +54,6 @@ __pycache__/
 # Local probe / reverse-engineering drafts (stable scripts live in tools/panda_*.sh)
 /tools/_*/
 /tools/_*
+
+# Rust 工具链构建产物（tools/*_rs/target 可达数百 MB）
+target/

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import base64
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,7 @@ IMAGE_KEY_PATH = os.environ.get("PANDA_IMAGE_KEY_FILE", "/root/.secrets/grok2api
 DEFAULT_PROMPT = "a single red apple on white table, studio product photo"
 IMAGINE_QUOTA_FRESH_SEC = 30 * 60
 IMAGINE_UPSTREAM = "grok-imagine-image"
+DEFAULT_QUOTA_FETCH_WORKERS = int(os.environ.get("CHROME_TICKET_QUOTA_WORKERS", "12"))
 
 
 def utc_now() -> str:
@@ -91,6 +94,9 @@ def ensure_pin_scripts() -> None:
 
 
 def admin_token() -> str:
+    override = (os.environ.get("PANDA_ADMIN_TOKEN") or "").strip()
+    if override:
+        return override
     last_err = ""
     for attempt in range(3):
         proc = ssh_run("python3 /tmp/_panda_admin_token.py", timeout=90)
@@ -149,28 +155,115 @@ def _imagine_gens_from_account(acc: dict[str, Any]) -> int:
     return 0
 
 
-def imagine_remaining_by_account(account_ids: list[int] | None = None) -> dict[int, int]:
+def _fetch_account_imagine_gens(aid: int, token: str) -> tuple[int, int]:
+    proc = ssh_run(
+        f"curl -fsS '{PANDA_BASE}/api/admin/v1/accounts/{aid}' "
+        f"-H 'Authorization: Bearer {token}'",
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        return aid, 0
+    payload = json.loads(proc.stdout)
+    acc = payload.get("data") or payload
+    return aid, _imagine_gens_from_account(acc)
+
+
+def _imagine_remaining_remote_batch(account_ids: list[int], token: str, *, workers: int) -> dict[int, int]:
+    """在 Panda 本机并发拉取账号 Imagine 次数（单次 SSH，避免 109 次往返）。"""
+    ids = sorted({int(x) for x in account_ids if int(x) > 0})
+    if not ids:
+        return {}
+    workers = max(1, min(workers, 32))
+    script = r'''
+import json, os, urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+BASE = os.environ["PANDA_BASE"]
+TOKEN = os.environ["ADMIN_TOKEN"]
+IDS = json.loads(os.environ["ACCOUNT_IDS"])
+WORKERS = int(os.environ.get("WORKERS", "12"))
+
+def imagine_generations(remaining, total):
+    if total <= 0 or remaining < 0:
+        return None
+    if total <= 1000:
+        return remaining
+    unit = max(1, total // 10)
+    return (remaining + unit - 1) // unit
+
+def gens_from_acc(acc):
+    for window in acc.get("quotaWindows") or []:
+        if window.get("mode") != "imagine":
+            continue
+        total = int(window.get("total") or 0)
+        remaining = int(window.get("remaining") or 0)
+        g = imagine_generations(remaining, total)
+        return max(0, g or 0)
+    return 0
+
+def fetch_one(aid):
+    req = urllib.request.Request(
+        f"{BASE}/api/admin/v1/accounts/{aid}",
+        headers={"Authorization": "Bearer " + TOKEN},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace"))
+        acc = payload.get("data") or payload
+        return aid, gens_from_acc(acc)
+    except Exception:
+        return aid, 0
+
+out = {}
+with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+    for aid, gens in pool.map(fetch_one, IDS):
+        if gens > 0:
+            out[str(aid)] = gens
+print(json.dumps(out, ensure_ascii=False))
+'''
+    env_prefix = (
+        f"PANDA_BASE={PANDA_BASE!r} ADMIN_TOKEN={token!r} "
+        f"ACCOUNT_IDS={json.dumps(ids)!r} WORKERS={workers}"
+    )
+    b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    print(
+        f"[quota] remote batch n={len(ids)} workers={workers}",
+        file=sys.stderr,
+        flush=True,
+    )
+    proc = ssh_run(
+        f"{env_prefix} python3 -c 'import base64; exec(base64.b64decode(\"{b64}\"))'",
+        timeout=max(120, 30 + len(ids) * 2),
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"remote quota batch failed: {(proc.stderr or proc.stdout)[:400]}")
+    line = (proc.stdout or "").strip().splitlines()[-1]
+    raw = json.loads(line)
+    return {int(k): int(v) for k, v in raw.items()}
+
+
+def imagine_remaining_by_account(
+    account_ids: list[int] | None = None,
+    *,
+    workers: int | None = None,
+) -> dict[int, int]:
     """Read Imagine **generation count** remaining per account (not raw micro-credits).
 
-    列表 API 常不返回 quotaWindows，指定 account_ids 时逐号 GET 详情。
+    列表 API 常不返回 quotaWindows，指定 account_ids 时逐号 GET 详情（大批量走 Panda 本机并发批处理）。
     """
     token = admin_token()
     wanted = sorted({int(x) for x in (account_ids or []) if int(x) > 0})
+    pool_workers = workers if workers is not None else DEFAULT_QUOTA_FETCH_WORKERS
     out: dict[int, int] = {}
     if wanted:
-        for aid in wanted:
-            proc = ssh_run(
-                f"curl -fsS '{PANDA_BASE}/api/admin/v1/accounts/{aid}' "
-                f"-H 'Authorization: Bearer {token}'",
-                timeout=60,
-            )
-            if proc.returncode != 0:
-                continue
-            payload = json.loads(proc.stdout)
-            acc = payload.get("data") or payload
-            gens = _imagine_gens_from_account(acc)
-            if gens > 0:
-                out[aid] = gens
+        if len(wanted) >= 8:
+            return _imagine_remaining_remote_batch(wanted, token, workers=pool_workers)
+        with ThreadPoolExecutor(max_workers=min(pool_workers, max(1, len(wanted)))) as executor:
+            futures = [executor.submit(_fetch_account_imagine_gens, aid, token) for aid in wanted]
+            for fut in as_completed(futures):
+                aid, gens = fut.result()
+                if gens > 0:
+                    out[aid] = gens
         return out
     page = 1
     while True:
@@ -332,6 +425,243 @@ def web_lane_quota_summary() -> dict[str, Any]:
         raise RuntimeError(f"web-lane-quota failed: {(proc.stderr or proc.stdout)[:300]}")
     payload = json.loads(proc.stdout)
     return payload.get("data") or payload
+
+
+def ensure_unified_snapshot_script() -> None:
+    local = ROOT / "tools" / "panda_unified_pool_snapshot.py"
+    remote = f"{SSH_HOST}:/tmp/panda_unified_pool_snapshot.py"
+    subprocess.run(
+        ["scp", str(local), remote],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def unified_pool_snapshot(*, workers: int | None = None) -> dict[str, Any]:
+    """单次 SSH：web-pools + ticket stats + lane-quota + dispatch 额度批处理。"""
+    ensure_unified_snapshot_script()
+    pool_workers = workers if workers is not None else DEFAULT_QUOTA_FETCH_WORKERS
+    proc = ssh_run(
+        f"python3 /tmp/panda_unified_pool_snapshot.py --workers {pool_workers}",
+        timeout=max(120, 60 + pool_workers * 5),
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"unified snapshot failed: {(proc.stderr or proc.stdout)[:400]}")
+    line = (proc.stdout or "").strip().splitlines()[-1]
+    return json.loads(line)
+
+
+def _imagine_map_from_snapshot(snapshot: dict[str, Any]) -> dict[int, int]:
+    raw = snapshot.get("imagine_by_account") or {}
+    return {int(k): int(v) for k, v in raw.items()}
+
+
+def ticket_quota_audit_from_snapshot(
+    snapshot: dict[str, Any],
+    account_ids: list[int] | None = None,
+    *,
+    include_dispatch_without_tickets: bool = False,
+) -> list[dict[str, Any]]:
+    """基于 unified snapshot 的票↔额度对账（无额外 SSH）。"""
+    pools = snapshot.get("web_pools") or {}
+    stats = snapshot.get("pool_stats") or {}
+    imagine = _imagine_map_from_snapshot(snapshot)
+    dispatch = set(image_dispatch_account_ids_from_pools(pools))
+    pin = set(current_pin_imagine_ids(pools))
+    runtime = set(runtime_image_dispatch_account_ids(pools))
+    holder_ids: list[int] = []
+    for item in stats.get("AvailableByAccount") or stats.get("availableByAccount") or []:
+        aid = int(item.get("AccountID") or item.get("accountId") or item.get("account_id") or 0)
+        if not aid or (account_ids and aid not in account_ids):
+            continue
+        holder_ids.append(aid)
+    scan_ids = sorted(account_ids) if account_ids else sorted(dispatch)
+    rows: list[dict[str, Any]] = []
+    for item in stats.get("AvailableByAccount") or stats.get("availableByAccount") or []:
+        aid = int(item.get("AccountID") or item.get("accountId") or item.get("account_id") or 0)
+        if not aid or (account_ids and aid not in account_ids):
+            continue
+        avail = int(item.get("Count") or item.get("count") or 0)
+        quota = imagine.get(aid, 0)
+        rows.append(
+            {
+                "account_id": aid,
+                "available_tickets": avail,
+                "imagine_remaining": quota,
+                "over_by": max(0, avail - quota),
+                "ok": avail <= quota,
+                "in_dispatch": aid in dispatch,
+                "in_pin": aid in pin,
+                "in_runtime": aid in runtime,
+                "orphan_ticket": avail > 0 and aid not in dispatch,
+            }
+        )
+    if include_dispatch_without_tickets:
+        for aid in scan_ids:
+            if any(r["account_id"] == aid for r in rows):
+                continue
+            quota = imagine.get(aid, 0)
+            rows.append(
+                {
+                    "account_id": aid,
+                    "available_tickets": 0,
+                    "imagine_remaining": quota,
+                    "over_by": 0,
+                    "ok": True,
+                    "in_dispatch": aid in dispatch,
+                    "in_pin": aid in pin,
+                    "in_runtime": aid in runtime,
+                    "orphan_ticket": False,
+                }
+            )
+    return sorted(rows, key=lambda r: (-r["over_by"], r["account_id"]))
+
+
+def expire_available_tickets(account_ids: list[int]) -> dict[str, Any]:
+    """将指定账号的 available 票标记为 expired（运维清扫，无 Admin DELETE API）。"""
+    ids = sorted({int(x) for x in account_ids if int(x) > 0})
+    if not ids:
+        return {"expired_rows": 0, "account_ids": []}
+    in_clause = ",".join(str(x) for x in ids)
+    sql = (
+        "UPDATE chrome_tickets SET status='expired' "
+        f"WHERE status='available' AND account_id IN ({in_clause}); "
+        "SELECT changes();"
+    )
+    proc = ssh_run(f"sqlite3 /opt/grok2api/data/backend.db {json.dumps(sql)}", timeout=60)
+    if proc.returncode != 0:
+        raise RuntimeError(f"expire tickets failed: {(proc.stderr or proc.stdout)[:300]}")
+    line = (proc.stdout or "").strip().splitlines()[-1]
+    expired_rows = int(line) if line.isdigit() else 0
+    out = {"expired_rows": expired_rows, "account_ids": ids}
+    log_event("expire_available_tickets", **out)
+    return out
+
+
+def orphan_ticket_accounts_from_snapshot(snapshot: dict[str, Any]) -> list[int]:
+    pools = snapshot.get("web_pools") or {}
+    dispatch = image_dispatch_account_ids_from_pools(pools)
+    audit = ticket_quota_audit_from_snapshot(
+        snapshot,
+        dispatch,
+        include_dispatch_without_tickets=True,
+    )
+    return sorted({int(r["account_id"]) for r in audit if r.get("orphan_ticket")})
+
+
+def purge_orphan_tickets(
+    *,
+    snapshot: dict[str, Any] | None = None,
+    workers: int | None = None,
+    account_ids: list[int] | None = None,
+) -> dict[str, Any]:
+    """清除非 dispatch 账号上的 available 孤儿票。"""
+    snap = snapshot or unified_pool_snapshot(workers=workers)
+    orphans = sorted({int(x) for x in (account_ids or []) if int(x) > 0}) or orphan_ticket_accounts_from_snapshot(snap)
+    expired = expire_available_tickets(orphans) if orphans else {"expired_rows": 0, "account_ids": []}
+    report = {"orphans": orphans, "expired": expired}
+    log_event("purge_orphan_tickets", orphans=orphans, expired_rows=expired.get("expired_rows"))
+    return report
+
+
+def remediate_pool_probe(
+    *,
+    target_concurrent: int = 5,
+    target_tickets: int = 20,
+    workers: int | None = None,
+    sync_pins: bool = True,
+) -> dict[str, Any]:
+    """清孤儿票 + pin sync，返回最新探针报告。"""
+    snapshot = unified_pool_snapshot(workers=workers)
+    orphans = orphan_ticket_accounts_from_snapshot(snapshot)
+    purge_report = purge_orphan_tickets(snapshot=snapshot, account_ids=orphans) if orphans else None
+    pin_report = sync_image_dispatch_pins() if sync_pins else None
+    report = ticket_pool_probe(
+        target_concurrent=target_concurrent,
+        target_tickets=target_tickets,
+        workers=workers,
+        use_unified_snapshot=True,
+    )
+    report["remediation"] = {
+        "orphans_before": orphans,
+        "purge": purge_report,
+        "pin_sync": pin_report,
+    }
+    log_event(
+        "pool_probe_remediate",
+        ready_both=report["readiness"]["ready_for_both"],
+        blockers=report["readiness"]["blockers"],
+        orphans_purged=purge_report,
+    )
+    return report
+
+
+def image_dispatch_account_ids_from_pools(pools: dict[str, Any]) -> list[int]:
+    raw = pools.get("imageDispatchPoolIds") or []
+    return sorted({int(x) for x in raw if int(x) > 0})
+
+
+def preflight_mint_gate(
+    *,
+    workers: int | None = None,
+    sync_pins: bool = True,
+    dispatch_ids: list[int] | None = None,
+) -> dict[str, Any]:
+    """JIT 开票前门控：统一快照 → 对账 → 必要时 pin sync → 返回可 mint 账号集合。"""
+    snapshot = unified_pool_snapshot(workers=workers)
+    pools = snapshot.get("web_pools") or {}
+    dispatch = dispatch_ids or image_dispatch_account_ids_from_pools(pools)
+    audit = ticket_quota_audit_from_snapshot(
+        snapshot,
+        dispatch,
+        include_dispatch_without_tickets=True,
+    )
+    violations = [r for r in audit if not r["ok"]]
+    orphans = [int(r["account_id"]) for r in audit if r.get("orphan_ticket")]
+    pin_not_in_dispatch = pools.get("pinNotInDispatch") or []
+    pin_sync_report: dict[str, Any] | None = None
+
+    if sync_pins and (pin_not_in_dispatch or orphans):
+        if orphans:
+            purge_orphan_tickets(snapshot=snapshot, account_ids=orphans)
+        pin_sync_report = sync_image_dispatch_pins()
+        snapshot = unified_pool_snapshot(workers=workers)
+        pools = snapshot.get("web_pools") or {}
+        dispatch = dispatch_ids or image_dispatch_account_ids_from_pools(pools)
+        audit = ticket_quota_audit_from_snapshot(
+            snapshot,
+            dispatch,
+            include_dispatch_without_tickets=True,
+        )
+        violations = [r for r in audit if not r["ok"]]
+        orphans = [int(r["account_id"]) for r in audit if r.get("orphan_ticket")]
+        pin_not_in_dispatch = pools.get("pinNotInDispatch") or []
+
+    blocked_ids = {int(r["account_id"]) for r in violations} | set(orphans)
+    mintable_dispatch = [aid for aid in dispatch if aid not in blocked_ids]
+    gate_ok = not violations and not orphans and not pin_not_in_dispatch
+    report = {
+        "ok": gate_ok,
+        "violations": violations,
+        "orphans": orphans,
+        "pin_not_in_dispatch": pin_not_in_dispatch,
+        "blocked_account_ids": sorted(blocked_ids),
+        "mintable_dispatch": mintable_dispatch,
+        "pin_sync": pin_sync_report,
+        "snapshot_meta": snapshot.get("meta"),
+    }
+    log_event(
+        "preflight_mint_gate",
+        ok=gate_ok,
+        violations=len(violations),
+        orphans=orphans,
+        pin_not_in_dispatch=pin_not_in_dispatch,
+        mintable=len(mintable_dispatch),
+    )
+    return {"report": report, "snapshot": snapshot, "audit": audit}
 
 
 def ensure_panda_sso_scripts() -> None:
@@ -567,10 +897,39 @@ def mint_headroom(account_id: int, base_target: int, *, pool_stats_snapshot: dic
     return max(0, target - available)
 
 
-def ticket_quota_audit(account_ids: list[int] | None = None) -> list[dict[str, Any]]:
-    """检查每账号：Imagine 剩余 >= 池中 available 票数。"""
-    imagine = imagine_remaining_by_account(account_ids)
+def ticket_quota_audit(
+    account_ids: list[int] | None = None,
+    *,
+    include_dispatch_without_tickets: bool = False,
+    workers: int | None = None,
+    snapshot: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """检查每账号：Imagine 剩余 >= 池中 available 票数；并标注 dispatch/pin/runtime 对齐。"""
+    if snapshot is not None:
+        return ticket_quota_audit_from_snapshot(
+            snapshot,
+            account_ids,
+            include_dispatch_without_tickets=include_dispatch_without_tickets,
+        )
     stats = pool_stats()
+    pools = web_pools_snapshot()
+    dispatch = set(image_dispatch_account_ids())
+    pin = set(current_pin_imagine_ids(pools))
+    runtime = set(runtime_image_dispatch_account_ids(pools))
+    holder_ids: list[int] = []
+    for item in stats.get("AvailableByAccount") or stats.get("availableByAccount") or []:
+        aid = int(item.get("AccountID") or item.get("accountId") or item.get("account_id") or 0)
+        if not aid or (account_ids and aid not in account_ids):
+            continue
+        holder_ids.append(aid)
+    scan_ids = sorted(account_ids) if account_ids else sorted(dispatch)
+    if include_dispatch_without_tickets:
+        quota_ids = sorted(set(holder_ids) | set(scan_ids))
+    elif account_ids:
+        quota_ids = sorted(set(holder_ids) | set(account_ids))
+    else:
+        quota_ids = sorted(holder_ids)
+    imagine = imagine_remaining_by_account(quota_ids or None, workers=workers)
     rows: list[dict[str, Any]] = []
     for item in stats.get("AvailableByAccount") or stats.get("availableByAccount") or []:
         aid = int(item.get("AccountID") or item.get("accountId") or item.get("account_id") or 0)
@@ -585,25 +944,151 @@ def ticket_quota_audit(account_ids: list[int] | None = None) -> list[dict[str, A
                 "imagine_remaining": quota,
                 "over_by": max(0, avail - quota),
                 "ok": avail <= quota,
+                "in_dispatch": aid in dispatch,
+                "in_pin": aid in pin,
+                "in_runtime": aid in runtime,
+                "orphan_ticket": avail > 0 and aid not in dispatch,
             }
         )
-    dispatch = set(image_dispatch_account_ids())
-    for aid in sorted(dispatch):
-        if account_ids and aid not in account_ids:
-            continue
-        if any(r["account_id"] == aid for r in rows):
-            continue
-        quota = imagine.get(aid, 0)
-        rows.append(
-            {
-                "account_id": aid,
-                "available_tickets": 0,
-                "imagine_remaining": quota,
-                "over_by": 0,
-                "ok": True,
-            }
-        )
+    if include_dispatch_without_tickets:
+        for aid in scan_ids:
+            if any(r["account_id"] == aid for r in rows):
+                continue
+            quota = imagine.get(aid, 0)
+            rows.append(
+                {
+                    "account_id": aid,
+                    "available_tickets": 0,
+                    "imagine_remaining": quota,
+                    "over_by": 0,
+                    "ok": True,
+                    "in_dispatch": aid in dispatch,
+                    "in_pin": aid in pin,
+                    "in_runtime": aid in runtime,
+                    "orphan_ticket": False,
+                }
+            )
     return sorted(rows, key=lambda r: (-r["over_by"], r["account_id"]))
+
+
+def ticket_pool_probe(
+    *,
+    target_concurrent: int = 5,
+    target_tickets: int = 20,
+    workers: int | None = None,
+    use_unified_snapshot: bool = True,
+) -> dict[str, Any]:
+    """票池探针：票↔额度对账、pin/runtime 对齐、开票工作项与 N 并发×M 票就绪度。"""
+    pool_workers = workers if workers is not None else DEFAULT_QUOTA_FETCH_WORKERS
+    snapshot: dict[str, Any] | None = None
+    if use_unified_snapshot:
+        print(
+            f"[probe] unified snapshot workers={pool_workers}…",
+            file=sys.stderr,
+            flush=True,
+        )
+        t0 = time.monotonic()
+        snapshot = unified_pool_snapshot(workers=pool_workers)
+        print(f"[probe] snapshot done in {time.monotonic() - t0:.1f}s", file=sys.stderr, flush=True)
+        pools = snapshot.get("web_pools") or {}
+        quota = snapshot.get("lane_quota") or {}
+        stats = snapshot.get("pool_stats") or {}
+    else:
+        pools = web_pools_snapshot()
+        quota = web_lane_quota_summary()
+        stats = pool_stats()
+    by_status = stats.get("ByStatus") or stats.get("byStatus") or {}
+    available_total = int(by_status.get("available") or 0)
+    if snapshot is not None:
+        dispatch = image_dispatch_account_ids_from_pools(pools)
+    else:
+        dispatch = image_dispatch_account_ids(force_refresh=True)
+    pin = current_pin_imagine_ids(pools)
+    runtime = runtime_image_dispatch_account_ids(pools)
+    print(
+        f"[probe] dispatch={len(dispatch)} auditing…",
+        file=sys.stderr,
+        flush=True,
+    )
+    t0 = time.monotonic()
+    audit_rows = ticket_quota_audit(
+        dispatch,
+        include_dispatch_without_tickets=True,
+        workers=pool_workers,
+        snapshot=snapshot,
+    )
+    print(f"[probe] audit done in {time.monotonic() - t0:.1f}s", file=sys.stderr, flush=True)
+    violations = [r for r in audit_rows if not r["ok"]]
+    ticket_holders = [r for r in audit_rows if int(r.get("available_tickets") or 0) > 0]
+    schedulable_runtime = [r for r in ticket_holders if r.get("in_runtime")]
+    imagine_cache = {int(r["account_id"]): int(r["imagine_remaining"]) for r in audit_rows}
+    work = dispatch_mint_worklist(
+        max(1, (target_tickets + max(len(dispatch), 1) - 1) // max(len(dispatch), 1)),
+        dispatch_ids=dispatch,
+        workers=pool_workers,
+        imagine_cache=imagine_cache,
+    )
+    mint_headroom_total = sum(int(w.get("headroom") or 0) for w in work)
+    blockers: list[str] = []
+    if available_total < target_tickets:
+        blockers.append(f"ticket_pool_available={available_total} < target_tickets={target_tickets}")
+    if len(schedulable_runtime) < target_concurrent:
+        blockers.append(
+            f"runtime_ticket_accounts={len(schedulable_runtime)} < target_concurrent={target_concurrent}"
+        )
+    orphans = [r["account_id"] for r in ticket_holders if r.get("orphan_ticket")]
+    if orphans:
+        blockers.append(f"orphan_tickets_on_non_dispatch={orphans}")
+    pin_not_in_dispatch = pools.get("pinNotInDispatch") or []
+    if pin_not_in_dispatch:
+        blockers.append(f"pin_not_in_dispatch={pin_not_in_dispatch}")
+    if violations:
+        blockers.append(f"quota_violations={len(violations)}")
+    if mint_headroom_total < max(0, target_tickets - available_total):
+        blockers.append(
+            f"mint_headroom_total={mint_headroom_total} < tickets_needed={max(0, target_tickets - available_total)}"
+        )
+    return {
+        "probe": "chrome_ticket_pool",
+        "ts": utc_now(),
+        "io_mode": "unified_snapshot" if snapshot is not None else "legacy_multi_ssh",
+        "targets": {"concurrent": target_concurrent, "tickets": target_tickets},
+        "readiness": {
+            "ready_for_tickets": available_total >= target_tickets and not violations,
+            "ready_for_concurrent": len(schedulable_runtime) >= target_concurrent and not violations,
+            "ready_for_both": (
+                available_total >= target_tickets
+                and len(schedulable_runtime) >= target_concurrent
+                and not violations
+                and not orphans
+                and not pin_not_in_dispatch
+            ),
+            "blockers": blockers,
+        },
+        "ticket_pool": {
+            "by_status": by_status,
+            "available_total": available_total,
+            "ticket_holders": ticket_holders,
+            "violations": violations,
+        },
+        "dispatch": {
+            "dispatch_count": len(dispatch),
+            "pin": pin,
+            "runtime": runtime,
+            "pin_not_in_dispatch": pin_not_in_dispatch,
+            "selection_diagnostics": pools.get("selectionDiagnostics"),
+            "four_pools_image": (pools.get("fourPools") or {}).get("image"),
+        },
+        "quota": quota,
+        "mint_pipeline": {
+            "worklist_count": len(work),
+            "worklist_head": work[:15],
+            "mint_headroom_total": mint_headroom_total,
+            "tickets_needed": max(0, target_tickets - available_total),
+        },
+        "audit_rows": audit_rows,
+        "pool_diff": (snapshot or {}).get("pool_diff"),
+    }
 
 
 def push_ticket(row: dict[str, Any], *, ttl_hours: float = 12.0) -> dict[str, Any]:
@@ -705,12 +1190,22 @@ def mint_ticket_row(account_id: int, sso_file: Path, *, timeout: int = 120) -> d
     return mint_ticket_row_from_sso(account_id, acc["sso"], timeout=timeout)
 
 
-def dispatch_mint_worklist(base_target: int, *, dispatch_ids: list[int] | None = None) -> list[dict[str, Any]]:
+def dispatch_mint_worklist(
+    base_target: int,
+    *,
+    dispatch_ids: list[int] | None = None,
+    workers: int | None = None,
+    imagine_cache: dict[int, int] | None = None,
+    pool_stats_snapshot: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """实时调度池 + 额度/池深，返回待灌票工作项。"""
     dispatch = dispatch_ids or image_dispatch_account_ids()
     target = base_target if base_target > 0 else max(1, (10 + len(dispatch) - 1) // max(len(dispatch), 1))
-    stats = pool_stats()
-    imagine = imagine_remaining_by_account(dispatch)
+    stats = pool_stats_snapshot or pool_stats()
+    if imagine_cache is not None:
+        imagine = {int(k): int(v) for k, v in imagine_cache.items()}
+    else:
+        imagine = imagine_remaining_by_account(dispatch, workers=workers)
     work: list[dict[str, Any]] = []
     for aid in dispatch:
         cap = imagine.get(aid, 0)
@@ -850,6 +1345,117 @@ def run_remote_python(script: str, *, remote_name: str, timeout: int = 240) -> s
     if proc.returncode != 0:
         raise RuntimeError(f"remote python failed: {(proc.stderr or proc.stdout)[:400]}")
     return proc.stdout.strip()
+
+
+def panda_image_concurrent_mixed(
+    prompts: list[str],
+    *,
+    workers: int | None = None,
+    log_since_s: int = 300,
+) -> dict[str, Any]:
+    """Panda 并发生图，每条请求使用不同 prompt（中英混合输入）。"""
+    if not prompts:
+        raise ValueError("prompts required")
+    n = len(prompts)
+    pool_workers = workers or n
+    script = f"""
+import concurrent.futures, json, subprocess, time, urllib.error, urllib.request
+KEY=open({IMAGE_KEY_PATH!r}).read().strip()
+BASE={PANDA_BASE!r}
+PROMPTS={json.dumps(prompts, ensure_ascii=False)}
+N={n}
+WORKERS={pool_workers}
+
+def one(i):
+    prompt=PROMPTS[i % len(PROMPTS)]
+    t0=time.time()
+    body=json.dumps({{"model":"grok-imagine-image","prompt":prompt,"size":"1024x1024","n":1}}).encode()
+    req=urllib.request.Request(
+        BASE+"/v1/images/generations", data=body, method="POST",
+        headers={{"Authorization":"Bearer "+KEY,"Content-Type":"application/json"}},
+    )
+    http=0; err=""; url=""
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            http=resp.status
+            data=json.loads(resp.read().decode("utf-8","replace")).get("data") or []
+            if data:
+                url=(data[0].get("url") or "")[:120]
+    except urllib.error.HTTPError as exc:
+        http=exc.code
+        err=exc.read().decode("utf-8","replace")[:300]
+    return {{
+        "idx": i + 1,
+        "prompt": prompt[:80],
+        "http": http,
+        "wall_s": round(time.time() - t0, 1),
+        "url": url,
+        "error": err,
+    }}
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as ex:
+    rows=list(ex.map(one, range(N)))
+logs=subprocess.run(["docker","logs","grok2api","--since","{log_since_s}s"], capture_output=True, text=True)
+text=logs.stdout or ""
+pool_hits=text.count("chrome_ticket_pool_hit")
+asset403=sum(1 for line in text.splitlines() if "web_lite_asset_download_failed" in line and "403" in line)
+print(json.dumps({{"results":rows,"pool_hits":pool_hits,"asset403":asset403}}, ensure_ascii=False))
+"""
+    out = run_remote_python(script, remote_name="_chrome_ticket_image_concurrent_mixed.py", timeout=max(600, n * 200))
+    line = out.splitlines()[-1]
+    payload = json.loads(line)
+    payload["ok"] = sum(1 for r in payload.get("results") or [] if r.get("http") == 200)
+    payload["pool_hit"] = int(payload.get("pool_hits") or 0)
+    return payload
+
+
+def parse_image_logs_since(since_s: int = 90) -> dict[str, Any]:
+    """解析 grok2api 日志中与 asset 下载/出口相关的行（用于判断 403 是否代理问题）。"""
+    script = f"""
+import json, re, subprocess
+logs=subprocess.run(["docker","logs","grok2api","--since","{since_s}s"], capture_output=True, text=True)
+text=logs.stdout or ""
+asset_fails=[]
+fallbacks=[]
+pool_hits=0
+egress_feedback=[]
+for line in text.splitlines():
+    if "chrome_ticket_pool_hit" in line:
+        pool_hits += 1
+    if "web_lite_asset_download_fallback" in line:
+        m_scope=re.search(r'"from_scope"\\s*:\\s*"([^"]+)"', line)
+        m_to=re.search(r'"to_scope"\\s*:\\s*"([^"]+)"', line)
+        m_aid=re.search(r'"account_id"\\s*:\\s*(\\d+)', line)
+        fallbacks.append({{
+            "account_id": int(m_aid.group(1)) if m_aid else None,
+            "from_scope": m_scope.group(1) if m_scope else None,
+            "to_scope": m_to.group(1) if m_to else None,
+        }})
+    if "web_lite_asset_download_failed" in line:
+        m_status=re.search(r'"status_code"\\s*:\\s*(\\d+)', line)
+        m_scope=re.search(r'"scope"\\s*:\\s*"([^"]+)"', line)
+        m_aid=re.search(r'"account_id"\\s*:\\s*(\\d+)', line)
+        m_err=re.search(r'"error"\\s*:\\s*"([^"]*)"', line)
+        asset_fails.append({{
+            "account_id": int(m_aid.group(1)) if m_aid else None,
+            "scope": m_scope.group(1) if m_scope else None,
+            "status_code": int(m_status.group(1)) if m_status else None,
+            "error": (m_err.group(1)[:120] if m_err else None),
+        }})
+    if "egress_feedback" in line or "egress_node" in line.lower():
+        if "403" in line or "Forbidden" in line:
+            egress_feedback.append(line[-240:])
+asset403=sum(1 for x in asset_fails if x.get("status_code")==403)
+print(json.dumps({{
+    "pool_hits": pool_hits,
+    "asset_fails": asset_fails[-20:],
+    "asset403": asset403,
+    "fallbacks": fallbacks[-10:],
+    "egress_feedback": egress_feedback[-5:],
+}}, ensure_ascii=False))
+"""
+    out = run_remote_python(script, remote_name="_parse_image_logs.py", timeout=45)
+    return json.loads(out.splitlines()[-1])
 
 
 def panda_image_once(

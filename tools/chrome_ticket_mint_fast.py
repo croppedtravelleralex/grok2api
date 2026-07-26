@@ -16,7 +16,13 @@ ROOT = TOOLS.parent
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
-from chrome_ticket_experiment_lib import effective_mint_target, load_accounts, log_event, mint_headroom, push_ticket  # noqa: E402
+from chrome_ticket_experiment_lib import (  # noqa: E402
+    log_event,
+    mint_headroom,
+    parse_account_ids_from_arg,
+    push_ticket,
+    resolve_mint_accounts,
+)
 
 
 def mint_one_process(account_id: int, sso_file: str, timeout: int) -> dict:
@@ -57,7 +63,11 @@ def mint_parallel(account_ids: list[int], sso_file: Path, timeout: int, workers:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Accelerated Chrome ticket minting")
-    parser.add_argument("--account-ids", required=True, help="comma-separated")
+    parser.add_argument(
+        "--account-ids",
+        default="dispatch",
+        help="comma-separated ids, or 'dispatch' for image dispatch pool only",
+    )
     parser.add_argument("--sso-file", type=Path, default=ROOT / ".tmp" / "web-sso-canary-1467.json")
     parser.add_argument("--workers", type=int, default=1, help="parallel browser processes (up to 6)")
     parser.add_argument("--target-per-account", type=int, default=0, help="cap mint count per account by Imagine quota (0=unlimited batch)")
@@ -66,9 +76,10 @@ def main() -> int:
     args = parser.parse_args()
     if args.headless:
         os.environ["GROK_PW_HEADLESS"] = "1"
-    ids = [int(x.strip()) for x in args.account_ids.split(",") if x.strip()]
-    accounts = load_accounts(args.sso_file)
-    ids = [i for i in ids if i in accounts]
+    ids = resolve_mint_accounts(parse_account_ids_from_arg(args.account_ids), sso_file=args.sso_file)
+    if not ids:
+        print(json.dumps({"count": 0, "reason": "no_dispatch_accounts_with_sso"}, ensure_ascii=False))
+        return 1
     if args.target_per_account > 0:
         capped: list[int] = []
         for aid in ids:

@@ -7,7 +7,8 @@
 3. 涉及上线顺序时读 [03-roadmap.md](./03-roadmap.md)。
 4. 涉及技术债时读 [04-improvement-backlog.md](./04-improvement-backlog.md)。
 5. 读当月日志，再进入相关代码、配置、数据库和命令验证。
-6. 涉及 Web Lite/Imagine/10 并发时，必须先读 [09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md](./09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md)，按其中 `1→2→4→10` 门禁接续。
+6. 涉及 Web Lite/Imagine/10 并发时，必须先读 [09](./09-imagine-quota-model-state-and-10-concurrency-todos-2026-07-22.md)，按其中 `1→2→4→10` 门禁接续。
+7. 涉及 **票池 × dispatch 稳定销票** 时读 [20](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md)。
 
 ## 本地默认流程
 
@@ -16,12 +17,15 @@
 3. 前端至少执行 `cd frontend; pnpm lint; pnpm build`。
 4. 删除/导入/修复账号前先分类错误，不对 `invalid_grant` 做无意义重试。
 5. 不把 Token、Cookie、密码、代理口令写入日志、提交或维护文档。
+6. 涉及 Chrome 票/Imagine 实验时先读 [14](./14-chrome-ticket-lifecycle-experiments-2026-07-23.md)、[15](./15-chrome-ticket-cf403-ip-reframe-2026-07-23.md)、[16](./16-chrome-ticket-experiments-round2-2026-07-23.md)、**[20](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md)**（TicketReady / 销票槽位 / dispatch 进出规律）；**出错即停**，429 与票失效分开记。
 
 ## Panda 强制规则
 
 - 所有 Panda 操作必须使用 `panda-remote-ops` 流程。
 - **禁止在 Panda 上编译或构建**：不得 `go build` / 全量 `go test`、`docker build`、`pnpm build`、装构建依赖或生成镜像。Panda 只拉取并运行已构建产物。
 - 标准部署链：Windows 本机改代码并跑通测试 → push 到 GitHub（触发 Actions/GHCR）→ Panda `pull` 镜像并重建容器 → 按需清理 GHCR/临时产物；不在 Panda 留构建缓存。
+- **禁止** tar/scp 传源码或大包到 Panda 再 `go build` / `docker build`（2026-07-23 已出现过，已纠正）。
+- Admin 登录：Panda 存在 secrets、reset 脚本、import `.tmp` 三套密码源风险；实验脚本用 `_panda_admin_token.py` 多路径 fallback；改密后必须三处同步（见 [16](./16-chrome-ticket-experiments-round2-2026-07-23.md)）。
 - 任何变更前报告：内存、负载/CPU、磁盘、服务健康、预算、canary、停止线和回滚。
 - Panda 不构建镜像；通过 GitHub Actions/GHCR 拉取本地已验证的产物。
 - 浏览器最多先启一个会话；账号刷新、额度同步和模型测试从并发 1 开始。
@@ -50,6 +54,8 @@
 - soft-stop 只做模型级降权，不污染账号全局健康或其他模型；成功偏好、未知、soft-stop 的排序也只作用于当前模型。
 - 模型状态持久化口径：成功=`available`，明确正额度但尚未真实成功=`quota_available`，无明确证据=`unknown`，无图终止=`soft_stop`，`usage_limit_reached`=`quota_exhausted`，401=`auth_failed`，最终 code 7/`anti_bot_rejected`=`signature_failed`。网络错误不得伪装成认证或签名失败。
 - 图池使用 Imagine 独立窗口和上述模型状态；聊天池使用 `auto/fast`。不要再用聊天 fast 剩余次数代表账号可生图次数。
+- **Imagine 销票（2026-07-26）**：`grok-imagine-image` 须有票；**TicketReady** = dispatch ∩ pin ∩ 有票 ∩ 额度新鲜。勿用 `available_tickets` 当并发数。架构与探针见 [20](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md)。
+- **routing.disableCooldown**：默认 `true` 时 egress/账号失败退避关闭；429 额度 block 仍生效。
 
 部署/重建顺序：
 

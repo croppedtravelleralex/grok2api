@@ -13,6 +13,20 @@
 | 图生图 / 视频 | ⏸ 模型已关；链路曾通但易撞额度冷却 |
 | `cf_clearance` / 阶段混 IP | ❌ 不可：握手与上传同属 `grok.com`，IP 必须一致 |
 | 代理组合正确切分 | `grok_web`=质量口；`grok_web_asset`=带宽口（CDN 下图） |
+| udeal 旋转池 `as.udealproxy.com:6666` | ❌ **禁止**生产使用（见下「采购政策」） |
+
+## 采购政策：禁止 udeal 旋转池
+
+> **生效：2026-07-24。** 适用于 Panda 生产 `grok_web` / `grok_web_asset` 及一切入库前筛池。
+
+| 规则 | 说明 |
+|------|------|
+| **禁止** | `as.udealproxy.com:6666` 旋转池；Desktop `udeal1000proxy.txt`；`session=` 粘滞批量转 HTTP 代理后入库 |
+| **原因** | 节点单价高；历史 `pass_app` **2–4%**（80 条仅 3 条过 CF；40 条仅 1 条）；粘滞 session 会漂移变 `cf_challenge` |
+| **允许** | 预验合格的 **固定粘滞住宅线**（当前：`70.39.164.200:30000` LA 口）；扩线须先 `tools/panda_zero_browser_http.py` → `probe_home` 过关再写 egress |
+| **禁止** | 未筛旋转池批量写入 `egress_nodes`；Webshare 作 `grok_web`（100% challenge） |
+
+验收门槛：`GET https://grok.com/` → 200 + `<title>Grok</title>`，无 `Just a moment`。
 
 ## 生产当前配置（panda `/opt/grok2api`）
 
@@ -58,12 +72,63 @@
 
 ## 带宽与文生图载荷（单口压测 + 生产样本）
 
+> **流量统计更新：2026-07-24。** 原始数据：`/tmp/g2a-udeal-bw.json`（`bw_udeal.sh`）；`tools/_panda_img_bw_stats.py`；`media_assets` 表。
+
+### 代理链路压测（07-21，LA `70.39.164.200:30000`）
+
+| 项目 | 方法 | 结果 |
+|------|------|------|
+| 下行串行 10MB ×3 | curl via proxy → Cloudflare `__down` | median **15.5 Mbps**（15.27–15.60） |
+| 下行 4 并发 ×5MB | 4 线程同时 curl | 合计 **16.5 Mbps**（单链路封顶，并发几乎不涨） |
+| 上行 5MB | curl POST → httpbin | **1.54 Mbps**（瓶颈） |
+
+### 生产出图体积（`media_assets`，kind=image）
+
+| 样本 | n | mean | p50 | min–max | 分辨率 |
+|------|---|------|-----|---------|--------|
+| 07-21 首测 | 34 | 170 KB | 153 KB | — | 784×1168 |
+| **07-24 复测** | 200 | **131 KB** | **129 KB** | 90–198 KB | 784×1168 / 1168×784 |
+
+**累计存储（≈ 出图下行流量下界）：**
+
+| 窗口 | 张数 | 总流量 |
+|------|------|--------|
+| 全量 | 306 | **41.8 MB** |
+| 近 24h | 179 | **22.9 MB** |
+
+生图墙钟（`generation_duration_ms`，n=200）：mean **9.8s**，p50 **9.1s**。
+
+### 单次 probe 带宽字段（工具已有，实验未落盘）
+
+`tools/_panda_image_probe.py` 在 API 200 后对返回 URL 测 `download_bytes` / `download_ms` / `download_mbps`。  
+`.tmp/chrome-ticket-experiments.jsonl` 中 **`download_mbps` 样本 = 0**（裸 GET media URL 常 403；实验只记了 `wall_ms`）。  
+**V-conc 3×10**、**M2 双并发** 带宽验证 **未跑完**。
+
+### 未统计 / 缺口
+
+| 缺项 | 说明 |
+|------|------|
+| udeal 供应商账单流量 | 未接 API |
+| SSE 上行字节 | 估算 KB 级，未逐请求计量 |
+| 出口实时吞吐 | 无 vnstat / 代理 access log |
+| 10 并发生产带宽 | 仅链路压测有数据 |
+
+### 推算（单张文生图 @ LA 口）
+
+| 阶段 | 流量 | 带宽占比 |
+|------|------|---------|
+| SSE 上行 JSON | 几 KB | 可忽略 |
+| 下图 ~130 KB JPEG | ~0.07s @ 15.5 Mbps | 在 9s 墙钟里极小 |
+| 图生图上传（若开） | base64 ~230 KB | ~1.2s @ 1.54 Mbps |
+
+**结论：带宽不是当前瓶颈**；瓶颈是上游 SSE 墙钟 + 单出口 + 账号池。日均出图 ~180 张 ≈ **23 MB** 量级（不含探针/重试）。
+
 | 指标 | 值 |
 |------|-----|
 | 下行串行 10MB | ~15.5 Mbps |
 | 下行 4 并发合计 | ~16.5 Mbps（几乎不涨 → 单链路封顶） |
 | 上行 5MB | ~1.54 Mbps（瓶颈） |
-| Lite 出图体积（`media_assets` n=34） | mean **170KB** / p50 **153KB** / 样例 **171.35KB** JPEG |
+| Lite 出图体积 | mean **~131KB** / p50 **~129KB** JPEG |
 | 分辨率 | **784×1168**（或对调，约 1K 竖/横图） |
 
 时间估算（单口）：
@@ -106,6 +171,115 @@
 
 代码已分 scope：`downloadImage` → `ScopeWebAsset`；chat/upload/imagine → `ScopeWeb`。
 
+## 出口冷却算法与统计（2026-07-24）
+
+> 数据源：Panda `backend.db` `egress_nodes` / `request_audits`；`docker logs grok2api --since 72h`；本机 `.tmp/chrome-ticket-experiments.jsonl`（54 条）。  
+> 代码：`backend/internal/infra/egress/manager.go` → `FeedbackForScope`。
+
+### 冷却算法（grok2api 自管，与票无关）
+
+| 结果 | 行为 |
+|------|------|
+| 2xx–3xx | `failure_count=0`，清 `cooldown_until`，health↑ |
+| **401 / 429** | **忽略**，不污染出口 |
+| **403** | `failure_count++`，health×0.7，**不设** `cooldown_until` |
+| 5xx / 传输错误 / 其他 | `failure_count++`，进入指数冷却（**2026-07-25 起**：`routing.disableCooldown=true` 时 **不写** `cooldown_until`） |
+
+| 连续失败次数（disableCooldown=false 时） | 冷却时长 |
+|--------------------------|---------|
+| **1** | **30s** |
+| 2 | 60s |
+| 3 | 2min |
+| 4 | 4min |
+| ≥5 | **10min**（封顶） |
+
+**要点（历史）**：第 1 次可计数失败即冷却。`downloadImage` 的 asset 403 **不调** `Feedback`。
+
+当前生产仅 **node 110**（`grok_web`）启用。`disableCooldown=true` 时一般不再因冷却出现「无 grok_web 出口」；若仍 503 则查节点 enabled/health 或单节点故障。
+
+### 生产环境基线
+
+| 参数 | 值 |
+|------|-----|
+| 出口 | `udeal-la-grok_web`（110）、`udeal-la-grok_web_asset`（111），同 IP `70.39.164.200:30000` |
+| `WebConcurrency` | **2**（SSE/chat 闸门） |
+| `AssetConcurrency` | **8** |
+| `ExpandConcurrency` | **2** |
+| 流水线槽位 | 10（受 `WebConcurrency` 限制） |
+| 启用 Web 账号 | **20**（全粘滞同一出口） |
+| 维护探针 | ~15s 一轮（`DispatchInterval`） |
+
+### 72h docker 日志分类
+
+| 类型 | 次数 | 触发 egress 冷却？ |
+|------|------|-------------------|
+| `maintenance_probe_failed` 429 | **1749** | 否（acct 88 连打为主） |
+| `maintenance_probe_failed` 401 | 772 | 否 |
+| `maintenance_probe_failed` egress 不可用 | **2** | 症状 |
+| `dispatch_probe_failed` soft_stop / render | **17** | 可能（见下 12:10 事件） |
+| `dispatch_probe_failed` egress 不可用 | **1** | 症状 |
+| `web_lite_image_not_found` (soft_stop) | 21 | 否 |
+| `asset_download_failed` 403 | 12 | 否（acct 1467/92 各 6） |
+| `egress_unavailable` 文案总计 | **10** | — |
+| `image_upstream_failed` → egress | **1** | 是 |
+| `image_upstream_failed` → 无可用账号 | 36 | 否（账号池） |
+| `image_upstream_failed` → 账号冷却 | 7 | 否 |
+
+### 48h `request_audits`（grok_web / image）
+
+| status | 次数 | 备注 |
+|--------|------|------|
+| 200 | 266 | 24h 成功 44 次，墙钟 avg **~9.8s**（7.6–14.6s） |
+| 503 | 124 | **绝大多数为账号池**，非 egress |
+| 429 | 26 | Imagine 限速 |
+| 403 | 4 | — |
+
+**07-24 实验时段（01–05 UTC+8 连续小时）：** 36 次 200、0 次 503 → 单口在串行/低并发下稳定。
+
+### 有记录的 egress 冷却事件（07-24 12:10）
+
+```
+12:10:34  dispatch_probe acct=493  「连接失败: Some content couldn't be rendered.」
+12:10:38  maintenance_probe       「当前没有可用的 grok_web 出口节点」
+12:10:49  dispatch_probe            同上
+12:10:53  maintenance_probe       同上
+12:27:09  生图 API 200             ← 冷却后恢复
+```
+
+→ 约 **1 次上游失败 → 30s 冷却**（与算法一致）。当日 06:14 实验曾人工清 110/111 的 `cooldown_until`（`.tmp/_fix_egress.py`）。
+
+### 票实验 jsonl（54 条，本机 Chrome 开票 → Panda 消费）
+
+| 指标 | 值 |
+|------|-----|
+| http=200 + pool_hit | **20** |
+| http=429 + pool_hit | **8**（票有效，账号限速） |
+| http=503 + pool_hit | **6**（票命中，**账号池**空） |
+| http=503 无 pool_hit | **6** |
+| http=502 + pool_hit | **1**（V-serial-5） |
+
+| 批次 | 并发 | 结果 |
+|------|------|------|
+| V-serial 1–4 | 1 | pass（中间偶发账号 503，重试后 200） |
+| V-serial-5 | 1 | 502+pool_hit |
+| S-10m / 30m / 60m | 1 | pass |
+| R-delay 0/1m/5m/30m | 1（每档双 probe） | 全 pass |
+| M2 | **2** | 全 429，未验带宽 |
+| V-conc 3×10 | — | 未跑 |
+
+### 503 排障分层（必读）
+
+| 错误文案 | 层 | 处理 |
+|---------|-----|------|
+| `当前没有可用的 grok_web 出口节点` | **出口冷却** | 等 30s–10min 或清 `egress_nodes.cooldown_until` |
+| `没有可用上游账号` | **账号调度** | pin 须在图池 / 重启 grok2api / 查 lease |
+| `可用上游账号正在冷却` | **账号冷却** | 换号或等账号 `cooldown_until` |
+| 429 code8 / usage_limit | **Imagine 限速** | 换号；**不**清出口 |
+
+### Webshare 历史（已禁用，验证算法）
+
+`failure_count` 分布：0×16、1×9、2×5、3–5 各 1、13×1、17×1；`last_error` 均为 `transport error`。多次失败后冷却仍封顶 10min。
+
 ## 脚本与证据
 
 | 路径 | 用途 |
@@ -126,3 +300,5 @@
 3. `refresh-quotas` 不接受 ids；用「只 enable 目标号」隔离
 4. 账号列表 `limit` 无效、固定 pageSize=20，翻页用 `page=`
 5. 正式部署仍走 git/GHCR；本轮为 panda 受控 `.env`/egress/设置热改，未改业务镜像
+6. **禁止** udeal 旋转池入库；扩出口只加预验合格的固定粘滞线
+7. 503 先分清「出口冷却」vs「账号池」再动手（见上表）
