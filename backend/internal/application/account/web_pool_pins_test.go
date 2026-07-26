@@ -11,12 +11,20 @@ func (s staticChromeTicketCounts) AvailableCounts(context.Context) map[uint64]in
 	return map[uint64]int64(s)
 }
 
-func TestImageDispatchPinTargetIDsPrefersTicketHolders(t *testing.T) {
+// pin 不再按票收窄：票只影响选号排序，不该缩小可选账号集合，
+// 否则运行时可选账号会被票的分布绑架（详见 imageDispatchPinTargetIDs 注释）。
+func TestImageDispatchPinTargetIDsKeepsFullDispatchWithTickets(t *testing.T) {
 	service := NewService(nil, nil, nil, nil, nil, nil, nil)
 	service.SetChromeTicketCountsSource(staticChromeTicketCounts{86: 2, 227: 1})
-	got := service.imageDispatchPinTargetIDs(context.Background(), []uint64{86, 87, 227, 250})
-	if len(got) != 2 || got[0] != 86 || got[1] != 227 {
-		t.Fatalf("pin target = %#v, want ticket holders only", got)
+	dispatch := []uint64{86, 87, 227, 250}
+	got := service.imageDispatchPinTargetIDs(context.Background(), dispatch)
+	if len(got) != len(dispatch) {
+		t.Fatalf("pin target = %#v, want full dispatch %#v", got, dispatch)
+	}
+	for i := range dispatch {
+		if got[i] != dispatch[i] {
+			t.Fatalf("pin target = %#v, want full dispatch %#v", got, dispatch)
+		}
 	}
 }
 

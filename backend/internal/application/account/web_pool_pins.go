@@ -176,31 +176,13 @@ func diffUint64Slices(from, subtract []uint64) []uint64 {
 	return out
 }
 
-func (s *Service) imageDispatchPinTargetIDs(ctx context.Context, dispatchIDs []uint64) []uint64 {
-	if s.chromeTicketCounts == nil || len(dispatchIDs) == 0 {
-		return dispatchIDs
-	}
-	counts := s.chromeTicketCounts.AvailableCounts(ctx)
-	if len(counts) == 0 {
-		return dispatchIDs
-	}
-	dispatchSet := make(map[uint64]struct{}, len(dispatchIDs))
-	for _, id := range dispatchIDs {
-		dispatchSet[id] = struct{}{}
-	}
-	ticketIDs := make([]uint64, 0, len(counts))
-	for id, count := range counts {
-		if count <= 0 {
-			continue
-		}
-		if _, ok := dispatchSet[id]; !ok {
-			continue
-		}
-		ticketIDs = append(ticketIDs, id)
-	}
-	if len(ticketIDs) == 0 {
-		return dispatchIDs
-	}
-	sort.Slice(ticketIDs, func(i, j int) bool { return ticketIDs[i] < ticketIDs[j] })
-	return ticketIDs
+// imageDispatchPinTargetIDs 返回 grok-imagine-image 应 pin 的账号集合，即整个
+// dispatch 集合。
+//
+// 早期实现会把 pin 收窄到「持票账号」，但这会让运行时可选账号被票的分布绑架：
+// dispatch 合格几十个号、pin 后只剩少数几个，压测即出现「当前没有可用的上游账号」。
+// 票已不再是生图的必要条件（无票路径实测可出图），且选号层本身就对持票账号加权，
+// 因此这里不再按票收窄——票只影响「优先选谁」，不该影响「能选谁」。
+func (s *Service) imageDispatchPinTargetIDs(_ context.Context, dispatchIDs []uint64) []uint64 {
+	return dispatchIDs
 }

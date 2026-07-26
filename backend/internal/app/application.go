@@ -483,6 +483,10 @@ func (a *Application) Run(ctx context.Context) error {
 		a.runWebMaintenanceProbe(taskCtx)
 		return nil
 	})
+	startBackground("image_dispatch_pin_sync", func(taskCtx context.Context) error {
+		a.runImageDispatchPinSync(taskCtx)
+		return nil
+	})
 	startBackground("video_recovery", func(taskCtx context.Context) error {
 		a.gateway.RunVideoRecovery(taskCtx)
 		return nil

@@ -25,6 +25,12 @@ const (
 	modelCatalogStaleAfter   = 24 * time.Hour
 	modelCatalogCatchupEvery = 6 * time.Hour
 
+	// pin 决定 grok-imagine-image 能抽到哪些账号。此前只有手工 HTTP 入口会重算，
+	// pin 因而长期冻结在某次同步时的集合上：dispatch 合格几十个号，运行时却只剩
+	// 少数几个可选，进而出现「当前没有可用的上游账号」。
+	imageDispatchPinSyncInitialDelay = 45 * time.Second
+	imageDispatchPinSyncInterval     = 5 * time.Minute
+
 	defaultWebQuotaStartupLimit        = 100
 	defaultWebQuotaCatchupLimit        = 100
 	defaultWebQuotaCatchupInitialDelay = 5 * time.Second
@@ -494,6 +500,34 @@ func (a *Application) runWebQuotaCatchup(ctx context.Context) {
 			a.logger.Warn("web_quota_stale_catchup_failed", "error", err)
 		}
 		resetTimer(timer, webQuotaCatchupInterval())
+	}
+}
+
+// runImageDispatchPinSync 周期性把 grok-imagine-image 的 pin 与当前四池 dispatch
+// 对齐。SyncImageDispatchPins 自身幂等：先比对目标集合，仅在变化时写库并重建索引。
+func (a *Application) runImageDispatchPinSync(ctx context.Context) {
+	timer := time.NewTimer(imageDispatchPinSyncInitialDelay)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		runCtx, cancel := context.WithTimeout(ctx, time.Minute)
+		result, err := a.accounts.SyncImageDispatchPins(runCtx)
+		cancel()
+		switch {
+		case err != nil && ctx.Err() == nil:
+			a.logger.Warn("image_dispatch_pin_sync_failed", "error", err)
+		case err == nil && result.Changed:
+			a.logger.Info("image_dispatch_pin_synced",
+				"pinned", len(result.TargetIDs),
+				"added", len(result.AddedIDs),
+				"removed", len(result.RemovedIDs),
+			)
+		}
+		resetTimer(timer, imageDispatchPinSyncInterval)
 	}
 }
 
