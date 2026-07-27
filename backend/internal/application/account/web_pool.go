@@ -13,7 +13,6 @@ const (
 	webImagePoolCap = 50
 	webChatPoolCap  = 50
 	imagineUpstream = "grok-imagine-image"
-	imagineQuotaFreshTTL = 30 * time.Minute
 )
 
 // WebPoolSnapshot 描述图池 / 对话池当前调度位。
@@ -224,16 +223,11 @@ func findModelState(states []accountdomain.ModelState, upstreamModel string) *ac
 }
 
 func imagineQuotaFresh(window *accountdomain.QuotaWindow, now time.Time) bool {
-	if window == nil || window.Mode != "imagine" {
-		return false
-	}
-	if window.Source != accountdomain.QuotaSourceUpstream || window.Total <= 0 || window.Remaining <= 0 {
-		return false
-	}
-	if window.SyncedAt == nil || now.Sub(*window.SyncedAt) > imagineQuotaFreshTTL {
-		return false
-	}
-	return true
+	return accountdomain.ImagineKnownQuotaFresh(window, now)
+}
+
+func imagineQuotaUnknownFresh(window *accountdomain.QuotaWindow, now time.Time) bool {
+	return accountdomain.ImagineQuotaUnknownFresh(window, now)
 }
 
 func webPoolCandidateFromContext(input WebPoolContext, now time.Time) webPoolCandidate {
@@ -253,19 +247,19 @@ func imageDispatchAdmissible(candidate webPoolCandidate, now time.Time) bool {
 		return false
 	}
 	if candidate.imagineBlocked {
-		positive := candidate.imagineWindow != nil && candidate.imagineWindow.Total > 0 && candidate.imagineWindow.Remaining > 0
-		if !positive {
+		window := candidate.imagineWindow
+		if window == nil || !accountdomain.ImagineQuotaKnownPositive(window.Total, window.Remaining) {
 			return false
 		}
 	}
-	if !imagineQuotaFresh(candidate.imagineWindow, now) {
+	if !accountdomain.ImagineDispatchQuotaAdmissible(candidate.imagineWindow, candidate.modelState, now) {
 		return false
 	}
 	if candidate.modelState == nil {
 		return false
 	}
 	switch candidate.modelState.Status {
-	case accountdomain.ModelStatusAvailable, accountdomain.ModelStatusQuotaAvailable:
+	case accountdomain.ModelStatusAvailable, accountdomain.ModelStatusQuotaAvailable, accountdomain.ModelStatusUnknown:
 		return true
 	default:
 		return false
@@ -296,13 +290,16 @@ func filterImageDispatchIDsWithGenerations(ids []uint64, windowsByAccount map[ui
 	out := make([]uint64, 0, len(ids))
 	for _, id := range ids {
 		imagine := findQuotaWindow(windowsByAccount[id], "imagine")
-		if !imagineQuotaFresh(imagine, now) {
+		if imagineQuotaFresh(imagine, now) {
+			if gens, ok := accountdomain.ImagineGenerations(imagine.Remaining, imagine.Total); ok && gens > 0 {
+				out = append(out, id)
+			}
 			continue
 		}
-		if gens, ok := accountdomain.ImagineGenerations(imagine.Remaining, imagine.Total); !ok || gens <= 0 {
-			continue
+		if imagineQuotaUnknownFresh(imagine, now) {
+			// 闸门 0/0 时无法读剩余次数，pin 深度按「至少 1 次」保守计入。
+			out = append(out, id)
 		}
-		out = append(out, id)
 	}
 	return out
 }
@@ -311,21 +308,20 @@ func imagePoolEligible(candidate webPoolCandidate, now time.Time) bool {
 	if !candidate.enabled || !candidate.active || candidate.cooling {
 		return false
 	}
-	positiveQuota := candidate.imagineWindow != nil && candidate.imagineWindow.Total > 0 && candidate.imagineWindow.Remaining > 0
+	window := candidate.imagineWindow
+	positiveQuota := window != nil && accountdomain.ImagineQuotaKnownPositive(window.Total, window.Remaining)
 	if candidate.imagineBlocked && !positiveQuota {
 		return false
 	}
-	if window := candidate.imagineWindow; window != nil && window.Total > 0 {
-		if window.Remaining <= 0 {
-			return false
-		}
-		// 新同步到的正额度能够解除旧的 quota_exhausted 结果。
-		if candidate.modelState != nil && candidate.modelState.Status == accountdomain.ModelStatusQuotaExhausted {
-			return imagineQuotaFresh(candidate.imagineWindow, now)
-		}
+	if window != nil && accountdomain.ImagineQuotaExhausted(window.Total, window.Remaining) {
+		return false
+	}
+	if window != nil && positiveQuota &&
+		candidate.modelState != nil && candidate.modelState.Status == accountdomain.ModelStatusQuotaExhausted {
+		return imagineQuotaFresh(window, now)
 	}
 	if candidate.modelState == nil {
-		return positiveQuota && imagineQuotaFresh(candidate.imagineWindow, now)
+		return imagineQuotaFresh(window, now)
 	}
 	switch candidate.modelState.Status {
 	case accountdomain.ModelStatusAuthFailed, accountdomain.ModelStatusSignatureFailed, accountdomain.ModelStatusQuotaExhausted:
@@ -334,19 +330,16 @@ func imagePoolEligible(candidate webPoolCandidate, now time.Time) bool {
 		if candidate.modelState.CooldownUntil != nil && candidate.modelState.CooldownUntil.After(now) {
 			return false
 		}
-		return positiveQuota && imagineQuotaFresh(candidate.imagineWindow, now)
+		return imagineQuotaFresh(window, now)
 	case accountdomain.ModelStatusAvailable:
-		if positiveQuota && imagineQuotaFresh(candidate.imagineWindow, now) {
+		if imagineQuotaFresh(window, now) {
 			return true
 		}
-		if candidate.modelState.LastSuccessAt != nil &&
-			now.Sub(*candidate.modelState.LastSuccessAt) <= imagineQuotaFreshTTL &&
-			positiveQuota {
-			return true
-		}
-		return false
+		return imagineQuotaUnknownFresh(window, now)
+	case accountdomain.ModelStatusQuotaAvailable, accountdomain.ModelStatusUnknown:
+		return imagineQuotaFresh(window, now) || imagineQuotaUnknownFresh(window, now)
 	default:
-		return positiveQuota && imagineQuotaFresh(candidate.imagineWindow, now)
+		return imagineQuotaFresh(window, now)
 	}
 }
 

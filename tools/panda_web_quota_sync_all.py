@@ -11,8 +11,18 @@ from pathlib import Path
 BASE = os.environ.get("GROK2API_ADMIN_BASE", "http://127.0.0.1:18000/api/admin/v1").rstrip("/")
 
 
+def load_password() -> str:
+    env = os.environ.get("GROK2API_ADMIN_PASSWORD", "").strip()
+    if env:
+        return env
+    path = Path(os.environ.get("GROK2API_ADMIN_PASSWORD_FILE", "/root/.secrets/grok2api-admin-password"))
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    raise SystemExit("admin password missing")
+
+
 def main() -> None:
-    pw = Path("/root/.secrets/grok2api-admin-password").read_text(encoding="utf-8").strip()
+    pw = load_password()
     login = urllib.request.Request(
         f"{BASE}/auth/login",
         data=json.dumps({"username": "admin", "password": pw}).encode(),

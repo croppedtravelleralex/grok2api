@@ -154,6 +154,13 @@ id=111 name=udeal-la-grok_web_asset enabled=1
 
 复现：`tools/analyze_conc_timing.py`、`tools/panda_image_conc_canary.py`（`GROK2API_GROUPS=10,20`）。
 
+### 8.3 压测后 dispatch 归零（2026-07-27 下午）
+
+- **现象**：`image.dispatch=0`，API 503；四池 `image.recovery=671`（非 dead）。
+- **根因**：`free-usage-gates` 全池 imagine `0/0` 后，调度仍要求 `total>0 && remaining>0`；Lite 实测多号仍可 200 出图。
+- **结论**：闸门 0/0 = 上限未知；Lite 不回报剩余次数。修复口径与运维脚本见 [23-lite-vs-imagine-quota-2026-07-27.md](./23-lite-vs-imagine-quota-2026-07-27.md)。
+- **代码**：`ImagineDispatchQuotaAdmissible` + 图池准入对齐（待 git → GHCR 部署）。
+
 ---
 
 ## 6. 生产变更清单（2026-07-27）

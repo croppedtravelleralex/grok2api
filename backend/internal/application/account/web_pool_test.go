@@ -43,6 +43,14 @@ func TestImagePoolEligibilityRequiresFreshPositiveImagineQuota(t *testing.T) {
 		want      bool
 	}{
 		{name: "zero over zero is blocked", candidate: webPoolCandidate{enabled: true, active: true, imagineWindow: freshWindow(0, 0)}, want: false},
+		{name: "zero over zero quota available awaits probe", candidate: webPoolCandidate{
+			enabled: true, active: true, imagineWindow: freshWindow(0, 0),
+			modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusQuotaAvailable},
+		}, want: true},
+		{name: "zero over zero recent lite success", candidate: webPoolCandidate{
+			enabled: true, active: true, imagineWindow: freshWindow(0, 0),
+			modelState: &accountdomain.ModelState{Status: accountdomain.ModelStatusAvailable, LastSuccessAt: timePointer(now.Add(-10 * time.Minute))},
+		}, want: true},
 		{name: "known zero is exhausted", candidate: webPoolCandidate{enabled: true, active: true, imagineWindow: freshWindow(10, 0)}, want: false},
 		{name: "known positive is available", candidate: webPoolCandidate{enabled: true, active: true, imagineWindow: freshWindow(10, 3)}, want: true},
 		{name: "stale positive with unknown state is blocked", candidate: webPoolCandidate{
@@ -94,6 +102,19 @@ func TestImageDispatchAdmissibleStricterThanEligible(t *testing.T) {
 	}
 	if !imageDispatchAdmissible(available, now) {
 		t.Fatal("dispatch should accept available + fresh quota")
+	}
+	unknownRecent := webPoolCandidate{
+		enabled: true, active: true,
+		imagineWindow: &accountdomain.QuotaWindow{
+			Mode: "imagine", Total: 0, Remaining: 0,
+			SyncedAt: &synced, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: synced,
+		},
+		modelState: &accountdomain.ModelState{
+			Status: accountdomain.ModelStatusAvailable, LastSuccessAt: timePointer(now.Add(-10 * time.Minute)),
+		},
+	}
+	if !imageDispatchAdmissible(unknownRecent, now) {
+		t.Fatal("dispatch should accept unknown gate with recent lite success")
 	}
 }
 

@@ -1376,18 +1376,5 @@ func mergeDispatchIDs(preferred, current []uint64) []uint64 {
 }
 
 func candidateImagineQuotaAdmissible(candidate account.RoutingCandidate, now time.Time) bool {
-	window := candidate.QuotaWindow
-	if window == nil || window.Mode != "imagine" {
-		return false
-	}
-	if window.Source != account.QuotaSourceUpstream {
-		return false
-	}
-	if window.Total <= 0 || window.Remaining <= 0 {
-		return false
-	}
-	if window.SyncedAt == nil || now.Sub(*window.SyncedAt) > imagineQuotaFreshTTL {
-		return false
-	}
-	return true
+	return account.ImagineDispatchQuotaAdmissible(candidate.QuotaWindow, candidate.ModelState, now)
 }

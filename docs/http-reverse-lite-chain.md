@@ -106,7 +106,7 @@ Mihomo 127.0.0.1:7897
 | `windowSizeSeconds` | 是 | `ResetAt ≈ now+window`（推算） |
 | Imagine 专用次数 | **是** | `GET /rest/usage/free-usage-gates` → `imagine.allowance/remaining`，字段可能是字符串或数值 |
 | Imagine 重置时间 | 否 | 上游未返回窗口秒数或绝对 ResetAt，不得伪造“每日几点刷新” |
-| Imagine `0/0` | 上限未知 | 历史 Lite 成功账号也可能返回 `0/0`；不能据此判定耗尽 |
+| Imagine `0/0` | 上限未知 | 历史 Lite 成功账号也可能返回 `0/0`；不能据此判定耗尽。剩余次数须靠闸门正数、Lite 探针或近期成功证据；见 [23-lite-vs-imagine-quota-2026-07-27.md](./23-lite-vs-imagine-quota-2026-07-27.md) |
 
 ## 性能开销（实测口径）
 

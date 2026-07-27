@@ -112,7 +112,7 @@ func (p *stageAccountProvider) acquire(ctx context.Context, run *imagepipelineap
 				lastErr = refreshErr
 				continue
 			}
-			if refreshed.Total <= 0 || refreshed.Remaining <= 0 {
+			if accountdomain.ImagineQuotaExhausted(refreshed.Total, refreshed.Remaining) {
 				lease.Release()
 				excluded[lease.Credential.ID] = true
 				p.excluded[lease.Credential.ID] = true

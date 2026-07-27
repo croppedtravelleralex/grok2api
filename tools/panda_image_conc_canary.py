@@ -80,6 +80,9 @@ SHORT_PROMPTS = [
 
 
 def load_admin_password() -> str | None:
+    env = os.environ.get("GROK2API_ADMIN_PASSWORD", "").strip()
+    if env:
+        return env
     for path in (
         Path("/root/.secrets/grok2api-admin-password"),
         Path(os.environ.get("GROK2API_ADMIN_PASSWORD_FILE", "")),
@@ -105,7 +108,7 @@ def admin_token() -> str | None:
         return payload.get("data", payload)["tokens"]["accessToken"]
 
 
-def fetch_timeline(token: str, window: str = "10m") -> list[dict]:
+def fetch_timeline(token: str, window: str = "30m") -> list[dict]:
     req = urllib.request.Request(
         f"{BASE}/api/admin/v1/image-timeline?window={window}",
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
