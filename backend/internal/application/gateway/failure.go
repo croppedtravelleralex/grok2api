@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -225,4 +226,35 @@ func truncateFailureCode(value string) string {
 		return value
 	}
 	return value[:100]
+}
+
+type imagine429Policy struct {
+	QuotaExhausted bool
+	TransientHeavy bool
+}
+
+func classifyImagine429(body []byte, failure *UpstreamFailure) imagine429Policy {
+	policy := imagine429Policy{}
+	if failure != nil {
+		if failure.ModelQuotaExhausted || strings.EqualFold(failure.UpstreamCode, "usage_limit_reached") {
+			policy.QuotaExhausted = true
+			return policy
+		}
+	}
+	text := strings.ToLower(string(body))
+	if strings.Contains(text, "usage_limit_reached") || strings.Contains(text, "usage limit reached") {
+		policy.QuotaExhausted = true
+		return policy
+	}
+	if strings.Contains(text, "heavy usage") || strings.Contains(text, "too many requests") {
+		policy.TransientHeavy = true
+	}
+	return policy
+}
+
+func imagineTransient429Cooldown(retryAfter time.Duration) time.Duration {
+	if retryAfter > 0 {
+		return min(retryAfter, 2*time.Minute)
+	}
+	return 45 * time.Second
 }

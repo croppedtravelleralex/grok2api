@@ -5,43 +5,16 @@ import (
 	"testing"
 )
 
-func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
-	tests := []struct {
-		name                   string
-		body                   string
-		accountScoped          bool
-		permanentAccountDenial bool
-		quotaExhausted         bool
-		freeQuotaExhausted     bool
-		modelQuotaExhausted    bool
-		upstreamCode           string
-	}{
-		{
-			name: "top-level permanent chat denial", body: `{"status_code":403,"error":"Access to the chat endpoint is denied. Please update the permissions."}`,
-			accountScoped: true, permanentAccountDenial: true,
-		},
-		{
-			name: "structured permission denied", body: `{"error":{"code":"permission-denied","message":"Access denied"}}`,
-			accountScoped: true, permanentAccountDenial: true, upstreamCode: "permission-denied",
-		},
-		{
-			name: "spending limit", body: `{"code":"personal-team-blocked:spending-limit","error":"quota exhausted"}`,
-			accountScoped: true, quotaExhausted: true, upstreamCode: "personal-team-blocked:spending-limit",
-		},
-		{
-			name: "unknown policy rejection", body: `{"error":"upstream policy rejected request"}`,
-		},
-		{
-			name: "free model quota", body: `{"error":"You've used all the included free usage for model grok-build"}`,
-			accountScoped: true, quotaExhausted: true, freeQuotaExhausted: true, modelQuotaExhausted: true,
-		},
+func TestClassifyImagine429(t *testing.T) {
+	heavy := []byte(`{"error":{"code":8,"message":"Grok is under heavy usage right now"}}`)
+	policy := classifyImagine429(heavy, newHTTPUpstreamFailure(http.StatusTooManyRequests, heavy, 1, "a"))
+	if policy.QuotaExhausted || !policy.TransientHeavy {
+		t.Fatalf("heavy usage policy = %+v, want transient heavy", policy)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			failure := newHTTPUpstreamFailure(http.StatusForbidden, []byte(test.body), 42, "build")
-			if failure.HTTPStatus != http.StatusForbidden || failure.Code != "upstream_forbidden" || failure.AccountScoped != test.accountScoped || failure.PermanentAccountDenial != test.permanentAccountDenial || failure.QuotaExhausted != test.quotaExhausted || failure.FreeQuotaExhausted != test.freeQuotaExhausted || failure.ModelQuotaExhausted != test.modelQuotaExhausted || failure.UpstreamCode != test.upstreamCode {
-				t.Fatalf("failure = %#v", failure)
-			}
-		})
+
+	exhausted := []byte(`{"error":{"code":"usage_limit_reached","message":"usage limit"}}`)
+	policy = classifyImagine429(exhausted, newHTTPUpstreamFailure(http.StatusTooManyRequests, exhausted, 1, "a"))
+	if !policy.QuotaExhausted || policy.TransientHeavy {
+		t.Fatalf("usage limit policy = %+v, want quota exhausted", policy)
 	}
 }

@@ -870,6 +870,30 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 			response, err = execute(attemptCtx, adapter, accountdomain.Credential{}, route.UpstreamModel)
 			timing.markUpstream(time.Since(upstreamStart))
 			if err == nil {
+				if response != nil && response.StatusCode == http.StatusTooManyRequests && attempt+1 < attempts {
+					accountID := pipelineAttemptAccountID(pipelineRun)
+					body, _ := readRetryableBody(response.Body)
+					retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
+					if accountID != 0 {
+						policy := classifyImagine429(body, newHTTPUpstreamFailure(http.StatusTooManyRequests, body, accountID, ""))
+						if policy.QuotaExhausted {
+							modelRetry := retryAfter
+							if modelRetry <= 0 {
+								modelRetry = 15 * time.Minute
+							}
+							s.selector.MarkModelQuotaExhausted(ctx, accountdomain.Credential{ID: accountID}, route.UpstreamModel, modelRetry)
+							if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow && quotaMode != "" {
+								_, _ = s.accounts.ReconcileWebRateLimit(ctx, accountID, quotaMode, retryAfter)
+							}
+						} else {
+							cooldown := imagineTransient429Cooldown(retryAfter)
+							s.selector.MarkFailure(ctx, accountdomain.Credential{ID: accountID}, http.StatusTooManyRequests, cooldown)
+						}
+						stageExcluded[accountID] = true
+					}
+					response.Body = io.NopCloser(bytes.NewReader(body))
+					continue
+				}
 				stagedErr = nil
 				break
 			}
@@ -1000,19 +1024,23 @@ func (s *Service) executeImage(ctx context.Context, requestID string, key client
 			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
 			body, _ := readRetryableBody(response.Body)
 			failure := newHTTPUpstreamFailure(http.StatusTooManyRequests, body, credential.ID, credential.Name)
-			if failure.ModelQuotaExhausted || strings.EqualFold(failure.UpstreamCode, "usage_limit_reached") {
+			policy := classifyImagine429(body, failure)
+			if policy.QuotaExhausted {
 				modelRetry := retryAfter
 				if modelRetry <= 0 {
 					modelRetry = 15 * time.Minute
 				}
 				s.selector.MarkModelQuotaExhausted(ctx, credential, route.UpstreamModel, modelRetry)
 			}
-			if quotaKind, _ := s.providers.QuotaKind(credential.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode != "" {
+			if quotaKind, _ := s.providers.QuotaKind(credential.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode != "" && policy.QuotaExhausted {
 				exhausted, reconcileErr := s.accounts.ReconcileWebRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
 				s.selector.MarkQuotaStateChanged(credential.Provider)
 				if reconcileErr != nil || !exhausted {
 					s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
 				}
+			} else if policy.TransientHeavy || !policy.QuotaExhausted {
+				s.selector.MarkQuotaStateChanged(credential.Provider)
+				s.selector.MarkFailure(ctx, credential, response.StatusCode, imagineTransient429Cooldown(retryAfter))
 			} else {
 				s.selector.MarkQuotaStateChanged(credential.Provider)
 			}
