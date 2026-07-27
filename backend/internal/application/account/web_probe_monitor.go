@@ -151,11 +151,7 @@ func (s *Service) WebProbeStatus(ctx context.Context) (WebProbeStatus, error) {
 	status := s.webProbe.snapshot()
 	status.Budget = s.webProbeBudget.snapshot(s.now())
 	status.Config = s.webProbeEffectiveConfig()
-	pools, err := s.summarizeWebThreePools(ctx)
-	if err != nil {
-		return status, err
-	}
-	status.Pools = pools
+	status.Pools = s.summarizeWebThreePoolsFromIndex()
 	return status, nil
 }
 

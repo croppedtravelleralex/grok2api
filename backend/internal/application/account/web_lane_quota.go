@@ -40,29 +40,17 @@ func (s *Service) WebLaneQuotaSummary(ctx context.Context) (WebLaneQuotaSummary,
 
 // imageDispatchIDsWithGenerations 返回四池 dispatch 中、新鲜上游额度且生图次数 > 0 的账号。
 func (s *Service) imageDispatchIDsWithGenerations(ctx context.Context) ([]uint64, error) {
-	_, _, dispatchIDs, _, err := s.summarizeWebPools(ctx)
-	if err != nil {
-		return nil, err
-	}
+	s.ensureWebPoolIndexWarm(ctx)
+	dispatchIDs := s.imageDispatchIDsFromIndex()
 	if len(dispatchIDs) == 0 {
 		return nil, nil
 	}
 	windowsByAccount, err := s.accounts.GetQuotaWindows(ctx, dispatchIDs)
 	if err != nil {
-		return nil, err
+		return nil, mapRepositoryError(err)
 	}
 	now := s.now()
-	out := make([]uint64, 0, len(dispatchIDs))
-	for _, id := range dispatchIDs {
-		imagine := findQuotaWindow(windowsByAccount[id], "imagine")
-		if !imagineQuotaFresh(imagine, now) {
-			continue
-		}
-		if gens, ok := accountdomain.ImagineGenerations(imagine.Remaining, imagine.Total); !ok || gens <= 0 {
-			continue
-		}
-		out = append(out, id)
-	}
+	out := filterImageDispatchIDsWithGenerations(dispatchIDs, windowsByAccount, now)
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out, nil
 }

@@ -20,13 +20,13 @@ export function ChromeTicketPanel({ sseSlots: sseSlotsProp }: ChromeTicketPanelP
   const webProbeQuery = useQuery({
     queryKey: ["accounts", "web-probe"],
     queryFn: getWebProbeStatus,
-    staleTime: 5_000,
+    staleTime: 10_000,
   });
   const query = useQuery({
     queryKey: ["accounts", "chrome-tickets", "stats"],
     queryFn: getChromeTicketStats,
-    refetchInterval: 10_000,
-    staleTime: 8_000,
+    refetchInterval: 30_000,
+    staleTime: 20_000,
     retry: (failureCount, error) => {
       if (error instanceof ApiError && error.code === "chromeTicketPoolUnavailable") return false;
       return failureCount < 2;

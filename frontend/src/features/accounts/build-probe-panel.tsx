@@ -22,8 +22,8 @@ export function BuildProbePanel({ onCompleted }: BuildProbePanelProps) {
   const query = useQuery({
     queryKey: ["accounts", "build-probe"],
     queryFn: getBuildProbeStatus,
-    refetchInterval: 5_000,
-    staleTime: 4_000,
+    refetchInterval: 15_000,
+    staleTime: 10_000,
   });
   const purgeApplyMutation = useMutation({
     mutationFn: updateBuildProbePurgeApply,

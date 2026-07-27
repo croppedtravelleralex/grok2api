@@ -22,8 +22,8 @@ export function WebProbePanel({ onCompleted }: WebProbePanelProps) {
   const query = useQuery({
     queryKey: ["accounts", "web-probe"],
     queryFn: getWebProbeStatus,
-    refetchInterval: 5_000,
-    staleTime: 4_000,
+    refetchInterval: 15_000,
+    staleTime: 10_000,
   });
   const status = query.data;
 

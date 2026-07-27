@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, ClipboardPaste, Compass, Copy, Download, ExternalLink, FileUp, KeyRound, Link2, MoreHorizontal, Pencil, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, lazy, Suspense, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -67,7 +67,7 @@ import {
   type QuotaDTO,
 } from "@/features/accounts/accounts-api";
 import { AccountQuota, ConsoleQuota, WebQuota } from "@/features/accounts/account-quota";
-import { AccountTrends } from "@/features/accounts/account-trends";
+const AccountTrends = lazy(() => import("@/features/accounts/account-trends").then((module) => ({ default: module.AccountTrends })));
 import { BuildProbePanel } from "@/features/accounts/build-probe-panel";
 import { WebProbePanel } from "@/features/accounts/web-probe-panel";
 import { ChromeTicketPanel } from "@/features/accounts/chrome-ticket-panel";
@@ -601,7 +601,9 @@ export function AccountsPage() {
         <AccountMetricPanel icon={<TriangleAlert />} loading={summaryLoading} label={t("accounts.abnormalAccountCount")} value={summaryUnavailable ? "-" : formatNumber(abnormalAccounts, i18n.language, 0)} detail={t("accounts.abnormalAccountBreakdown", { recovering: formatNumber(recoveringAccounts, i18n.language, 0), attention: formatNumber(attentionAccounts, i18n.language, 0) })} />
       </section>
       {provider === "grok_web" ? <WebLaneQuotaPanel refreshKey={accountsQuery.dataUpdatedAt} /> : null}
-      <AccountTrends provider={provider} />
+      <Suspense fallback={<section className="rounded-lg bg-card p-4"><LoadingState /></section>}>
+        <AccountTrends provider={provider} />
+      </Suspense>
       <div className="space-y-6">
         <Tabs value={provider} onValueChange={(value) => changeProvider(value as AccountProvider)}>
           <TabsList>

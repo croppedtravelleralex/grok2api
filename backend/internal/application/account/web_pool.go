@@ -126,6 +126,7 @@ func (s *Service) ReconcileWebPools(ctx context.Context) (WebPoolSnapshot, error
 	if err := s.RebuildWebPoolIndex(ctx); err != nil {
 		return WebPoolSnapshot{}, err
 	}
+	s.invalidateWebPoolsSummaryCache()
 	snapshot := s.webPoolSnapshotFromIndex(ctx, now, enabledNow, len(toDisable))
 	return snapshot, nil
 }
@@ -139,10 +140,20 @@ func (s *Service) webPoolSnapshotFromIndex(ctx context.Context, now time.Time, e
 	diagnostics := s.webSelectionDiagnosticsLocked()
 	pinIDs := s.imagePinIDsLocked()
 	imagineSlots := append([]uint64(nil), s.imagineSlotAccountIDs...)
-	threePools, _ := s.SummarizeWebThreePoolsForSnapshot(ctx)
-	fourPools, _ := s.SummarizeWebFourPoolsForSnapshot(ctx)
 	s.webProbeMu.Unlock()
-	imageDispatchPoolIDs, imageSchedulableIDs, _ := s.webImagePoolAccountIDs(ctx, now)
+	_, fourPools, imageDispatchPoolIDs, imageSchedulableIDs, _ := s.summarizeWebPoolsCached(ctx)
+	threePoolsPublic := WebThreePoolsPublic{
+		Image: WebLanePoolCountsPublic{
+			Dispatch: fourPools.Image.Dispatch,
+			Recovery: fourPools.Image.Normal + fourPools.Image.Verification,
+			Dead:     fourPools.Image.Delete,
+		},
+		Chat: WebLanePoolCountsPublic{
+			Dispatch: fourPools.Chat.Dispatch,
+			Recovery: fourPools.Chat.Recovery,
+			Dead:     fourPools.Chat.Dead,
+		},
+	}
 	slotRegistry := ImagineSlotRegistryIDs(imagineSlots, imageDispatchPoolIDs)
 	ticketCounts := s.chromeTicketCountsSnapshot(ctx)
 	ticketReady := TicketReadyAccountIDs(slotRegistry, imageDispatchPoolIDs, pinIDs, ticketCounts)
@@ -152,7 +163,7 @@ func (s *Service) webPoolSnapshotFromIndex(ctx context.Context, now time.Time, e
 		ChatPoolIDs: chatIDs, EnabledIDs: enabledIDs,
 		ImagePoolSize: len(imageIDs), ChatPoolSize: len(chatIDs), EnabledCount: len(enabledIDs),
 		ImagePoolCap: webImagePoolCap, ChatPoolCap: webChatPoolCap, ReconciledAt: now,
-		EnabledAdded: 0, EnabledRemoved: enabledRemoved, ThreePools: threePools, FourPools: fourPools,
+		EnabledAdded: 0, EnabledRemoved: enabledRemoved, ThreePools: threePoolsPublic, FourPools: fourPools,
 		PinNotInDispatch: pinNotIn, SlotRegistryIDs: slotRegistry, TicketReadyIDs: ticketReady,
 		SelectionDiagnostics: diagnostics,
 	}

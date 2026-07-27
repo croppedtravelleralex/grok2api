@@ -301,6 +301,7 @@ func (s *Service) RebuildWebPoolIndex(ctx context.Context) error {
 		s.indexWebAccountLocked(WebLaneImage, value, ctxInput, now)
 		s.indexWebAccountLocked(WebLaneChat, value, ctxInput, now)
 	}
+	s.invalidateWebPoolsSummaryCache()
 	s.webProbeMu.Unlock()
 	return nil
 }
@@ -405,6 +406,7 @@ func (s *Service) syncWebAccountIndex(ctx context.Context, id uint64) {
 	s.webProbeMu.Lock()
 	s.indexWebAccountLocked(WebLaneImage, value, ctxInput, now)
 	s.indexWebAccountLocked(WebLaneChat, value, ctxInput, now)
+	s.invalidateWebPoolsSummaryCache()
 	s.webProbeMu.Unlock()
 }
 
@@ -653,7 +655,7 @@ func (s *Service) markWebDead(ctx context.Context, id uint64, reason string) err
 
 // SummarizeWebThreePoolsForSnapshot 为 WebPools API 填充池计数（image 含四池明细）。
 func (s *Service) SummarizeWebThreePoolsForSnapshot(ctx context.Context) (WebThreePoolsPublic, error) {
-	_, four, _, _, err := s.summarizeWebPools(ctx)
+	_, four, _, _, err := s.summarizeWebPoolsCached(ctx)
 	if err != nil {
 		return WebThreePoolsPublic{}, err
 	}
@@ -669,12 +671,12 @@ func (s *Service) SummarizeWebThreePoolsForSnapshot(ctx context.Context) (WebThr
 
 // SummarizeWebFourPoolsForSnapshot 返回 Image 四池 + Chat 三池明细。
 func (s *Service) SummarizeWebFourPoolsForSnapshot(ctx context.Context) (WebFourPoolsPublic, error) {
-	_, four, _, _, err := s.summarizeWebPools(ctx)
+	_, four, _, _, err := s.summarizeWebPoolsCached(ctx)
 	return four, err
 }
 
 func (s *Service) webImagePoolAccountIDs(ctx context.Context, now time.Time) ([]uint64, []uint64, error) {
-	_, _, dispatchIDs, schedulableIDs, err := s.summarizeWebPools(ctx)
+	_, _, dispatchIDs, schedulableIDs, err := s.summarizeWebPoolsCached(ctx)
 	return dispatchIDs, schedulableIDs, err
 }
 

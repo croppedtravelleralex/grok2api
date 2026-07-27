@@ -258,6 +258,9 @@ type Service struct {
 	webProbeLaneCursor    int
 	chromeTicketCounts    ChromeTicketCountsSource
 	imagineSlotAccountIDs []uint64
+	webPoolsSummaryMu     sync.Mutex
+	webPoolsSummaryAt     time.Time
+	webPoolsSummarySnap   webPoolsSummarySnapshot
 	logger                *slog.Logger
 	now                   func() time.Time
 }
