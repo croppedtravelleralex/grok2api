@@ -46,7 +46,8 @@
 | [16-chrome-ticket-experiments-round2-2026-07-23.md](./16-chrome-ticket-experiments-round2-2026-07-23.md) | Admin 三源密码；第一/二轮票实验矩阵与停因 | 续跑 R-delay/S/V/mint 或改 admin 认证时 |
 | [17-web-four-pool-and-imaging-success-rates-2026-07-24.md](./17-web-four-pool-and-imaging-success-rates-2026-07-24.md) | 纯 HTTP vs 开票成功率；开票职责边界；Web 四池设计 | 评估开票价值、四池实现或写门禁时 |
 | [20-ticket-ready-slot-dispatch-merge-2026-07-25.md](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md) | 四套集合漂移、TicketReady 定义、销票槽位合并方案、dispatch 进出规律、探针与 v9 冷却关闭 | 稳定销票生图、JIT/pin/孤儿票排障时 |
-| [21-ticket-obsolescence-and-asset403-tls-2026-07-26.md](./21-ticket-obsolescence-and-asset403-tls-2026-07-26.md) | 纯 HTTP 铸票验证、`statsig_meta` 死数据、无票生图、硬门禁改软、asset403 定位到 Go tls-client 指纹 | 评估票机制去留、排 asset403、改选号门禁时 |
+| [21-ticket-obsolescence-and-asset403-tls-2026-07-26.md](./21-ticket-obsolescence-and-asset403-tls-2026-07-26.md) | 纯 HTTP 铸票验证、`statsig_meta` 死数据、无票生图、硬门禁改软、asset403 定位与修复、图轨恢复出图 | 评估票机制去留、排 asset403 时 |
+| [22-proxies-concurrency-and-bottlenecks-2026-07-27.md](./22-proxies-concurrency-and-bottlenecks-2026-07-27.md) | 20 住宅代理注册为 asset 下行节点、udeal 30 并发零失败验证、带宽实测 108–180 Mbps、架构瓶颈分析与分阶段提升方案 | 抬 webConcurrency、扩槽位、上线队列时 |
 | [logs/](./logs/) | 月度历史记录 | 每轮工作结束时追加 |
 
 ## 真相来源优先级
