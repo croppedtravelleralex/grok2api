@@ -442,7 +442,7 @@ func (h *Handler) editImage(c *gin.Context) {
 
 func coalesceExpandPrompt(value *bool) bool {
 	if value == nil {
-		return true
+		return false
 	}
 	return *value
 }

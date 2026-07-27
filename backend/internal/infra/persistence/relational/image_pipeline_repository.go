@@ -104,6 +104,31 @@ func (r *ImagePipelineRepository) ListTraces(ctx context.Context, from, to time.
 	return result, nil
 }
 
+func (r *ImagePipelineRepository) CloseStaleRunning(ctx context.Context, olderThan time.Time) (int64, error) {
+	now := time.Now().UTC()
+	result := r.db.db.WithContext(ctx).Model(&imagePipelineTraceModel{}).
+		Where("status = ? AND ended_at IS NULL AND started_at < ?", string(imagepipeline.StatusRunning), olderThan.UTC()).
+		Updates(map[string]any{
+			"status":     string(imagepipeline.StatusFailed),
+			"error_code": "stale_abandoned",
+			"ended_at":   now,
+		})
+	if result.Error != nil {
+		return 0, fmt.Errorf("关闭陈旧 running trace: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return 0, nil
+	}
+	// SQLite / Postgres 均支持 julianday 差异近似；仅用于陈旧 trace 收尾。
+	if err := r.db.db.WithContext(ctx).Exec(
+		`UPDATE image_pipeline_traces SET total_ms = CAST((julianday(ended_at) - julianday(started_at)) * 86400000 AS INTEGER) WHERE status = ? AND error_code = ? AND ended_at = ?`,
+		string(imagepipeline.StatusFailed), "stale_abandoned", now,
+	).Error; err != nil {
+		return result.RowsAffected, fmt.Errorf("更新陈旧 trace total_ms: %w", err)
+	}
+	return result.RowsAffected, nil
+}
+
 func (r *ImagePipelineRepository) DeleteOlderThan(ctx context.Context, before time.Time) (int64, error) {
 	tx := r.db.db.WithContext(ctx).Begin()
 	if tx.Error != nil {

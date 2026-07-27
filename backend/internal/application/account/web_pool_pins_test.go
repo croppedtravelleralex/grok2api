@@ -11,9 +11,8 @@ func (s staticChromeTicketCounts) AvailableCounts(context.Context) map[uint64]in
 	return map[uint64]int64(s)
 }
 
-// pin 不再按票收窄：票只影响选号排序，不该缩小可选账号集合，
-// 否则运行时可选账号会被票的分布绑架（详见 imageDispatchPinTargetIDs 注释）。
-func TestImageDispatchPinTargetIDsKeepsFullDispatchWithTickets(t *testing.T) {
+// pin 默认与 dispatch 全量对齐；配置 imagineSlotAccountIds 时与 SlotRegistry 对齐。
+func TestImageDispatchPinTargetIDsKeepsFullDispatchByDefault(t *testing.T) {
 	service := NewService(nil, nil, nil, nil, nil, nil, nil)
 	service.SetChromeTicketCountsSource(staticChromeTicketCounts{86: 2, 227: 1})
 	dispatch := []uint64{86, 87, 227, 250}
@@ -21,9 +20,20 @@ func TestImageDispatchPinTargetIDsKeepsFullDispatchWithTickets(t *testing.T) {
 	if len(got) != len(dispatch) {
 		t.Fatalf("pin target = %#v, want full dispatch %#v", got, dispatch)
 	}
-	for i := range dispatch {
-		if got[i] != dispatch[i] {
-			t.Fatalf("pin target = %#v, want full dispatch %#v", got, dispatch)
+}
+
+func TestImageDispatchPinTargetIDsUsesSlotRegistryWhenConfigured(t *testing.T) {
+	service := NewService(nil, nil, nil, nil, nil, nil, nil)
+	service.SetImagineSlotAccountIDs([]uint64{87, 250, 999})
+	dispatch := []uint64{86, 87, 227, 250}
+	got := service.imageDispatchPinTargetIDs(context.Background(), dispatch)
+	want := []uint64{87, 250}
+	if len(got) != len(want) {
+		t.Fatalf("pin target = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("pin target = %#v, want %#v", got, want)
 		}
 	}
 }

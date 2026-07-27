@@ -76,14 +76,16 @@ panda 实测下行 108–180 Mbps，远高于 doc 02 记录的 ~15 Mbps（单 ud
 APPLIED: created=20 skipped=0 failed=0
 ```
 
-### 3.2 100 条升级机房线已上传但未注册
+### 3.2 100 条升级机房线（2026-07-27 复测）
 
-上传至 panda `/root/.secrets/webshare100_v2.txt`。
+上传至 panda `/root/.secrets/webshare100_v2.txt`。抽样 15 条用 `tools/test_webshare_proxies.py`：
 
-### 3.3 asset affinity 首次验证结果
+| 目标 | 结果 | 结论 |
+|------|------|------|
+| `https://grok.com/` | 15/15 可达（403 CF） | 与住宅线一致，**不能**作 `grok_web` |
+| `https://assets.grok.com/` 根路径 | 15/15 **404**（plain curl） | 根路径探针无效；此前 doc 用真实 asset URL 得 200。**暂不注册**为 egress 节点 |
 
-注册后禁掉原先唯一的 asset 节点 udeal-111（node 111），生图全部失败（asset 403）。
-恢复 udeal-111 后正常。**住宅节点需要先排查 affinity 路由问题**才能独立承载流量。
+### 3.3 asset cookie 根因（已修复，非 affinity 哈希环）
 
 ### 3.4 udeal-111 已恢复
 
@@ -114,12 +116,43 @@ id=111 name=udeal-la-grok_web_asset enabled=1
 
 | P | 事项 | 状态 |
 |---|------|------|
-| ~~P0~~ | ~~asset affinity：住宅节点 cookie IP 绑定~~ | **Done**（`resolveAssetDownloadCookie` + `ScopeWebAsset` rewarm） |
-| P0 | 部署新镜像 + Panda 验证禁 111 后住宅接管 | 进行中 |
-| P0 | `panda_apply_web20_profile.py --restart` + 10/20 并发验收 | 待部署后 |
-| P1 | 恢复 `grok2api-web-clearance.service` | 待办 |
-| P2 | 注册 100 升级机房线 + grok.com 穿透试验 | 待办 |
-| P2 | `image_pipeline_traces` 断写修复 | 待定 |
+| ~~P0~~ | asset cookie 住宅修复 + 禁 111 验证 | **Done** |
+| ~~P0~~ | web20 profile + 10/20 并发验收 | **Done**（见 §8） |
+| ~~P1~~ | `grok2api-web-clearance.service` | **Done**（FlareSolverr `127.0.0.1:18191` + wrapper） |
+| ~~P1~~ | `image_pipeline_traces` 陈旧 running | **Done**（80 条 `stale_abandoned`；代码每小时清扫） |
+| ~~P2~~ | BE-024 pin 与 SlotRegistry 对齐 | **Done**（`imagineSlotAccountIds` 非空时收窄 pin） |
+| P2 | 100 机房注册为 asset 节点 | **暂缓**（根路径 curl 404；需真实 asset URL 探针后再定） |
+| P2 | 10/20 **100%** 成功率 | **未达**（10→9/10、20→19/20；SSE `soft_stop` / 502） |
+
+---
+
+## 8. 10 / 20 并发验收耗时（2026-07-27，镜像 `sha256:1d8c90a…`）
+
+配置：`webConcurrency=20`，`promptSlots/sseSlots=20`，`queueCapacity=200`，住宅 `wsres-asset-001~020` 已注册。
+
+### 8.1 墙钟与成功率（canary 脚本）
+
+| 并发 | 成功 | 墙钟 | 客户端 P50 | 客户端 P90 | 失败模式 |
+|------|------|------|------------|------------|----------|
+| **10** | **9/10** | **~58s** | ~26s | ~54s | 1×502 `upstream_unavailable` |
+| **20** | **19/20** | **~67s** | ~34s | ~48s | 1×502 `soft_stop`（trace `LGGfGHAL`） |
+
+墙钟 ≈ 最慢单请求 `total_ms`（全槽并行，非加总）。
+
+### 8.2 流水线分段（Admin `image-timeline`，成功样本 P50）
+
+| 阶段 | 10 并发 P50 | 占比 | 20 并发 P50 | 占比 |
+|------|-------------|------|-------------|------|
+| 排队合计（queue+psQueue+ssQueue+downloadQueue） | ~20ms | **0.1%** | ~22ms | **0.1%** |
+| expand（pS） | ~6.8s | **27%** | ~15.2s | **47%** |
+| SSE（sS） | ~12.0s | **47%** | ~11.7s | **36%** |
+| download | ~1.2s | **5%** | ~1.0s | **3%** |
+| 其他（账号选号/上传等） | ~1.0s | ~4% | ~1.0s | ~3% |
+| **total** | **~25.5s** | | **~32.3s** | |
+
+**瓶颈**：上游 expand + SSE 延迟（udeal 单线 SSE），非本地 `webGate` 或队列。排队始终 <100ms。
+
+复现：`tools/analyze_conc_timing.py`、`tools/panda_image_conc_canary.py`（`GROK2API_GROUPS=10,20`）。
 
 ---
 

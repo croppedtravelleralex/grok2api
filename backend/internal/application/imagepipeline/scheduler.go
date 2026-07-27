@@ -1054,6 +1054,12 @@ func parseStageKey(key string) (domain.Stage, int) {
 }
 
 func (s *Scheduler) Cleanup(ctx context.Context) (int64, error) {
+	staleBefore := time.Now().UTC().Add(-30 * time.Minute)
+	if closed, err := s.repo.CloseStaleRunning(ctx, staleBefore); err != nil {
+		return 0, err
+	} else if closed > 0 && s.logger != nil {
+		s.logger.Info("image_pipeline_stale_running_closed", "count", closed)
+	}
 	before := time.Now().UTC().Add(-s.cfg.Retention)
 	return s.repo.DeleteOlderThan(ctx, before)
 }

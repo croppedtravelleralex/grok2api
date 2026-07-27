@@ -176,13 +176,13 @@ func diffUint64Slices(from, subtract []uint64) []uint64 {
 	return out
 }
 
-// imageDispatchPinTargetIDs 返回 grok-imagine-image 应 pin 的账号集合，即整个
-// dispatch 集合。
+// imageDispatchPinTargetIDs 返回 grok-imagine-image 应 pin 的账号集合。
 //
-// 早期实现会把 pin 收窄到「持票账号」，但这会让运行时可选账号被票的分布绑架：
-// dispatch 合格几十个号、pin 后只剩少数几个，压测即出现「当前没有可用的上游账号」。
-// 票已不再是生图的必要条件（无票路径实测可出图），且选号层本身就对持票账号加权，
-// 因此这里不再按票收窄——票只影响「优先选谁」，不该影响「能选谁」。
+// 默认与整个 dispatch 对齐（票只影响选号排序，不缩小可选集合，避免 503）。
+// 当配置了 imagineSlotAccountIds 时，pin 与 BE-024 SlotRegistry 对齐。
 func (s *Service) imageDispatchPinTargetIDs(_ context.Context, dispatchIDs []uint64) []uint64 {
-	return dispatchIDs
+	if len(s.imagineSlotAccountIDs) == 0 {
+		return dispatchIDs
+	}
+	return ImagineSlotRegistryIDs(s.imagineSlotAccountIDs, dispatchIDs)
 }

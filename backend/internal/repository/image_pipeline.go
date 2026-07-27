@@ -15,4 +15,5 @@ type ImagePipelineRepository interface {
 	CloseSegment(ctx context.Context, id uint64, endedAt time.Time, outcome string) error
 	ListTraces(ctx context.Context, from, to time.Time, limit int) ([]imagepipeline.Trace, error)
 	DeleteOlderThan(ctx context.Context, before time.Time) (int64, error)
+	CloseStaleRunning(ctx context.Context, olderThan time.Time) (int64, error)
 }

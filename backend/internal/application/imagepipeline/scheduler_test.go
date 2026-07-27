@@ -84,6 +84,24 @@ func (r *memRepo) ListTraces(_ context.Context, from, to time.Time, _ int) ([]do
 	return out, nil
 }
 
+func (r *memRepo) CloseStaleRunning(_ context.Context, olderThan time.Time) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UTC()
+	var n int64
+	for id, trace := range r.traces {
+		if trace.Status == domain.StatusRunning && trace.EndedAt == nil && trace.StartedAt.Before(olderThan) {
+			trace.Status = domain.StatusFailed
+			trace.ErrorCode = "stale_abandoned"
+			trace.EndedAt = &now
+			trace.TotalMS = now.Sub(trace.StartedAt).Milliseconds()
+			r.traces[id] = trace
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (r *memRepo) DeleteOlderThan(_ context.Context, before time.Time) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

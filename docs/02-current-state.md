@@ -14,7 +14,7 @@
   4. asset 403 **与票无关**，也不是 Cloudflare 反爬 —— 根因是下载图片时用的凭据**只有账号 ID、没有访问令牌**，请求以未认证身份发出被源站 403。**已修复**。
 - **asset 403 已解决（2026-07-26）**：`downloadCredential` 在分阶段路径下只回填 ID，`EncryptedAccessToken` 为空 → cookie 变成 13 字节的 `sso=; sso-rw=`。修复为在 `RunArtifacts.SSCredential` 里保存出图阶段的完整凭据。沿途排除 17 项假设，全部非根因。详见 [21](./21-ticket-obsolescence-and-asset403-tls-2026-07-26.md) §5.6。
 - **（2026-07-27 住宅 asset）**：20 条 Webshare 住宅已注册为 `grok_web_asset`（`wsres-asset-001~020`）。禁 udeal-111 后全挂的根因是 **grok.com 预热 CF cookie 被发到住宅 IP**；修复为无 `leaseCF` 时仅 SSO+device identity，`rewarm` 改 `ScopeWebAsset`。BE-024 只读观测：`ticketReadyIds` / `slotRegistryIds` 已入 Admin 快照。
-- **（2026-07-27 并发目标）**：udeal 单线 30 并发认证 30/30 200；Panda 下行实测 108–180 Mbps。目标 profile：`webConcurrency=20`、`promptSlots/sseSlots=20`、`queue=200`（`tools/panda_apply_web20_profile.py`）。**尚未完成 10/20 生产验收**。
+- **（2026-07-27 并发验收）**：web20 profile 已应用；**10 并发 9/10 @ ~58s、20 并发 19/20 @ ~67s**。瓶颈在 expand+SSE（非本地排队）。详见 [22](./22-proxies-concurrency-and-bottlenecks-2026-07-27.md) §8。
 - **pin 自愈已上线（2026-07-26）**：新增后台任务 `image_dispatch_pin_sync`（启动 45s 首跑、此后每 5min），把 grok-imagine-image 的 pin 与四池 dispatch 自动对齐；同时移除 `imageDispatchPinTargetIDs` 的按票收窄（票只影响选号排序，不再决定可选集合）。上线即 `pinned=33 added=30`，`dispatchImageLen` 3 → **33**。此前 pin 只有手工 HTTP 入口、长期冻结在 3 个号，是「当前没有可用的上游账号」503 的直接成因。
 - **生产二进制已可溯源（2026-07-26）**：走完整 git 链路发布，`.env` 固定 `sha256:ae5df834…` ← commit `cdba9a1`，`docker cp` 孤儿二进制已被取代。同批回流了一处**此前只存在于生产二进制**的修复：`settings/service.go` 整体替换 `base.Routing` 时会把 `DisableCooldown` 静默重置为 false。
 - **部署铁律（强制）**：禁止在 Panda 编译任何项目；部署只走 `git push → Actions → GHCR → compose pull && up`；禁止 `scp` / `docker cp` 部署。Panda 上**无源码 git 仓库**。规则见 `~/.claude/rules/common/panda-deploy.md`。
