@@ -64,8 +64,8 @@ def main() -> None:
         "",
         {"username": os.environ.get("GROK2API_ADMIN_USER", "admin"), "password": load_password()},
     )
-    token = login["accessToken"]
-    existing = {n["name"]: n for n in api("GET", "/api/admin/v1/egress-nodes?scope=grok_web_asset", token)}
+    token = login["tokens"]["accessToken"]
+    existing = {n["name"]: n for n in api("GET", "/api/admin/v1/egress-nodes?scope=grok_web_asset", token).get("items", [])}
     lines = [ln.strip() for ln in Path(args.file).read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.startswith("#")]
 
     created, skipped, failed = 0, 0, 0

@@ -30,7 +30,8 @@ def api(method: str, path: str, token: str, body: dict | None = None) -> dict:
 
 
 def find_node(token: str, node_id: int) -> dict:
-    nodes = api("GET", "/api/admin/v1/egress-nodes?scope=grok_web_asset", token)
+    payload = api("GET", "/api/admin/v1/egress-nodes?scope=grok_web_asset", token)
+    nodes = payload.get("items", payload)
     for node in nodes:
         if int(node["id"]) == node_id:
             return node
@@ -73,7 +74,7 @@ def one_image(token: str) -> dict:
 
 
 def main() -> None:
-    token = api("POST", "/api/admin/v1/auth/login", "", {"username": "admin", "password": load_password()})["accessToken"]
+    token = api("POST", "/api/admin/v1/auth/login", "", {"username": "admin", "password": load_password()})["tokens"]["accessToken"]
     node = find_node(token, NODE_ID)
     was_enabled = bool(node.get("enabled"))
     report = {"node": node["name"], "was_enabled": was_enabled}

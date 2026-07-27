@@ -51,11 +51,11 @@ def main() -> None:
         "/api/admin/v1/auth/login",
         body={"username": "admin", "password": load_password()},
     )
-    token = login["accessToken"]
+    token = login["tokens"]["accessToken"]
     snap = request("GET", "/api/admin/v1/settings", token)
     cfg = snap["config"]
     cfg["providerWeb"].update(WEB20)
-    result = request("PATCH", "/api/admin/v1/settings", token, {"revision": snap["revision"], "config": cfg})
+    result = request("PUT", "/api/admin/v1/settings", token, {"revision": snap["revision"], "config": cfg})
     print(json.dumps({"restartRequired": result.get("restartRequired"), "web20": WEB20}, indent=2))
     if restart:
         subprocess.run(["docker", "compose", "-f", "/opt/grok2api/docker-compose.yml", "up", "-d", "grok2api"], check=True)
