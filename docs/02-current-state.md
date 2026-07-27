@@ -2,8 +2,8 @@
 
 ## 最后更新时间
 
-- 日期：2026-07-26
-- 维护目的：**票机制失效性验证 + asset403 定位到 Go TLS 指纹**，硬门禁已改软并上生产。见 [21](./21-ticket-obsolescence-and-asset403-tls-2026-07-26.md)。前一轮：票池与 dispatch 合并架构共识见 [20](./20-ticket-ready-slot-dispatch-merge-2026-07-25.md)。
+- 日期：2026-07-27
+- 维护目的：**住宅 asset cookie 修复 + 20 并发 profile 推进**；asset 亲和根因为 cookie IP 绑定非哈希环。见 [22](./22-proxies-concurrency-and-bottlenecks-2026-07-27.md) §7、[21](./21-ticket-obsolescence-and-asset403-tls-2026-07-26.md)。
 
 ## 整体状态摘要
 
@@ -13,7 +13,8 @@
   3. `grok-imagine-image` **不再必须有票** —— 无票裸跑上游 3/3 出图；硬门禁已改软（票池空不再 503）。
   4. asset 403 **与票无关**，也不是 Cloudflare 反爬 —— 根因是下载图片时用的凭据**只有账号 ID、没有访问令牌**，请求以未认证身份发出被源站 403。**已修复**。
 - **asset 403 已解决（2026-07-26）**：`downloadCredential` 在分阶段路径下只回填 ID，`EncryptedAccessToken` 为空 → cookie 变成 13 字节的 `sso=; sso-rw=`。修复为在 `RunArtifacts.SSCredential` 里保存出图阶段的完整凭据。沿途排除 17 项假设，全部非根因。详见 [21](./21-ticket-obsolescence-and-asset403-tls-2026-07-26.md) §5.6。
-- **当前生图状态（2026-07-26）**：**已恢复且稳定**。镜像 `sha256:dcb40f12…`（commit `cc95b65`），连续 8 次生图 **200=8 / 503=0 / 502=0**，返回真实图片 URL。
+- **（2026-07-27 住宅 asset）**：20 条 Webshare 住宅已注册为 `grok_web_asset`（`wsres-asset-001~020`）。禁 udeal-111 后全挂的根因是 **grok.com 预热 CF cookie 被发到住宅 IP**；修复为无 `leaseCF` 时仅 SSO+device identity，`rewarm` 改 `ScopeWebAsset`。BE-024 只读观测：`ticketReadyIds` / `slotRegistryIds` 已入 Admin 快照。
+- **（2026-07-27 并发目标）**：udeal 单线 30 并发认证 30/30 200；Panda 下行实测 108–180 Mbps。目标 profile：`webConcurrency=20`、`promptSlots/sseSlots=20`、`queue=200`（`tools/panda_apply_web20_profile.py`）。**尚未完成 10/20 生产验收**。
 - **pin 自愈已上线（2026-07-26）**：新增后台任务 `image_dispatch_pin_sync`（启动 45s 首跑、此后每 5min），把 grok-imagine-image 的 pin 与四池 dispatch 自动对齐；同时移除 `imageDispatchPinTargetIDs` 的按票收窄（票只影响选号排序，不再决定可选集合）。上线即 `pinned=33 added=30`，`dispatchImageLen` 3 → **33**。此前 pin 只有手工 HTTP 入口、长期冻结在 3 个号，是「当前没有可用的上游账号」503 的直接成因。
 - **生产二进制已可溯源（2026-07-26）**：走完整 git 链路发布，`.env` 固定 `sha256:ae5df834…` ← commit `cdba9a1`，`docker cp` 孤儿二进制已被取代。同批回流了一处**此前只存在于生产二进制**的修复：`settings/service.go` 整体替换 `base.Routing` 时会把 `DisableCooldown` 静默重置为 false。
 - **部署铁律（强制）**：禁止在 Panda 编译任何项目；部署只走 `git push → Actions → GHCR → compose pull && up`；禁止 `scp` / `docker cp` 部署。Panda 上**无源码 git 仓库**。规则见 `~/.claude/rules/common/panda-deploy.md`。

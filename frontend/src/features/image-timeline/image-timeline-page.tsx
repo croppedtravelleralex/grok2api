@@ -41,12 +41,12 @@ export function ImageTimelinePage() {
   const { t, i18n } = useTranslation();
   const [window, setWindow] = useState<ImageTimelineWindow>("30m");
   const [chartSpan, setChartSpan] = useState<ImageTimelineChartSpan>("15m");
-  const [paused, setPaused] = useState(true);
+  const [paused, setPaused] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const timeline = useQuery({
     queryKey: ["image-timeline", window],
     queryFn: () => getImageTimeline(window),
-    refetchInterval: paused ? false : 2000,
+    refetchInterval: paused ? false : 3000,
   });
   const data = timeline.data;
   const updatedAt = timeline.dataUpdatedAt;
@@ -94,6 +94,19 @@ export function ImageTimelinePage() {
           </Button>
         </div>
       </div>
+
+      {data ? (
+        <div className="rounded-xl border bg-card px-4 py-3 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-medium">{t("imageTimeline.dualSlotWall")}</span>
+            <span className="text-xs text-muted-foreground tabular-nums">
+              pS {data.snapshot.promptActive ?? data.snapshot.expandActive}/{data.snapshot.promptSlots ?? lanes.ps} · sS {data.snapshot.sseActive}/{data.snapshot.sseSlots ?? lanes.ss}
+              {" · "}排队 pS:{data.snapshot.promptQueued ?? data.snapshot.expandQueued ?? 0} sS:{data.snapshot.sseQueued ?? 0}
+              {" · "}总队列 {data.snapshot.inFlight ?? data.snapshot.queueDepth}/{data.snapshot.queueCapacity}
+            </span>
+          </div>
+        </div>
+      ) : null}
 
       {data ? (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

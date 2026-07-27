@@ -163,7 +163,7 @@ func (a *Adapter) rewarmAssetDownloadCookie(ctx context.Context, credential acco
 		return chromeDownloadStateFromContext(ctx)
 	}
 	affinity := fmt.Sprintf("%d:asset-warm:%d", credential.ID, attempt)
-	warmed, usedUA, warmErr := a.warmChromeTicketSessionWithAffinity(ctx, credential, token, deviceCookie, userAgent, affinity)
+	warmed, usedUA, warmErr := a.warmChromeTicketSessionWithScope(ctx, credential, token, deviceCookie, userAgent, affinity, domainegress.ScopeWebAsset)
 	if warmErr != nil {
 		a.log().Warn("web_lite_asset_cf_rewarm_failed", "account_id", credential.ID, "attempt", attempt, "error", warmErr)
 		return chromeDownloadStateFromContext(ctx)
@@ -179,11 +179,11 @@ func (a *Adapter) rewarmAssetDownloadCookie(ctx context.Context, credential acco
 }
 
 func (a *Adapter) warmChromeTicketSession(ctx context.Context, credential account.Credential, token, deviceCookie, preferredUA string) (string, string, error) {
-	return a.warmChromeTicketSessionWithAffinity(ctx, credential, token, deviceCookie, preferredUA, fmt.Sprintf("%d", credential.ID))
+	return a.warmChromeTicketSessionWithScope(ctx, credential, token, deviceCookie, preferredUA, fmt.Sprintf("%d", credential.ID), domainegress.ScopeWeb)
 }
 
-func (a *Adapter) warmChromeTicketSessionWithAffinity(ctx context.Context, credential account.Credential, token, deviceCookie, preferredUA, affinity string) (string, string, error) {
-	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWeb, affinity)
+func (a *Adapter) warmChromeTicketSessionWithScope(ctx context.Context, credential account.Credential, token, deviceCookie, preferredUA, affinity string, scope domainegress.Scope) (string, string, error) {
+	lease, err := a.egress.Acquire(ctx, scope, affinity)
 	if err != nil {
 		return "", "", err
 	}
@@ -258,11 +258,13 @@ func resolveAssetDownloadCookie(token, leaseCF, deviceCookie string, downloadSta
 	if strings.TrimSpace(leaseCF) != "" && deviceCookie != "" {
 		return mergeChromeTicketDownloadCookie(token, deviceCookie, leaseCF)
 	}
-	if downloadState.Cookie != "" {
-		return downloadState.Cookie
-	}
+	// Residential/CDN asset nodes have no node-level CF cookies. assets.grok.com only
+	// needs SSO + device identity; grok.com-pre-warmed cf_clearance is IP-bound.
 	if deviceCookie != "" {
-		return mergeChromeTicketDownloadCookie(token, deviceCookie, leaseCF)
+		return sanitizeChromeTicketCookie(token, deviceCookie, "")
+	}
+	if downloadState.Cookie != "" && !strings.Contains(strings.ToLower(downloadState.Cookie), "cf_clearance=") {
+		return downloadState.Cookie
 	}
 	return infraegress.BuildSSOCookie(token, leaseCF)
 }

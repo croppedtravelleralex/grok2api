@@ -112,15 +112,14 @@ id=111 name=udeal-la-grok_web_asset enabled=1
 
 ## 5. 待办（按建议执行顺序）
 
-| P | 事项 | 预估 |
+| P | 事项 | 状态 |
 |---|------|------|
-| **P0** | **排查 asset affinity 哈希环**：为何住宅节点注册后没有被分配下载流量。查 `web/asset` 选节点代码 | 1 次部署 |
-| P0 | 分阶段抬 `webConcurrency` 2→8→20，同步扩槽位 | 3 发布周期 |
-| P1 | 恢复 `grok2api-web-clearance.service`（当前 failed） | 半小时 |
-| P2 | 注册 100 升级机房线为备用 asset 节点 | 1 次脚本 |
-| P2 | `rewarmAssetDownloadCookie` deviceCookie 前置修复 | 1 次部署 |
+| ~~P0~~ | ~~asset affinity：住宅节点 cookie IP 绑定~~ | **Done**（`resolveAssetDownloadCookie` + `ScopeWebAsset` rewarm） |
+| P0 | 部署新镜像 + Panda 验证禁 111 后住宅接管 | 进行中 |
+| P0 | `panda_apply_web20_profile.py --restart` + 10/20 并发验收 | 待部署后 |
+| P1 | 恢复 `grok2api-web-clearance.service` | 待办 |
+| P2 | 注册 100 升级机房线 + grok.com 穿透试验 | 待办 |
 | P2 | `image_pipeline_traces` 断写修复 | 待定 |
-| P2 | 维护探针死号隔离（dead lane 退避） | 1 次部署 |
 
 ---
 
@@ -134,4 +133,10 @@ id=111 name=udeal-la-grok_web_asset enabled=1
 
 ---
 
-> **下阶段启动条件**：asset affinity 排查通过，住宅节点能独立承载 asset 下载流量。
+> **下阶段启动条件**：新镜像部署 + 禁 udeal-111 生图仍 200 → 应用 web20 profile → 10/20 并发验收。
+
+## 7. 代码修复（2026-07-27，待部署）
+
+- `chrometicket_download.go`：住宅 egress 不复用 grok.com `cf_clearance`；asset rewarm 走 `ScopeWebAsset`
+- `imagine_slots.go` + `WebPoolSnapshot.ticketReadyIds`（BE-024 只读）
+- 工具：`register_asset_nodes.py`、`panda_apply_web20_profile.py`、`panda_verify_residential_asset.py`

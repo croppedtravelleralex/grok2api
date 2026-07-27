@@ -256,6 +256,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	selector.SetWebDispatchSource(accountService)
 	selector.SetChromeTicketSource(chromeTicketSelectorSource{pool: chromeTicketPool})
 	accountService.SetChromeTicketCountsSource(chromeTicketSelectorSource{pool: chromeTicketPool})
+	accountService.SetImagineSlotAccountIDs(cfg.Provider.Web.ImagineSlotAccountIDs)
 	gatewayService := gateway.NewService(modelService, auditService, accountService, clientKeyService, providers, selector, responseRepo, cfg.Routing.MaxAttempts)
 	gatewayService.SetLogger(logger)
 	gatewayService.ConfigureMedia(mediaJobRepo, cfg.Provider.Web.MediaConcurrency)
@@ -264,6 +265,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	imagePipelineConfig.SSESlots = cfg.Provider.Web.SSESlots
 	imagePipelineConfig.UploadConcurrency = cfg.Provider.Web.AssetConcurrency
 	imagePipelineConfig.DownloadConcurrency = cfg.Provider.Web.AssetConcurrency
+	imagePipelineConfig.QueueCapacity = cfg.Provider.Web.ImagePipelineQueueCapacity
 	imagePipeline := imagepipelineapp.NewScheduler(imagePipelineRepo, imagePipelineConfig, logger)
 	gatewayService.ConfigureImagePipeline(imagePipeline)
 	accountService.SetWebProbePipelineOccupancy(func() (int, int) {

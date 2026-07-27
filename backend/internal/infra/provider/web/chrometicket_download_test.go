@@ -50,11 +50,24 @@ func TestResolveAssetDownloadCookiePrefersEgressCF(t *testing.T) {
 	}
 }
 
-func TestResolveAssetDownloadCookieUsesWarmedWhenNoEgressCF(t *testing.T) {
+func TestResolveAssetDownloadCookieSkipsWarmedCFWithoutEgressCF(t *testing.T) {
 	warmed := "sso=t; sso-rw=t; cf_clearance=warmed; grok_device_id=dev"
+	device := "grok_device_id=dev; cf_clearance=device-cf; x-anonuserid=anon"
 	state := chromeDownloadState{Cookie: warmed}
-	got := resolveAssetDownloadCookie("t", "", "grok_device_id=dev", state)
+	got := resolveAssetDownloadCookie("t", "", device, state)
+	if strings.Contains(got, "cf_clearance=") {
+		t.Fatalf("must not send cf_clearance on residential asset egress: %s", got)
+	}
+	if !strings.Contains(got, "grok_device_id=dev") || !strings.Contains(got, "sso=t") {
+		t.Fatalf("expected SSO + device identity only: %s", got)
+	}
+}
+
+func TestResolveAssetDownloadCookieReusesSsoOnlyWarmedState(t *testing.T) {
+	warmed := "sso=t; sso-rw=t; grok_device_id=dev"
+	state := chromeDownloadState{Cookie: warmed}
+	got := resolveAssetDownloadCookie("t", "", "", state)
 	if got != warmed {
-		t.Fatalf("expected warmed cookie, got %s", got)
+		t.Fatalf("expected SSO-only warmed cookie, got %s", got)
 	}
 }

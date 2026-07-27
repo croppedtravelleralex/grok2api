@@ -257,6 +257,7 @@ type Service struct {
 	webRoutePins          webRoutePinSets
 	webProbeLaneCursor    int
 	chromeTicketCounts    ChromeTicketCountsSource
+	imagineSlotAccountIDs []uint64
 	logger                *slog.Logger
 	now                   func() time.Time
 }
@@ -272,6 +273,13 @@ type ChromeTicketCountsSource interface {
 
 func (s *Service) SetChromeTicketCountsSource(source ChromeTicketCountsSource) {
 	s.chromeTicketCounts = source
+}
+
+// SetImagineSlotAccountIDs 配置 BE-024 SlotRegistry 静态槽位列表；空表示整个 dispatch 池。
+func (s *Service) SetImagineSlotAccountIDs(ids []uint64) {
+	s.webProbeMu.Lock()
+	defer s.webProbeMu.Unlock()
+	s.imagineSlotAccountIDs = append([]uint64(nil), ids...)
 }
 
 func NewService(accounts repository.AccountRepository, audits repository.AuditRepository, deviceSessions repository.DeviceSessionRepository, sticky repository.StickySessionRepository, providers *provider.Registry, cipher *security.Cipher, refreshLock repository.DistributedLock) *Service {

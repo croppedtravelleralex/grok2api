@@ -35,6 +35,8 @@ type WebPoolSnapshot struct {
 	ThreePools           WebThreePoolsPublic     `json:"threePools,omitempty"`
 	FourPools            WebFourPoolsPublic      `json:"fourPools,omitempty"`
 	PinNotInDispatch     []uint64                `json:"pinNotInDispatch,omitempty"`
+	SlotRegistryIDs      []uint64                `json:"slotRegistryIds,omitempty"`
+	TicketReadyIDs       []uint64                `json:"ticketReadyIds,omitempty"`
 	SelectionDiagnostics WebSelectionDiagnostics `json:"selectionDiagnostics,omitempty"`
 }
 
@@ -137,10 +139,14 @@ func (s *Service) webPoolSnapshotFromIndex(ctx context.Context, now time.Time, e
 	pinNotIn := s.pinNotInDispatchLocked()
 	diagnostics := s.webSelectionDiagnosticsLocked()
 	pinIDs := s.imagePinIDsLocked()
+	imagineSlots := append([]uint64(nil), s.imagineSlotAccountIDs...)
 	threePools, _ := s.SummarizeWebThreePoolsForSnapshot(ctx)
 	fourPools, _ := s.SummarizeWebFourPoolsForSnapshot(ctx)
 	s.webProbeMu.Unlock()
 	imageDispatchPoolIDs, imageSchedulableIDs, _ := s.webImagePoolAccountIDs(ctx, now)
+	slotRegistry := ImagineSlotRegistryIDs(imagineSlots, imageDispatchPoolIDs)
+	ticketCounts := s.chromeTicketCountsSnapshot(ctx)
+	ticketReady := TicketReadyAccountIDs(slotRegistry, imageDispatchPoolIDs, pinIDs, ticketCounts)
 	return WebPoolSnapshot{
 		ImagePoolIDs: imageIDs, ImageDispatchPoolIDs: imageDispatchPoolIDs, ImageSchedulableIDs: imageSchedulableIDs,
 		ImagePinIDs: pinIDs,
@@ -148,8 +154,16 @@ func (s *Service) webPoolSnapshotFromIndex(ctx context.Context, now time.Time, e
 		ImagePoolSize: len(imageIDs), ChatPoolSize: len(chatIDs), EnabledCount: len(enabledIDs),
 		ImagePoolCap: webImagePoolCap, ChatPoolCap: webChatPoolCap, ReconciledAt: now,
 		EnabledAdded: 0, EnabledRemoved: enabledRemoved, ThreePools: threePools, FourPools: fourPools,
-		PinNotInDispatch: pinNotIn, SelectionDiagnostics: diagnostics,
+		PinNotInDispatch: pinNotIn, SlotRegistryIDs: slotRegistry, TicketReadyIDs: ticketReady,
+		SelectionDiagnostics: diagnostics,
 	}
+}
+
+func (s *Service) chromeTicketCountsSnapshot(ctx context.Context) map[uint64]int64 {
+	if s.chromeTicketCounts == nil {
+		return nil
+	}
+	return s.chromeTicketCounts.AvailableCounts(ctx)
 }
 
 func (s *Service) dispatchIDsLocked(lane WebLane, cap int) []uint64 {

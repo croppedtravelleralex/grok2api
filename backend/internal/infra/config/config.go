@@ -131,6 +131,8 @@ type WebProviderConfig struct {
 	ExpandConcurrency   int      `yaml:"expandConcurrency"`
 	PromptSlots         int      `yaml:"promptSlots"`
 	SSESlots            int      `yaml:"sseSlots"`
+	ImagePipelineQueueCapacity int      `yaml:"imagePipelineQueueCapacity"`
+	ImagineSlotAccountIDs      []uint64 `yaml:"imagineSlotAccountIds"`
 	AllowNSFW           bool     `yaml:"allowNSFW"`
 	RecoveryBackoffBase Duration `yaml:"recoveryBackoffBase"`
 	RecoveryBackoffMax  Duration `yaml:"recoveryBackoffMax"`
@@ -274,6 +276,9 @@ func (c *Config) NormalizeConcurrencyDefaults() {
 	}
 	if c.Provider.Web.SSESlots == 0 {
 		c.Provider.Web.SSESlots = 10
+	}
+	if c.Provider.Web.ImagePipelineQueueCapacity == 0 {
+		c.Provider.Web.ImagePipelineQueueCapacity = 200
 	}
 }
 
