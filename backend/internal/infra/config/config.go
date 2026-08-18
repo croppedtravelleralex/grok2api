@@ -114,6 +114,9 @@ type BuildProviderConfig struct {
 	ClientIdentifier string `yaml:"clientIdentifier"`
 	TokenAuth        string `yaml:"tokenAuth"`
 	UserAgent        string `yaml:"userAgent"`
+	// InjectSystemPrompt 可选的系统提示注入文本（chat/completions 请求前置一条 system 消息）。
+	// 空串 = 不注入（默认）。用于从源头约束模型行为，如要求工具失败时如实报告、不编造数值。
+	InjectSystemPrompt string `yaml:"injectSystemPrompt"`
 }
 
 type WebProviderConfig struct {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 const (
@@ -13,6 +14,29 @@ const (
 	OperationChat      = "chat"
 	OperationMessages  = "messages"
 )
+
+// injectMu 与 injectSystemPrompt 提供可选的系统提示注入（chat/completions 专用）。
+// 由网关在启动时通过 SetBootstrapSystemPrompt 设置一次；非空时，会在 Chat 请求
+// 的 input 开头前置一条 system 消息，用于从源头约束模型行为（如诚实性）。
+// 默认空 = 不注入，保持与上游一致，行为完全向后兼容。
+var (
+	injectMu           sync.RWMutex
+	injectSystemPrompt string
+)
+
+// SetBootstrapSystemPrompt 设置注入的 system 提示文本。传入空串关闭注入。
+func SetBootstrapSystemPrompt(text string) {
+	injectMu.Lock()
+	defer injectMu.Unlock()
+	injectSystemPrompt = strings.TrimSpace(text)
+}
+
+// bootstrapSystemPrompt 返回当前注入文本（原子读）。
+func bootstrapSystemPrompt() string {
+	injectMu.RLock()
+	defer injectMu.RUnlock()
+	return injectSystemPrompt
+}
 
 // ConvertRequest 将下游对话协议转换为 Responses 请求，作为 Provider 的统一上游协议。
 func ConvertRequest(body []byte, model, operation string) ([]byte, error) {
@@ -51,6 +75,10 @@ func convertChatRequest(body []byte, model string) ([]byte, error) {
 	var messages []chatMessage
 	if err := json.Unmarshal(source["messages"], &messages); err != nil || len(messages) == 0 {
 		return nil, errors.New("messages 必须是非空数组")
+	}
+	// 可选：在首条之前前置注入的 system 提示（config.injectSystemPrompt 驱动）。
+	if prompt := bootstrapSystemPrompt(); prompt != "" {
+		messages = append([]chatMessage{{Role: "system", Content: mustRawJSON(prompt)}}, messages...)
 	}
 	input, err := convertChatMessages(messages)
 	if err != nil {
@@ -918,5 +946,11 @@ func isEmptyJSON(raw json.RawMessage) bool {
 
 func mustJSON(value any) json.RawMessage {
 	encoded, _ := json.Marshal(value)
+	return encoded
+}
+
+// mustRawJSON 将字符串编码为 JSON 字符串字面量的 RawMessage，用于构造 content=字符串 的 system 消息。
+func mustRawJSON(text string) json.RawMessage {
+	encoded, _ := json.Marshal(text)
 	return encoded
 }

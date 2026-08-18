@@ -33,6 +33,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	cliprovider "github.com/chenyme/grok2api/backend/internal/infra/provider/cli"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 	consoleprovider "github.com/chenyme/grok2api/backend/internal/infra/provider/console"
 	webprovider "github.com/chenyme/grok2api/backend/internal/infra/provider/web"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
@@ -170,6 +171,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	egressManager.SetTrafficRecorder(infraegress.NewRepositoryTrafficRecorder(egressTrafficRepo))
 	cliAdapter := cliprovider.NewAdapter(cliprovider.Config{BaseURL: cfg.Provider.Build.BaseURL, ClientVersion: cfg.Provider.Build.ClientVersion, ClientIdentifier: cfg.Provider.Build.ClientIdentifier, TokenAuth: cfg.Provider.Build.TokenAuth, UserAgent: cfg.Provider.Build.UserAgent}, cipher)
 	cliAdapter.SetEgress(egressManager)
+	// 从源头注入可选 system 提示（provider.build.injectSystemPrompt）；空串则不注入。
+	conversation.SetBootstrapSystemPrompt(cfg.Provider.Build.InjectSystemPrompt)
 	webAdapter := webprovider.NewAdapter(webProviderConfig(cfg), egressManager, cipher, responseRepo, mediaService)
 	webAdapter.SetLogger(logger)
 	webAdapter.SetChromeTicketPool(chromeTicketPool)
